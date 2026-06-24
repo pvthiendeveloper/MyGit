@@ -4,6 +4,7 @@ struct MainView: View {
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var repos: RepositoryListViewModel
     @EnvironmentObject var remote: RemoteViewModel
+    @State private var remoteURLInput: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,5 +55,22 @@ struct MainView: View {
                 }
             }
         )
+        .sheet(isPresented: Binding(
+            get: { remote.missingRemoteForBranch != nil },
+            set: { if !$0 { remote.missingRemoteForBranch = nil } }
+        )) {
+            TextInputSheet(
+                title: "Add Remote Origin",
+                prompt: "Remote URL",
+                placeholder: "https://github.com/user/repo.git",
+                value: $remoteURLInput
+            ) { url in
+                if let branch = remote.missingRemoteForBranch {
+                    remote.missingRemoteForBranch = nil
+                    remoteURLInput = ""
+                    Task { await remote.addOriginAndPush(url: url, branch: branch) }
+                }
+            }
+        }
     }
 }

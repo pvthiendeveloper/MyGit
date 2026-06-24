@@ -9,6 +9,7 @@ protocol GitRepository: Sendable {
     func lsTree(at repo: URL, path: String?) async throws -> [FileTreeNode]
     func account(at repo: URL) async -> GitAccount
     func setRemoteURL(_ url: String, name: String, at repo: URL) async throws
+    func addRemote(name: String, url: String, at repo: URL) async throws
 
     // Commit / index
     func commit(at repo: URL, paths: [String], message: String) async throws

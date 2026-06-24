@@ -4,6 +4,7 @@ import Foundation
 final class RemoteViewModel: ObservableObject {
     @Published var lastFetchedAt: Date?
     @Published var noUpstreamBranch: String?
+    @Published var missingRemoteForBranch: String?
 
     private let git: GitRepository
     private let account: AccountViewModel
@@ -60,6 +61,23 @@ final class RemoteViewModel: ObservableObject {
         await runRemoteHandlingUpstream(args: ["push", "origin", branch.name], branchName: branch.name)
     }
 
+    func addOriginAndPush(url: String, branch: String) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.addRemote(name: "origin", url: url, at: repo.url)
+            try await git.push(
+                at: repo.url,
+                args: ["push", "--set-upstream", "origin", branch],
+                auth: account.currentAuth()
+            )
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
     private func runRemote(_ op: @escaping (URL) async throws -> Void) async {
         guard let repo = repoSource() else { return }
         main.isBusy = true
@@ -83,6 +101,10 @@ final class RemoteViewModel: ObservableObject {
             let msg = err.localizedDescription
             if msg.contains("has no upstream branch") {
                 noUpstreamBranch = branchName
+            } else if msg.contains("No configured push destination")
+                || msg.contains("does not appear to be a git repository")
+                || msg.contains("'origin' does not appear to be a git repository") {
+                missingRemoteForBranch = branchName
             } else {
                 main.errorMessage = msg
             }

@@ -58,6 +58,13 @@ struct GitCLIRepository: GitRepository {
         )
     }
 
+    func addRemote(name: String, url: String, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(
+            ["remote", "add", name, url],
+            cwd: repo
+        )
+    }
+
     // MARK: - Commit
 
     func commit(at repo: URL, paths: [String], message: String) async throws {
