@@ -1,0 +1,34 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+.netrc
+
+# Build artifacts
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+xcuserdata/
+
+# Codesign / keychain
+*.keychain-db
+*.cer
+*.p12
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Claude
+.claude/
