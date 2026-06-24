@@ -14,14 +14,11 @@ struct RepoPopover: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
                 Image(systemName: "rectangle.stack").font(.system(size: 16))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Current Repository").font(.caption).foregroundStyle(.secondary)
-                    Text(repos.selected?.name ?? "-")
-                        .font(.system(size: 15, weight: .bold))
-                        .lineLimit(1)
-                }
+                Text("Current Repository")
+                    .font(.system(size: 15, weight: .bold))
+                    .lineLimit(1)
                 Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark").font(.caption2).foregroundStyle(.secondary)
@@ -134,13 +131,14 @@ private struct RepoRow: View {
 
             Spacer()
 
-            if isHovered && !isCurrent {
+            if isHovered {
                 Button(action: onRemove) {
                     Image(systemName: "minus.circle.fill")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(isCurrent ? Color.white : Color.red)
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.plain)
+                .help("Remove from list")
             }
         }
         .padding(.horizontal, 12)

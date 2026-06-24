@@ -139,7 +139,7 @@ struct ToolbarBar: View {
                 Spacer(minLength: 4)
                 DropdownBadge(isOpen: showRepoPopover)
             }
-            .padding(.leading, 12)
+            .padding(.horizontal, 12)
             .frame(width: max(160, main.sidebarWidth))
             .frame(maxHeight: .infinity)
             .padding(.vertical, 8)

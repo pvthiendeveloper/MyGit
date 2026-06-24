@@ -10,6 +10,7 @@ struct BranchPopover: View {
     @State private var searchText = ""
     @State private var showRevisionSheet = false
     @State private var revisionInput = ""
+    @State private var collapsed: Set<String> = []
 
     private var current: String { changes.status?.branch ?? "—" }
 
@@ -83,19 +84,17 @@ struct BranchPopover: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: .sectionHeaders) {
                     if !branchesVM.recentBranches.isEmpty && searchText.isEmpty {
-                        branchSection(title: "Recent", branches: branchesVM.recentBranches)
+                        collapsibleSection(title: "Recent", branches: branchesVM.recentBranches)
                     }
 
-                    let localFiltered = branchesVM.branches.filter { !$0.isRemote && matches($0) }
-                    let ungrouped = localFiltered.filter { $0.group == nil }
-                    let grouped = Dictionary(grouping: localFiltered.filter { $0.group != nil }, by: { $0.group! })
-                    let groupNames = grouped.keys.sorted()
+                    let local = branchesVM.branches.filter { !$0.isRemote && matches($0) }
+                    let remoteB = branchesVM.branches.filter { $0.isRemote && matches($0) }
 
-                    if !ungrouped.isEmpty {
-                        branchSection(title: nil, branches: ungrouped)
+                    if !local.isEmpty {
+                        collapsibleSection(title: "Local", branches: local)
                     }
-                    ForEach(groupNames, id: \.self) { g in
-                        branchGroupSection(name: g, branches: grouped[g] ?? [])
+                    if !remoteB.isEmpty {
+                        collapsibleSection(title: "Remote", branches: remoteB)
                     }
                 }
                 .padding(.vertical, 4)
@@ -118,41 +117,56 @@ struct BranchPopover: View {
     }
 
     @ViewBuilder
-    private func branchSection(title: String?, branches: [GitBranch]) -> some View {
+    private func collapsibleSection(title: String, branches: [GitBranch]) -> some View {
+        let isCollapsed = collapsed.contains(title)
         Section {
-            ForEach(branches) { b in BranchRow(branch: b, onDismissParent: { dismiss() }) }
+            if !isCollapsed {
+                let ungrouped = branches.filter { $0.group == nil }
+                let grouped = Dictionary(grouping: branches.filter { $0.group != nil }, by: { $0.group! })
+                ForEach(ungrouped) { b in BranchRow(branch: b, onDismissParent: { dismiss() }) }
+                ForEach(grouped.keys.sorted(), id: \.self) { g in
+                    folderHeader(g)
+                    ForEach(grouped[g] ?? []) { b in
+                        BranchRow(branch: b, onDismissParent: { dismiss() }).padding(.leading, 12)
+                    }
+                }
+            }
         } header: {
-            if let t = title {
-                sectionHeader(t)
+            sectionHeader(title, count: branches.count, isCollapsed: isCollapsed) {
+                if isCollapsed { collapsed.remove(title) } else { collapsed.insert(title) }
             }
         }
     }
 
-    @ViewBuilder
-    private func branchGroupSection(name: String, branches: [GitBranch]) -> some View {
-        Section {
-            ForEach(branches) { b in BranchRow(branch: b, onDismissParent: { dismiss() }).padding(.leading, 12) }
-        } header: {
+    private func folderHeader(_ name: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder").font(.system(size: 10))
+            Text(name).font(.system(size: 11))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionHeader(_ text: String, count: Int, isCollapsed: Bool, toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
             HStack(spacing: 4) {
-                Image(systemName: "folder").font(.system(size: 10))
-                Text(name).font(.system(size: 11))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                Text(text).font(.system(size: 10, weight: .semibold))
+                Text("\(count)").font(.system(size: 10)).foregroundStyle(.tertiary)
+                Spacer()
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(NSColor.windowBackgroundColor))
+            .contentShape(Rectangle())
         }
-    }
-
-    private func sectionHeader(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(NSColor.windowBackgroundColor))
+        .buttonStyle(.plain)
     }
 
     private func topActionRow(icon: String, label: String, shortcut: String, action: @escaping () -> Void) -> some View {
