@@ -14,9 +14,11 @@ struct AccountBadge: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                 }
-                Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.secondary)
+                .layoutPriority(1)
+                Spacer(minLength: 4)
+                DropdownBadge(isOpen: showPopover)
             }
-            .frame(maxWidth: 240, alignment: .leading)
+            .frame(maxWidth: 240)
         }
         .buttonStyle(.plain)
         .disabled(account.account == nil)

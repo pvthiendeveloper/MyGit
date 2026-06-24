@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(coordinator.branches)
             .environmentObject(coordinator.account)
             .environmentObject(coordinator.remote)
+            .environmentObject(coordinator.compareVM)
             .frame(minWidth: 900, minHeight: 560)
 
         let hosting = NSHostingController(rootView: root)

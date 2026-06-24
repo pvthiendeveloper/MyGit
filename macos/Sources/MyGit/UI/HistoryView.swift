@@ -21,7 +21,7 @@ struct HistoryListView: View {
     }
 }
 
-private struct CommitRow: View {
+struct CommitRow: View {
     let commit: GitCommit
 
     var body: some View {

@@ -204,4 +204,58 @@ struct GitCLIRepository: GitRepository {
     func checkoutRevision(_ rev: String, at repo: URL) async throws {
         _ = try await GitRunner.runOrThrow(["checkout", rev], cwd: repo)
     }
+
+    // MARK: - Compare
+
+    func commitsInRange(_ range: String, at repo: URL) async throws -> [GitCommit] {
+        let out = try await GitRunner.runOrThrow(
+            ["log", range, "--pretty=format:\(GitLogParser.format)"],
+            cwd: repo
+        )
+        return GitLogParser.parse(out)
+    }
+
+    func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry] {
+        let r = try await GitRunner.run(
+            ["diff-tree", "--no-color", "--name-status", "-r", "-z", commit],
+            cwd: repo
+        )
+        let out = r.stdout
+        guard !out.isEmpty else { return [] }
+        var result: [ChangedFileEntry] = []
+        let records = out.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        var i = 0
+        while i < records.count {
+            let rec = records[i]
+            guard !rec.isEmpty else { i += 1; continue }
+            let statusChar = String(rec.prefix(1))
+            let status = ChangedFileStatus(rawValue: statusChar) ?? .unknown
+            if status == .renamed || status == .copied {
+                let oldPath = String(rec.dropFirst())
+                i += 1
+                let newPath = i < records.count ? records[i] : ""
+                result.append(ChangedFileEntry(path: newPath, oldPath: oldPath.isEmpty ? nil : oldPath, status: status))
+            } else {
+                result.append(ChangedFileEntry(path: String(rec.dropFirst()), oldPath: nil, status: status))
+            }
+            i += 1
+        }
+        return result
+    }
+
+    func showFileAtCommit(commit: String, path: String, at repo: URL) async throws -> FileDiff {
+        let r = try await GitRunner.run(
+            ["show", "--no-color", "--format=", commit, "--", path],
+            cwd: repo
+        )
+        return GitDiffParser.parse(r.stdout, path: path)
+    }
+
+    func touchedHashes(range: String, paths: [String], at repo: URL) async throws -> Set<String> {
+        guard !paths.isEmpty else { return [] }
+        let args = ["log", range, "--pretty=format:%H"] + ["--"] + paths
+        let out = try await GitRunner.runOrThrow(args, cwd: repo)
+        let hashes = Set(out.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        return hashes
+    }
 }

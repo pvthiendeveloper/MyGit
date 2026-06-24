@@ -5,7 +5,7 @@ import AppKit
 final class BranchesViewModel: ObservableObject {
     @Published var branches: [GitBranch] = []
     @Published var recentBranches: [GitBranch] = []
-    @Published var branchCompareResult: String? = nil
+    @Published var diffResult: String? = nil
     @Published var showNewBranchSheet: Bool = false
 
     private let git: GitRepository
@@ -75,21 +75,15 @@ final class BranchesViewModel: ObservableObject {
         await runOp { try await self.git.checkoutAndUpdate(branch: branch.name, at: $0) }
     }
 
-    func compare(_ branch: GitBranch, vs current: String) async {
-        guard let repo = repoSource() else { return }
-        do {
-            let result = try await git.compareBranches(a: branch.name, b: current, at: repo.url)
-            branchCompareResult = result.isEmpty ? "(No commits)" : result
-        } catch {
-            main.errorMessage = error.localizedDescription
-        }
+    func compare(_ branch: GitBranch, vs current: String) {
+        main.openCompare(ComparePair(a: branch.name, b: current))
     }
 
     func diffWithWorkingTree(_ branch: GitBranch) async {
         guard let repo = repoSource() else { return }
         do {
             let result = try await git.diffWithWorkingTree(branch: branch.name, at: repo.url)
-            branchCompareResult = result.isEmpty ? "(No differences)" : result
+            diffResult = result.isEmpty ? "(No differences)" : result
         } catch {
             main.errorMessage = error.localizedDescription
         }

@@ -37,4 +37,10 @@ protocol GitRepository: Sendable {
     func deleteBranch(_ name: String, force: Bool, at repo: URL) async throws
     func newWorktree(path: URL, from: String, at repo: URL) async throws
     func checkoutRevision(_ rev: String, at repo: URL) async throws
+
+    // Compare
+    func commitsInRange(_ range: String, at repo: URL) async throws -> [GitCommit]
+    func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry]
+    func showFileAtCommit(commit: String, path: String, at repo: URL) async throws -> FileDiff
+    func touchedHashes(range: String, paths: [String], at repo: URL) async throws -> Set<String>
 }

@@ -10,19 +10,30 @@ struct ToolbarBar: View {
     @State private var showRepoPopover = false
     @State private var newBranchName = ""
     @State private var pendingNewBranch: PendingNewBranch? = nil
+    @State private var hoveredRepo = false
+    @State private var hoveredBranch = false
+    @State private var hoveredFetch = false
+    @State private var hoveredAccount = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             repoPicker
-            Divider().frame(height: 36)
             branchButton
-            Divider().frame(height: 36)
             fetchButton
-            Divider().frame(height: 36)
             AccountBadge()
+                .padding(.horizontal, 12)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+                .onHover { hoveredAccount = $0 }
+                .background(hoveredAccount ? Color.primary.opacity(0.08) : .clear)
+                .overlay(alignment: .trailing) {
+                    Color(NSColor.separatorColor).frame(width: 1)
+                }
             Spacer()
             remoteOps
         }
+        .fixedSize(horizontal: false, vertical: true)
         .sheet(isPresented: $branches.showNewBranchSheet) {
             TextInputSheet(
                 title: "New Branch",
@@ -60,8 +71,8 @@ struct ToolbarBar: View {
             Text("You have changes on '\(p.from.name)'. Bring them to '\(p.name)' or stash first?")
         }
         .sheet(item: Binding(
-            get: { branches.branchCompareResult.map { CompareResult(text: $0) } },
-            set: { if $0 == nil { branches.branchCompareResult = nil } }
+            get: { branches.diffResult.map { DiffResultWrapper(text: $0) } },
+            set: { if $0 == nil { branches.diffResult = nil } }
         )) { r in
             ScrollView {
                 Text(r.text)
@@ -85,14 +96,23 @@ struct ToolbarBar: View {
                     Text("Current Branch").font(.caption).foregroundStyle(.secondary)
                     Text(changes.status?.branch ?? "-")
                         .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                 }
-                Image(systemName: showBranchPopover ? "chevron.up" : "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .layoutPriority(1)
+                Spacer(minLength: 4)
+                DropdownBadge(isOpen: showBranchPopover)
             }
-            .frame(maxWidth: 220, alignment: .leading)
+            .padding(.horizontal, 12)
+            .frame(minWidth: 120, maxWidth: 220, maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredBranch = $0 }
+        .background(hoveredBranch ? Color.primary.opacity(0.08) : .clear)
+        .overlay(alignment: .trailing) {
+            Color(NSColor.separatorColor).frame(width: 1)
+        }
         .disabled(repos.selected == nil)
         .popover(isPresented: $showBranchPopover, arrowEdge: .bottom) {
             BranchPopover()
@@ -115,13 +135,22 @@ struct ToolbarBar: View {
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                 }
-                Image(systemName: showRepoPopover ? "chevron.up" : "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .layoutPriority(1)
+                Spacer(minLength: 4)
+                DropdownBadge(isOpen: showRepoPopover)
             }
-            .frame(maxWidth: 260, alignment: .leading)
+            .padding(.leading, 12)
+            .frame(width: max(160, main.sidebarWidth))
+            .frame(maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredRepo = $0 }
+        .background(hoveredRepo ? Color.primary.opacity(0.08) : .clear)
+        .overlay(alignment: .trailing) {
+            Color(NSColor.separatorColor).frame(width: 1)
+        }
         .popover(isPresented: $showRepoPopover, arrowEdge: .bottom) {
             RepoPopover().environmentObject(repos)
         }
@@ -135,10 +164,20 @@ struct ToolbarBar: View {
                     Text("Fetch origin").font(.system(size: 13, weight: .semibold))
                     Text(lastFetchLabel)
                         .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
             }
+            .padding(.horizontal, 12)
+            .frame(maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredFetch = $0 }
+        .background(hoveredFetch ? Color.primary.opacity(0.08) : .clear)
+        .overlay(alignment: .trailing) {
+            Color(NSColor.separatorColor).frame(width: 1)
+        }
         .disabled(repos.selected == nil || main.isBusy)
     }
 
@@ -164,7 +203,7 @@ struct ToolbarBar: View {
     }
 }
 
-private struct CompareResult: Identifiable {
+private struct DiffResultWrapper: Identifiable {
     let id = UUID()
     let text: String
 }
@@ -173,6 +212,15 @@ private struct PendingNewBranch: Identifiable {
     let id = UUID()
     let name: String
     let from: GitBranch
+}
+
+struct DropdownBadge: View {
+    let isOpen: Bool
+    var body: some View {
+        Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+            .font(.caption2)
+            .foregroundStyle(Color.secondary)
+    }
 }
 
 private struct SpinningFetchIcon: View {

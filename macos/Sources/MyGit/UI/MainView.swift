@@ -9,8 +9,7 @@ struct MainView: View {
     var body: some View {
         VStack(spacing: 0) {
             ToolbarBar()
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.trailing, 12)
                 .background(Color(NSColor.windowBackgroundColor))
             Divider()
 
@@ -19,7 +18,8 @@ struct MainView: View {
             } else {
                 HSplitView {
                     SidebarPanel()
-                        .frame(minWidth: 280, idealWidth: 340, maxWidth: 480)
+                        .frame(minWidth: 280, idealWidth: 280, maxWidth: 480)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { main.sidebarWidth = $0 }
                     DetailPanel()
                         .frame(minWidth: 480)
                 }

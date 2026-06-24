@@ -14,6 +14,7 @@ final class AppCoordinator: ObservableObject {
     let branches: BranchesViewModel
     let account: AccountViewModel
     let remote: RemoteViewModel
+    let compareVM: CompareBranchesViewModel
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -76,6 +77,9 @@ final class AppCoordinator: ObservableObject {
             onFinished: { await refreshAll() }
         )
         self.remote = remote
+
+        let compareVM = CompareBranchesViewModel()
+        self.compareVM = compareVM
 
         refreshAll = { [weak self] in await self?.refreshAll() }
         changes.setOnFinished { await refreshAll() }
