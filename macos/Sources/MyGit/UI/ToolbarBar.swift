@@ -13,13 +13,14 @@ struct ToolbarBar: View {
     @State private var hoveredRepo = false
     @State private var hoveredBranch = false
     @State private var hoveredFetch = false
+    @State private var hoveredPublish = false
     @State private var hoveredAccount = false
 
     var body: some View {
         HStack(spacing: 0) {
             repoPicker
             branchButton
-            fetchButton
+            if isUnpublished { publishButton } else { fetchButton }
             AccountBadge()
                 .padding(.horizontal, 12)
                 .frame(maxHeight: .infinity)
@@ -175,6 +176,41 @@ struct ToolbarBar: View {
         .buttonStyle(.plain)
         .onHover { hoveredFetch = $0 }
         .background(hoveredFetch ? Color.primary.opacity(0.08) : .clear)
+        .overlay(alignment: .trailing) {
+            Color(NSColor.separatorColor).frame(width: 1)
+        }
+        .disabled(repos.selected == nil || main.isBusy)
+    }
+
+    private var isUnpublished: Bool {
+        guard repos.selected != nil,
+              let b = changes.status?.branch, !b.isEmpty else { return false }
+        return changes.status?.upstream == nil
+    }
+
+    private var publishButton: some View {
+        Button {
+            guard let b = changes.status?.branch else { return }
+            Task { await remote.pushWithUpstream(branch: b) }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 16))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Publish branch").font(.system(size: 13, weight: .semibold))
+                    Text("Publish this branch to remote")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoveredPublish = $0 }
+        .background(hoveredPublish ? Color.primary.opacity(0.08) : .clear)
         .overlay(alignment: .trailing) {
             Color(NSColor.separatorColor).frame(width: 1)
         }
