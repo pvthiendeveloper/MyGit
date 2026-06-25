@@ -49,22 +49,89 @@ struct CompareCommitPanel: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(commits) { commit in
-                            CommitRow(commit: commit)
-                                .padding(.horizontal, 8)
-                                .background(localSelection == commit
-                                    ? Color.accentColor.opacity(0.15)
-                                    : Color.clear)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    localSelection = commit
-                                    vm.selectCommit(commit, side: side)
-                                }
-                            Divider().padding(.leading, 8)
+                        ForEach(Array(commits.enumerated()), id: \.element.id) { index, commit in
+                            CompareCommitRow(
+                                commit: commit,
+                                isFirst: index == 0,
+                                isLast: index == commits.count - 1,
+                                isSelected: localSelection == commit
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                localSelection = commit
+                                vm.selectCommit(commit, side: side)
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+private struct CompareCommitRow: View {
+    let commit: GitCommit
+    let isFirst: Bool
+    let isLast: Bool
+    let isSelected: Bool
+
+    private var isMerge: Bool { commit.parents.count > 1 }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            CommitGraphGutter(isFirst: isFirst, isLast: isLast)
+
+            Text(commit.subject)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+
+            Spacer(minLength: 8)
+
+            Text(commit.author + (isMerge ? "*" : ""))
+                .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                .lineLimit(1)
+                .foregroundStyle(isSelected ? .primary : .secondary)
+
+            Text(dateText)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .trailing)
+        }
+        .padding(.trailing, 10)
+        .frame(height: 30)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+    }
+
+    private var dateText: String {
+        commit.date.formatted(
+            .dateTime.day(.twoDigits).month(.twoDigits).year(.twoDigits)
+                .hour(.twoDigits(amPM: .omitted)).minute()
+        )
+    }
+}
+
+private struct CommitGraphGutter: View {
+    let isFirst: Bool
+    let isLast: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let midX = geo.size.width / 2
+            let midY = geo.size.height / 2
+            Path { p in
+                p.move(to: CGPoint(x: midX, y: isFirst ? midY : 0))
+                p.addLine(to: CGPoint(x: midX, y: isLast ? midY : geo.size.height))
+            }
+            .stroke(Color.secondary.opacity(0.5), lineWidth: 1.5)
+
+            Circle()
+                .fill(Color.purple)
+                .frame(width: 9, height: 9)
+                .position(x: midX, y: midY)
+        }
+        .frame(width: 22)
     }
 }

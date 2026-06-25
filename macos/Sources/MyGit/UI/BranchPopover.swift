@@ -121,13 +121,17 @@ struct BranchPopover: View {
         let isCollapsed = collapsed.contains(title)
         Section {
             if !isCollapsed {
-                let ungrouped = branches.filter { $0.group == nil }
-                let grouped = Dictionary(grouping: branches.filter { $0.group != nil }, by: { $0.group! })
-                ForEach(ungrouped) { b in BranchRow(branch: b, onDismissParent: { dismiss() }) }
-                ForEach(grouped.keys.sorted(), id: \.self) { g in
-                    folderHeader(g)
-                    ForEach(grouped[g] ?? []) { b in
-                        BranchRow(branch: b, onDismissParent: { dismiss() }).padding(.leading, 12)
+                // Flatten to a single homogeneous list so LazyVStack + pinned section
+                // headers lay out correctly (interleaving ForEach + lone views misrenders).
+                ForEach(rowItems(title: title, branches: branches)) { item in
+                    switch item.kind {
+                    case let .folder(name, count, key, folderCollapsed):
+                        folderHeader(name, count: count, isCollapsed: folderCollapsed) {
+                            if folderCollapsed { collapsed.remove(key) } else { collapsed.insert(key) }
+                        }
+                    case let .branch(branch, indented):
+                        BranchRow(branch: branch, onDismissParent: { dismiss() })
+                            .padding(.leading, indented ? 12 : 0)
                     }
                 }
             }
@@ -138,15 +142,55 @@ struct BranchPopover: View {
         }
     }
 
-    private func folderHeader(_ name: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "folder").font(.system(size: 10))
-            Text(name).font(.system(size: 11))
+    private struct BranchListItem: Identifiable {
+        enum Kind {
+            case folder(name: String, count: Int, key: String, collapsed: Bool)
+            case branch(GitBranch, indented: Bool)
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        let id: String
+        let kind: Kind
+    }
+
+    private func rowItems(title: String, branches: [GitBranch]) -> [BranchListItem] {
+        var items: [BranchListItem] = []
+        for b in branches where b.group == nil {
+            items.append(BranchListItem(id: "b/\(b.id)", kind: .branch(b, indented: false)))
+        }
+        let grouped = Dictionary(grouping: branches.filter { $0.group != nil }, by: { $0.group! })
+        for g in grouped.keys.sorted() {
+            let key = "\(title)/\(g)"
+            let folderCollapsed = collapsed.contains(key)
+            items.append(BranchListItem(
+                id: "f/\(key)",
+                kind: .folder(name: g, count: grouped[g]?.count ?? 0, key: key, collapsed: folderCollapsed)
+            ))
+            if !folderCollapsed {
+                for b in grouped[g] ?? [] {
+                    items.append(BranchListItem(id: "b/\(b.id)", kind: .branch(b, indented: true)))
+                }
+            }
+        }
+        return items
+    }
+
+    private func folderHeader(_ name: String, count: Int, isCollapsed: Bool, toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                Image(systemName: isCollapsed ? "folder" : "folder.fill").font(.system(size: 10))
+                Text(name).font(.system(size: 11))
+                Text("\(count)").font(.system(size: 10)).foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func sectionHeader(_ text: String, count: Int, isCollapsed: Bool, toggle: @escaping () -> Void) -> some View {
