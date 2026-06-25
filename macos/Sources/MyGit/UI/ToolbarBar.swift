@@ -13,6 +13,7 @@ struct ToolbarBar: View {
     @State private var hoveredRepo = false
     @State private var hoveredBranch = false
     @State private var hoveredFetch = false
+    @State private var hoveredFetchChevron = false
     @State private var hoveredPublish = false
     @State private var hoveredAccount = false
 
@@ -20,7 +21,7 @@ struct ToolbarBar: View {
         HStack(spacing: 0) {
             repoPicker
             branchButton
-            if isUnpublished { publishButton } else { fetchButton }
+            if isUnpublished { publishButton } else { remoteActionButton }
             AccountBadge()
                 .padding(.horizontal, 12)
                 .frame(maxHeight: .infinity)
@@ -32,7 +33,6 @@ struct ToolbarBar: View {
                     Color(NSColor.separatorColor).frame(width: 1)
                 }
             Spacer()
-            remoteOps
         }
         .fixedSize(horizontal: false, vertical: true)
         .sheet(isPresented: $branches.showNewBranchSheet) {
@@ -157,29 +157,111 @@ struct ToolbarBar: View {
         }
     }
 
-    private var fetchButton: some View {
-        Button(action: { Task { await remote.fetchOrigin() } }) {
-            HStack(spacing: 8) {
-                SpinningFetchIcon(isBusy: main.isBusy)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Fetch origin").font(.system(size: 13, weight: .semibold))
-                    Text(lastFetchLabel)
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(2)
+    private var remoteActionButton: some View {
+        HStack(spacing: 0) {
+            Button(action: { Task { await runPrimaryRemoteAction() } }) {
+                HStack(spacing: 8) {
+                    primaryRemoteIcon
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 6) {
+                            Text(primaryRemoteTitle)
+                                .font(.system(size: 13, weight: .semibold))
+                            if let badge = primaryRemoteBadge {
+                                Text(badge)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.primary.opacity(0.12), in: Capsule())
+                            }
+                        }
+                        Text(lastFetchLabel)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
+                .padding(.horizontal, 12)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .frame(maxHeight: .infinity)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .onHover { hoveredFetch = $0 }
+            .background(hoveredFetch ? Color.primary.opacity(0.08) : .clear)
+            .disabled(repos.selected == nil || main.isBusy)
+
+            Menu {
+                Button {
+                    Task { await remote.fetchOrigin() }
+                } label: {
+                    Label("Fetch origin", systemImage: "arrow.triangle.2.circlepath")
+                }
+                if let s = changes.status, s.behind > 0 {
+                    Button {
+                        Task { await remote.pull() }
+                    } label: {
+                        Label("Pull origin (\(s.behind))", systemImage: "arrow.down")
+                    }
+                }
+                if let s = changes.status, s.ahead > 0 {
+                    Button {
+                        Task { await remote.push() }
+                    } label: {
+                        Label("Push origin (\(s.ahead))", systemImage: "arrow.up")
+                    }
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 24)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .onHover { hoveredFetchChevron = $0 }
+            .background(hoveredFetchChevron ? Color.primary.opacity(0.08) : .clear)
+            .disabled(repos.selected == nil || main.isBusy)
         }
-        .buttonStyle(.plain)
-        .onHover { hoveredFetch = $0 }
-        .background(hoveredFetch ? Color.primary.opacity(0.08) : .clear)
         .overlay(alignment: .trailing) {
             Color(NSColor.separatorColor).frame(width: 1)
         }
-        .disabled(repos.selected == nil || main.isBusy)
+    }
+
+    private var primaryRemoteTitle: String {
+        if let s = changes.status, s.behind > 0 { return "Pull origin" }
+        if let s = changes.status, s.ahead > 0 { return "Push origin" }
+        return "Fetch origin"
+    }
+
+    private var primaryRemoteBadge: String? {
+        if let s = changes.status, s.behind > 0 { return "\(s.behind) ↓" }
+        if let s = changes.status, s.ahead > 0 { return "\(s.ahead) ↑" }
+        return nil
+    }
+
+    @ViewBuilder
+    private var primaryRemoteIcon: some View {
+        if let s = changes.status, s.behind > 0 {
+            Image(systemName: "arrow.down").font(.system(size: 16))
+        } else if let s = changes.status, s.ahead > 0 {
+            Image(systemName: "arrow.up").font(.system(size: 16))
+        } else {
+            SpinningFetchIcon(isBusy: main.isBusy)
+        }
+    }
+
+    private func runPrimaryRemoteAction() async {
+        if let s = changes.status, s.behind > 0 {
+            await remote.pull()
+            return
+        }
+        if let s = changes.status, s.ahead > 0 {
+            await remote.push()
+            return
+        }
+        await remote.fetchOrigin()
     }
 
     private var isUnpublished: Bool {
@@ -223,20 +305,6 @@ struct ToolbarBar: View {
         return "Last fetched " + f.localizedString(for: d, relativeTo: Date())
     }
 
-    private var remoteOps: some View {
-        HStack(spacing: 8) {
-            if let s = changes.status, s.behind > 0 {
-                Button(action: { Task { await remote.pull() } }) {
-                    Label("Pull \(s.behind)", systemImage: "arrow.down")
-                }
-            }
-            if let s = changes.status, s.ahead > 0 {
-                Button(action: { Task { await remote.push() } }) {
-                    Label("Push \(s.ahead)", systemImage: "arrow.up")
-                }
-            }
-        }
-    }
 }
 
 private struct DiffResultWrapper: Identifiable {
