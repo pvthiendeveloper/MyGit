@@ -24,23 +24,26 @@ struct SideBySideDiffTabView: View {
     @State private var currentHunkIndex: Int = -1
     @State private var excludedHunks: Set<Int> = []
     @State private var useCurrentVersion: Bool = false
-    @State private var availableWidth: CGFloat = 0
 
     // Side-by-side vertical-scroll sync. The column under the pointer drives;
     // the others follow its Y offset. Horizontal scroll stays per-pane.
     @State private var syncY: CGFloat = 0
+    @State private var syncX: CGFloat = 0
     @State private var activeCol: Int = 0
     @State private var leftScroll = ScrollPosition()
     @State private var rightScroll = ScrollPosition()
     @State private var gutterScroll = ScrollPosition()
 
-    private var isRightEditable: Bool { tab.mode.rightIsEditable }
+    // Right pane is editable whenever it shows the live working-tree file: the
+    // working modes, or commitVsParent once "Current version" swaps the right side
+    // to the on-disk file.
+    private var isRightEditable: Bool {
+        tab.mode.rightIsEditable || (tab.mode == .commitVsParent && useCurrentVersion)
+    }
     private var isDirty: Bool { isRightEditable && workingText != diskText }
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             toolbar
             Divider()
             secondaryHeader
@@ -71,50 +74,15 @@ struct SideBySideDiffTabView: View {
         }
     }
 
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tab.path)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                HStack(spacing: 6) {
-                    Text(tab.commitShortHash)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Text("•").foregroundStyle(.secondary)
-                    Text(tab.mode.label).font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            if isDirty {
-                Button("Revert") { workingText = diskText; recomputeHunks() }
-                    .controlSize(.small)
-                Button("Save") { save() }
-                    .controlSize(.small)
-                    .keyboardShortcut("s", modifiers: [.command])
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(NSColor.windowBackgroundColor))
-    }
-
     // MARK: - Secondary header (commit info + Current version)
 
     private var secondaryHeader: some View {
         HStack(spacing: 0) {
             sideLabel(leftSideLabel, editable: false)
-                .frame(width: paneWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Spacer().frame(width: Self.gutterColWidth)
             sideLabel(rightSideLabel, editable: isRightEditable)
-                .frame(width: paneWidth, alignment: .leading)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if tab.mode == .commitVsParent {
                 Toggle(isOn: $useCurrentVersion) {
                     Text("Current version").font(.system(size: 11))
@@ -169,7 +137,7 @@ struct SideBySideDiffTabView: View {
             toolbarButton(systemName: "arrow.down", help: "Next change", enabled: !hunks.isEmpty) {
                 jumpHunk(delta: 1)
             }
-            toolbarButton(systemName: "pencil", help: "Edit source", enabled: true) {
+            toolbarButton(systemName: "pencil", help: "Open in external editor", enabled: true) {
                 editSource()
             }
             Divider().frame(height: 14)
@@ -196,6 +164,15 @@ struct SideBySideDiffTabView: View {
             }
             .popover(isPresented: $showHelp, arrowEdge: .bottom) { helpPopover }
             Spacer()
+            if isDirty {
+                Button("Revert") { workingText = diskText; recomputeHunks() }
+                    .controlSize(.small)
+                Button("Save") { save() }
+                    .controlSize(.small)
+                    .keyboardShortcut("s", modifiers: [.command])
+                    .buttonStyle(.borderedProminent)
+                Divider().frame(height: 14)
+            }
             Text(statsLabel)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -356,68 +333,97 @@ struct SideBySideDiffTabView: View {
         let srcLines = sourceText.components(separatedBy: "\n")
         let wrkLines = workingText.components(separatedBy: "\n")
         let rows = AlignedRowBuilder.build(source: srcLines, working: wrkLines, hunks: hunks)
-        // Scroll-content width per pane = longest line; viewport stays paneWidth so
-        // the divider stays centered while long lines scroll horizontally.
+        // Scroll-content min width per pane = longest line. The pane itself flexes to
+        // half the panel (maxWidth: .infinity), so content fills the viewport when short
+        // and scrolls horizontally when it exceeds the pane — no dependency on a measured
+        // pane width (which lags a frame on resize and broke the layout).
         let charW = fontSize * 0.62
         let leftMax = rows.compactMap { $0.leftText?.count }.max() ?? 0
         let rightMax = rows.compactMap { $0.rightText?.count }.max() ?? 0
-        let leftContentW = max(paneWidth, CGFloat(leftMax) * charW + 24)
-        let rightContentW = max(paneWidth, CGFloat(rightMax) * charW + 24)
+        let leftContentW = CGFloat(leftMax) * charW + 24
+        let rightContentW = CGFloat(rightMax) * charW + 24
         // Each column is its own scroll view so the horizontal scroller pins to the
         // viewport bottom (always visible) instead of the bottom of the tall content.
-        // Vertical scrolling is kept in sync across the three via syncY.
-        // GeometryReader measures the real panel width (not the fixed-width HStack).
-        return GeometryReader { geo in
-            HStack(alignment: .top, spacing: 0) {
-                codePane(rows, isLeft: true, contentWidth: leftContentW, col: 0, pos: $leftScroll)
-                gutterColumn(rows, pos: $gutterScroll)
+        // Vertical scrolling is kept in sync across the three via syncY. Panes flex to
+        // half the panel each (maxWidth: .infinity) so the divider stays centered.
+        return HStack(alignment: .top, spacing: 0) {
+            codePane(rows, isLeft: true, contentWidth: leftContentW, col: 0, pos: $leftScroll)
+            gutterColumn(rows, pos: $gutterScroll)
+            if isRightEditable {
+                rightEditorPane
+            } else {
                 codePane(rows, isLeft: false, contentWidth: rightContentW, col: 2, pos: $rightScroll)
             }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
-            .onAppear { availableWidth = geo.size.width }
-            .onChange(of: geo.size.width) { _, w in availableWidth = w }
-            .onChange(of: currentHunkIndex) { _, new in
-                guard new >= 0, new < hunks.count,
-                      let target = rows.first(where: { $0.hunkId == hunks[new].id }) else { return }
-                let anchor = rowAnchor(target.id)
-                withAnimation(.easeOut(duration: 0.15)) {
-                    leftScroll.scrollTo(id: anchor, anchor: .center)
-                    rightScroll.scrollTo(id: anchor, anchor: .center)
-                    gutterScroll.scrollTo(id: anchor, anchor: .center)
-                }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: currentHunkIndex) { _, new in
+            guard new >= 0, new < hunks.count,
+                  let target = rows.first(where: { $0.hunkId == hunks[new].id }) else { return }
+            let anchor = rowAnchor(target.id)
+            withAnimation(.easeOut(duration: 0.15)) {
+                leftScroll.scrollTo(id: anchor, anchor: .center)
+                rightScroll.scrollTo(id: anchor, anchor: .center)
+                gutterScroll.scrollTo(id: anchor, anchor: .center)
             }
         }
     }
 
     private func rowAnchor(_ id: Int) -> String { "R-\(id)" }
 
+    // One Text per pane (a single multi-line AttributedString) so a drag selects
+    // across lines and ⌘C copies the range. Full-width line highlight is a background
+    // layer behind the text; row height = the font's real line height so the layer,
+    // the text lines, and the gutter line numbers all align.
     private func codePane(_ rows: [AlignedDiffRow], isLeft: Bool, contentWidth: CGFloat,
                           col: Int, pos: Binding<ScrollPosition>) -> some View {
         ScrollView([.horizontal, .vertical]) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rows) { row in
-                    codeCell(
-                        isLeft ? row.leftText : row.rightText,
-                        counterpart: isLeft ? pairedRightFor(row) : pairedLeftFor(row),
-                        isLeft: isLeft,
-                        kind: row.kind
-                    )
-                    .id(rowAnchor(row.id))
+            ZStack(alignment: .topLeading) {
+                if highlightMode == .lines {
+                    VStack(spacing: 0) {
+                        ForEach(rows) { row in
+                            (isLeft ? leftBg(row.kind) : rightBg(row.kind))
+                                .frame(height: rowHeight)
+                        }
+                    }
+                    .frame(minWidth: contentWidth, maxWidth: .infinity, alignment: .leading)
                 }
+                Text(paneAttributed(rows, isLeft: isLeft))
+                    .font(.system(size: fontSize, design: .monospaced))
+                    .lineSpacing(0)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .padding(.leading, 8)
             }
-            .frame(width: contentWidth, alignment: .leading)
+            .frame(minWidth: contentWidth, maxWidth: .infinity, alignment: .topLeading)
             .padding(.vertical, 4)
         }
-        .frame(width: paneWidth, alignment: .leading)
+        .defaultScrollAnchor(.topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .scrollPosition(pos)
         .onHover { if $0 { activeCol = col } }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, y in
-            if activeCol == col { syncY = y }
+        .onScrollGeometryChange(for: CGPoint.self) { $0.contentOffset } action: { _, p in
+            if activeCol == col { syncX = p.x; syncY = p.y }
         }
         .onChange(of: syncY) { _, y in
-            // Vertical sync only; horizontal stays per-pane (content widths differ).
-            if activeCol != col { pos.wrappedValue.scrollTo(y: y) }
+            // Scroll both axes together: scrollTo(x:)/scrollTo(y:) alone reset the other
+            // axis to origin. syncX/syncY both track the active pane so neither is stale.
+            if activeCol != col { pos.wrappedValue.scrollTo(point: CGPoint(x: syncX, y: y)) }
         }
+        .onChange(of: syncX) { _, x in
+            if activeCol != col { pos.wrappedValue.scrollTo(point: CGPoint(x: x, y: syncY)) }
+        }
+    }
+
+    // Editable Current pane. Edits flow into workingText -> live re-diff (onChange)
+    // updates the left pane + hunks, and Save writes to disk. Own scroll, no Y-sync.
+    private var rightEditorPane: some View {
+        TextEditor(text: $workingText)
+            .font(.system(size: fontSize, design: .monospaced))
+            .scrollContentBackground(.hidden)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Color(NSColor.textBackgroundColor))
     }
 
     private func gutterColumn(_ rows: [AlignedDiffRow], pos: Binding<ScrollPosition>) -> some View {
@@ -448,12 +454,6 @@ struct SideBySideDiffTabView: View {
         }
     }
 
-    // Each side fills exactly half the panel so the hunk gutter stays centered;
-    // long lines scroll horizontally inside their own pane.
-    private var paneWidth: CGFloat {
-        max(240, (availableWidth - Self.gutterColWidth) / 2)
-    }
-
     // Left mark (14) + left line-number (46) + center hunk gutter (46)
     // + right line-number (46) + right mark (14).
     private static let gutterColWidth: CGFloat = 14 + 46 + 46 + 46 + 14
@@ -470,34 +470,43 @@ struct SideBySideDiffTabView: View {
             .background(gutterBg)
     }
 
-    private var rowHeight: CGFloat { fontSize + 6 }
-
-    private func codeCell(_ text: String?, counterpart: String?, isLeft: Bool,
-                          kind: AlignedDiffRow.Kind) -> some View {
-        cellText(text, counterpart: counterpart, isLeft: isLeft)
-            .padding(.horizontal, 8)
-            .frame(height: rowHeight, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isLeft ? leftBg(kind) : rightBg(kind))
+    // Real line height of the rendered monospaced font, so the background layer and the
+    // gutter rows line up 1:1 with the Text's lines (no drift over thousands of lines).
+    private var rowHeight: CGFloat {
+        NSLayoutManager().defaultLineHeight(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular))
     }
 
-    private func cellText(_ text: String?, counterpart: String?, isLeft: Bool) -> some View {
-        Group {
-            if let text {
-                if highlightMode == .words, let other = counterpart {
-                    Text(WordHighlighter.attribute(for: text, vs: other, isLeft: isLeft))
-                        .font(.system(size: fontSize, design: .monospaced))
-                        .textSelection(.enabled)
-                } else {
-                    Text(text.isEmpty ? " " : text)
-                        .font(.system(size: fontSize, design: .monospaced))
-                        .textSelection(.enabled)
-                }
+    // Whole-pane code as a single AttributedString (one line per row, "" for gaps).
+    private func paneAttributed(_ rows: [AlignedDiffRow], isLeft: Bool) -> AttributedString {
+        var out = AttributedString()
+        let wordMode = highlightMode == .words
+        for (i, row) in rows.enumerated() {
+            let text = (isLeft ? row.leftText : row.rightText) ?? ""
+            let counterpart = isLeft ? pairedRightFor(row) : pairedLeftFor(row)
+            if wordMode, let other = counterpart {
+                appendWordDiff(&out, text: text, other: other, isLeft: isLeft)
             } else {
-                Text(" ").font(.system(size: fontSize, design: .monospaced))
+                out += AttributedString(text)
             }
+            if i != rows.count - 1 { out += AttributedString("\n") }
         }
-        .fixedSize(horizontal: true, vertical: false)
+        return out
+    }
+
+    // Word-level highlight: shade only the run that differs (common prefix/suffix fold).
+    private func appendWordDiff(_ out: inout AttributedString, text: String, other: String, isLeft: Bool) {
+        let a = Array(text), b = Array(other)
+        var p = 0
+        while p < a.count && p < b.count && a[p] == b[p] { p += 1 }
+        var la = a.count - 1, lb = b.count - 1
+        while la >= p && lb >= p && a[la] == b[lb] { la -= 1; lb -= 1 }
+        if p > 0 { out += AttributedString(String(a[..<p])) }
+        if la >= p {
+            var mid = AttributedString(String(a[p...la]))
+            mid.backgroundColor = isLeft ? Color.red.opacity(0.4) : Color.green.opacity(0.4)
+            out += mid
+        }
+        if la + 1 < a.count { out += AttributedString(String(a[(la + 1)...])) }
     }
 
     private func pairedRightFor(_ row: AlignedDiffRow) -> String? {
