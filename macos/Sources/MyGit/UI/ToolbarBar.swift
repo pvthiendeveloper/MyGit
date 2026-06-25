@@ -251,7 +251,9 @@ struct ToolbarBar: View {
 
     @ViewBuilder
     private var primaryRemoteIcon: some View {
-        if let s = changes.status, s.behind > 0 {
+        if main.isBusy {
+            SpinningFetchIcon(isBusy: true)
+        } else if let s = changes.status, s.behind > 0 {
             Image(systemName: "arrow.down").font(.system(size: 16))
         } else if let s = changes.status, s.ahead > 0 {
             Image(systemName: "arrow.up").font(.system(size: 16))

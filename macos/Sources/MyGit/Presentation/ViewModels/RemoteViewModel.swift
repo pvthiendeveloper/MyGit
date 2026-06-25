@@ -90,6 +90,9 @@ final class RemoteViewModel: ObservableObject {
         guard let repo = repoSource() else { return }
         main.isBusy = true
         defer { main.isBusy = false }
+        // Let SwiftUI paint the spinning state before any blocking main-actor
+        // work (e.g. synchronous keychain read in currentAuth()).
+        await Task.yield()
         do {
             try await op(repo.url)
             await onFinished()
@@ -102,6 +105,9 @@ final class RemoteViewModel: ObservableObject {
         guard let repo = repoSource() else { return }
         main.isBusy = true
         defer { main.isBusy = false }
+        // Let SwiftUI paint the spinning state before the synchronous keychain
+        // read in currentAuth() blocks the main actor.
+        await Task.yield()
         do {
             try await git.push(at: repo.url, args: args, auth: account.currentAuth())
             await onFinished()
