@@ -85,7 +85,7 @@ enum ChangedFileTreeBuilder {
 
         for entry in entries {
             let components = entry.path.components(separatedBy: "/")
-            insert(components: components, fullPath: entry.path, entry: entry,
+            insert(components: components, fullPath: entry.path, prefix: "", entry: entry,
                    into: &root, order: &rootOrder)
         }
 
@@ -95,12 +95,14 @@ enum ChangedFileTreeBuilder {
     private static func insert(
         components: [String],
         fullPath: String,
+        prefix: String,
         entry: ChangedFileEntry,
         into dict: inout [String: ChangedFileNode],
         order: inout [String]
     ) {
         guard let first = components.first else { return }
         let rest = Array(components.dropFirst())
+        let currentPath = prefix.isEmpty ? first : "\(prefix)/\(first)"
 
         if rest.isEmpty {
             let node = ChangedFileNode(id: fullPath, name: first, entry: entry, children: nil)
@@ -108,7 +110,7 @@ enum ChangedFileTreeBuilder {
             dict[first] = node
         } else {
             if dict[first] == nil {
-                dict[first] = ChangedFileNode(id: first, name: first, entry: nil, children: [])
+                dict[first] = ChangedFileNode(id: currentPath, name: first, entry: nil, children: [])
                 order.append(first)
             }
             let parent = dict[first]!
@@ -117,7 +119,7 @@ enum ChangedFileTreeBuilder {
                 uniqueKeysWithValues: (parent.children ?? []).map { ($0.name, $0) }
             )
             var childOrder = (parent.children ?? []).map { $0.name }
-            insert(components: rest, fullPath: fullPath, entry: entry,
+            insert(components: rest, fullPath: fullPath, prefix: currentPath, entry: entry,
                    into: &childDict, order: &childOrder)
             parent.children = childOrder.compactMap { childDict[$0] }
         }

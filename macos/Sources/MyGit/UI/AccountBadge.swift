@@ -6,31 +6,14 @@ struct AccountBadge: View {
 
     var body: some View {
         Button(action: { showPopover.toggle() }) {
-            HStack(spacing: 8) {
-                avatar
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Account").font(.caption).foregroundStyle(.secondary)
-                    Text(displayName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .layoutPriority(1)
-                Spacer(minLength: 4)
-                DropdownBadge(isOpen: showPopover)
-            }
-            .frame(maxWidth: 240)
+            avatar
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(account.account == nil)
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             AccountPopover().environmentObject(account)
         }
-    }
-
-    private var displayName: String {
-        if let owner = account.account?.owner { return owner }
-        if let name = account.account?.userName { return name }
-        return "—"
     }
 
     @ViewBuilder
@@ -41,15 +24,15 @@ struct AccountBadge: View {
                 case .success(let img):
                     img.resizable().interpolation(.high)
                 default:
-                    Image(systemName: "person.crop.circle").font(.system(size: 22))
+                    Image(systemName: "person.crop.circle").font(.system(size: 26))
                 }
             }
-            .frame(width: 24, height: 24)
+            .frame(width: 28, height: 28)
             .clipShape(Circle())
         } else {
             Image(systemName: hostIconName)
-                .font(.system(size: 18))
-                .frame(width: 24, height: 24)
+                .font(.system(size: 22))
+                .frame(width: 28, height: 28)
         }
     }
 

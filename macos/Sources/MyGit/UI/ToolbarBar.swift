@@ -8,6 +8,8 @@ struct ToolbarBar: View {
     @EnvironmentObject var remote: RemoteViewModel
     @State private var showBranchPopover = false
     @State private var showRepoPopover = false
+    @State private var showRemoteMenu = false
+    @State private var pendingPush: PendingPush?
     @State private var newBranchName = ""
     @State private var pendingNewBranch: PendingNewBranch? = nil
     @State private var hoveredRepo = false
@@ -22,6 +24,7 @@ struct ToolbarBar: View {
             repoPicker
             branchButton
             if isUnpublished { publishButton } else { remoteActionButton }
+            Spacer()
             AccountBadge()
                 .padding(.horizontal, 12)
                 .frame(maxHeight: .infinity)
@@ -29,10 +32,9 @@ struct ToolbarBar: View {
                 .contentShape(Rectangle())
                 .onHover { hoveredAccount = $0 }
                 .background(hoveredAccount ? Color.primary.opacity(0.08) : .clear)
-                .overlay(alignment: .trailing) {
+                .overlay(alignment: .leading) {
                     Color(NSColor.separatorColor).frame(width: 1)
                 }
-            Spacer()
         }
         .fixedSize(horizontal: false, vertical: true)
         .sheet(isPresented: $branches.showNewBranchSheet) {
@@ -70,6 +72,31 @@ struct ToolbarBar: View {
             Button("Cancel", role: .cancel) { pendingNewBranch = nil }
         } message: { p in
             Text("You have changes on '\(p.from.name)'. Bring them to '\(p.name)' or stash first?")
+        }
+        .alert(
+            pushAlertTitle,
+            isPresented: Binding(
+                get: { pendingPush != nil },
+                set: { if !$0 { pendingPush = nil } }
+            ),
+            presenting: pendingPush
+        ) { p in
+            switch p {
+            case .regular:
+                Button("Push") {
+                    Task { await remote.push() }
+                    pendingPush = nil
+                }
+                Button("Cancel", role: .cancel) { pendingPush = nil }
+            case .force:
+                Button("Force Push", role: .destructive) {
+                    Task { await remote.forcePush() }
+                    pendingPush = nil
+                }
+                Button("Cancel", role: .cancel) { pendingPush = nil }
+            }
+        } message: { p in
+            Text(pushAlertMessage(p))
         }
         .sheet(item: Binding(
             get: { branches.diffResult.map { DiffResultWrapper(text: $0) } },
@@ -159,7 +186,7 @@ struct ToolbarBar: View {
 
     private var remoteActionButton: some View {
         HStack(spacing: 0) {
-            Button(action: { Task { await runPrimaryRemoteAction() } }) {
+            Button(action: { runPrimaryRemoteAction() }) {
                 HStack(spacing: 8) {
                     primaryRemoteIcon
                     VStack(alignment: .leading, spacing: 1) {
@@ -189,40 +216,21 @@ struct ToolbarBar: View {
             .background(hoveredFetch ? Color.primary.opacity(0.08) : .clear)
             .disabled(repos.selected == nil || main.isBusy)
 
-            Menu {
-                Button {
-                    Task { await remote.fetchOrigin() }
-                } label: {
-                    Label("Fetch origin", systemImage: "arrow.triangle.2.circlepath")
-                }
-                if let s = changes.status, s.behind > 0 {
-                    Button {
-                        Task { await remote.pull() }
-                    } label: {
-                        Label("Pull origin (\(s.behind))", systemImage: "arrow.down")
-                    }
-                }
-                if let s = changes.status, s.ahead > 0 {
-                    Button {
-                        Task { await remote.push() }
-                    } label: {
-                        Label("Push origin (\(s.ahead))", systemImage: "arrow.up")
-                    }
-                }
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.caption)
+            Button(action: { showRemoteMenu.toggle() }) {
+                Image(systemName: showRemoteMenu ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.secondary)
-                    .frame(width: 24)
+                    .frame(width: 40)
                     .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            .buttonStyle(.plain)
             .onHover { hoveredFetchChevron = $0 }
             .background(hoveredFetchChevron ? Color.primary.opacity(0.08) : .clear)
             .disabled(repos.selected == nil || main.isBusy)
+            .popover(isPresented: $showRemoteMenu, arrowEdge: .bottom) {
+                remoteActionPopover
+            }
         }
         .overlay(alignment: .trailing) {
             Color(NSColor.separatorColor).frame(width: 1)
@@ -252,16 +260,84 @@ struct ToolbarBar: View {
         }
     }
 
-    private func runPrimaryRemoteAction() async {
+    private func runPrimaryRemoteAction() {
         if let s = changes.status, s.behind > 0 {
-            await remote.pull()
+            Task { await remote.pull() }
             return
         }
         if let s = changes.status, s.ahead > 0 {
-            await remote.push()
+            pendingPush = .regular(s.ahead)
             return
         }
-        await remote.fetchOrigin()
+        Task { await remote.fetchOrigin() }
+    }
+
+    private var primaryRemoteIconName: String {
+        if let s = changes.status, s.behind > 0 { return "arrow.down" }
+        if let s = changes.status, s.ahead > 0 { return "arrow.up" }
+        return "arrow.triangle.2.circlepath"
+    }
+
+    private var remoteActionPopover: some View {
+        VStack(spacing: 0) {
+            RemoteActionRow(
+                icon: primaryRemoteIconName,
+                title: primaryRemoteTitle,
+                subtitle: lastFetchLabel,
+                badge: primaryRemoteBadge
+            ) {
+                showRemoteMenu = false
+                runPrimaryRemoteAction()
+            }
+            if primaryRemoteTitle != "Fetch origin" {
+                Divider()
+                RemoteActionRow(
+                    icon: "arrow.triangle.2.circlepath",
+                    title: "Fetch origin",
+                    subtitle: "Fetch the latest changes from origin",
+                    badge: nil
+                ) {
+                    showRemoteMenu = false
+                    Task { await remote.fetchOrigin() }
+                }
+            }
+            if let s = changes.status, s.behind > 0, primaryRemoteTitle != "Pull origin" {
+                Divider()
+                RemoteActionRow(
+                    icon: "arrow.down",
+                    title: "Pull origin",
+                    subtitle: "Pull \(s.behind) commit\(s.behind == 1 ? "" : "s") from origin",
+                    badge: "\(s.behind) ↓"
+                ) {
+                    showRemoteMenu = false
+                    Task { await remote.pull() }
+                }
+            }
+            if let s = changes.status, s.ahead > 0, primaryRemoteTitle != "Push origin" {
+                Divider()
+                RemoteActionRow(
+                    icon: "arrow.up",
+                    title: "Push origin",
+                    subtitle: "Push \(s.ahead) commit\(s.ahead == 1 ? "" : "s") to origin",
+                    badge: "\(s.ahead) ↑"
+                ) {
+                    showRemoteMenu = false
+                    pendingPush = .regular(s.ahead)
+                }
+            }
+            Divider()
+            RemoteActionRow(
+                icon: "exclamationmark.arrow.triangle.2.circlepath",
+                title: "Force push origin",
+                subtitle: "Overwrite remote with local (uses --force-with-lease)",
+                badge: nil,
+                destructive: true
+            ) {
+                showRemoteMenu = false
+                pendingPush = .force
+            }
+        }
+        .frame(width: 340)
     }
 
     private var isUnpublished: Bool {
@@ -297,6 +373,24 @@ struct ToolbarBar: View {
             Color(NSColor.separatorColor).frame(width: 1)
         }
         .disabled(repos.selected == nil || main.isBusy)
+    }
+
+    private var pushAlertTitle: String {
+        guard let p = pendingPush else { return "Push?" }
+        switch p {
+        case .regular: return "Push to origin?"
+        case .force: return "Force push to origin?"
+        }
+    }
+
+    private func pushAlertMessage(_ p: PendingPush) -> String {
+        let branch = changes.status?.branch ?? "current branch"
+        switch p {
+        case .regular(let n):
+            return "Push \(n) commit\(n == 1 ? "" : "s") from '\(branch)' to origin."
+        case .force:
+            return "Force push '\(branch)' to origin using --force-with-lease. This rewrites the remote branch and can destroy others' work if they have pushed since you fetched."
+        }
     }
 
     private var lastFetchLabel: String {
@@ -346,5 +440,62 @@ private struct SpinningFetchIcon: View {
                     withAnimation(.easeOut(duration: 0.25)) { degrees = target }
                 }
             }
+    }
+}
+
+private struct RemoteActionRow: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let badge: String?
+    var destructive: Bool = false
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundStyle(destructive ? Color.red : .primary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(destructive ? Color.red : .primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 8)
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.15), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+        .background(hovered ? Color.primary.opacity(0.08) : .clear)
+    }
+}
+
+private enum PendingPush: Identifiable {
+    case regular(Int)
+    case force
+    var id: String {
+        switch self {
+        case .regular(let n): return "regular-\(n)"
+        case .force: return "force"
+        }
     }
 }

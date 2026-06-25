@@ -47,6 +47,14 @@ final class RemoteViewModel: ObservableObject {
         await runRemoteHandlingUpstream(args: ["push"], branchName: branch)
     }
 
+    func forcePush() async {
+        guard let branch = currentBranch() else { return }
+        await runRemoteHandlingUpstream(
+            args: ["push", "--force-with-lease", "origin", branch],
+            branchName: branch
+        )
+    }
+
     func pushWithUpstream(branch: String) async {
         await runRemote {
             try await self.git.push(

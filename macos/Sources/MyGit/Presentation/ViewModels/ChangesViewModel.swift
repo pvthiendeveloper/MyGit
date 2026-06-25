@@ -1,6 +1,12 @@
 import Foundation
 import Combine
 
+enum CommitMode: Equatable {
+    case commit
+    case amendKeepMessage
+    case amendUpdateMessage
+}
+
 @MainActor
 final class ChangesViewModel: ObservableObject {
     @Published var status: GitStatusSummary?
@@ -9,6 +15,8 @@ final class ChangesViewModel: ObservableObject {
     @Published var stagedPaths: Set<String> = []
     @Published var commitSummary: String = ""
     @Published var commitDescription: String = ""
+    @Published var commitMode: CommitMode = .commit
+    @Published var canAmend: Bool = false
 
     private let git: GitRepository
     private let main: MainViewModel
@@ -41,10 +49,12 @@ final class ChangesViewModel: ObservableObject {
         stagedPaths.removeAll()
         previousPaths.removeAll()
         status = nil
+        commitMode = .commit
+        canAmend = false
     }
 
     func refreshStatus() async {
-        guard let repo = repoSource() else { status = nil; return }
+        guard let repo = repoSource() else { status = nil; canAmend = false; return }
         do {
             let parsed = try await git.status(at: repo.url)
             status = parsed
@@ -62,6 +72,32 @@ final class ChangesViewModel: ObservableObject {
             } else if selectedChange == nil {
                 selectedChange = parsed.changes.first
             }
+            canAmend = await git.headExists(at: repo.url)
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func setCommitMode(_ mode: CommitMode) {
+        let prev = commitMode
+        commitMode = mode
+        if mode == .amendUpdateMessage,
+           prev != .amendUpdateMessage,
+           commitSummary.trimmingCharacters(in: .whitespaces).isEmpty,
+           commitDescription.trimmingCharacters(in: .whitespaces).isEmpty {
+            Task { await prefillFromHead() }
+        }
+    }
+
+    private func prefillFromHead() async {
+        guard let repo = repoSource() else { return }
+        do {
+            let msg = try await git.headCommitMessage(at: repo.url)
+            let parts = msg.components(separatedBy: "\n\n")
+            commitSummary = parts.first ?? ""
+            if parts.count > 1 {
+                commitDescription = parts.dropFirst().joined(separator: "\n\n")
+            }
         } catch {
             main.errorMessage = error.localizedDescription
         }
@@ -73,9 +109,16 @@ final class ChangesViewModel: ObservableObject {
     }
 
     var canCommit: Bool {
-        !commitSummary.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !stagedPaths.isEmpty &&
-        repoSource() != nil
+        guard repoSource() != nil else { return false }
+        let hasSummary = !commitSummary.trimmingCharacters(in: .whitespaces).isEmpty
+        switch commitMode {
+        case .commit:
+            return hasSummary && !stagedPaths.isEmpty
+        case .amendKeepMessage:
+            return canAmend
+        case .amendUpdateMessage:
+            return canAmend && hasSummary
+        }
     }
 
     func toggleStaged(_ change: FileChange) {
@@ -98,16 +141,29 @@ final class ChangesViewModel: ObservableObject {
         let toStage = status.changes
             .filter { stagedPaths.contains($0.path) }
             .map { $0.path }
-        var msg = commitSummary
-        let descTrim = commitDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !descTrim.isEmpty { msg += "\n\n" + descTrim }
+        let composedMessage = composeMessage()
         do {
-            try await git.commit(at: repo.url, paths: toStage, message: msg)
+            switch commitMode {
+            case .commit:
+                try await git.commit(at: repo.url, paths: toStage, message: composedMessage)
+            case .amendKeepMessage:
+                try await git.amend(at: repo.url, paths: toStage, newMessage: nil)
+            case .amendUpdateMessage:
+                try await git.amend(at: repo.url, paths: toStage, newMessage: composedMessage)
+            }
             commitSummary = ""
             commitDescription = ""
+            commitMode = .commit
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription
         }
+    }
+
+    private func composeMessage() -> String {
+        var msg = commitSummary
+        let descTrim = commitDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !descTrim.isEmpty { msg += "\n\n" + descTrim }
+        return msg
     }
 }

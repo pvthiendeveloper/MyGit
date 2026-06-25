@@ -75,6 +75,32 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(["commit", "-m", message], cwd: repo)
     }
 
+    func amend(at repo: URL, paths: [String], newMessage: String?) async throws {
+        _ = try await GitRunner.runOrThrow(["reset", "--mixed", "-q"], cwd: repo)
+        if !paths.isEmpty {
+            _ = try await GitRunner.runOrThrow(["add", "--"] + paths, cwd: repo)
+        }
+        if let msg = newMessage {
+            _ = try await GitRunner.runOrThrow(["commit", "--amend", "-m", msg], cwd: repo)
+        } else {
+            _ = try await GitRunner.runOrThrow(["commit", "--amend", "--no-edit"], cwd: repo)
+        }
+    }
+
+    func headExists(at repo: URL) async -> Bool {
+        do {
+            _ = try await GitRunner.runOrThrow(["rev-parse", "--verify", "--quiet", "HEAD"], cwd: repo)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func headCommitMessage(at repo: URL) async throws -> String {
+        let out = try await GitRunner.runOrThrow(["log", "-1", "--pretty=%B"], cwd: repo)
+        return out.trimmingCharacters(in: CharacterSet.newlines)
+    }
+
     func stashPush(message: String?, at repo: URL) async throws {
         var args = ["stash", "push", "--include-untracked"]
         if let m = message, !m.isEmpty { args += ["-m", m] }
@@ -217,28 +243,31 @@ struct GitCLIRepository: GitRepository {
 
     func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry] {
         let r = try await GitRunner.run(
-            ["diff-tree", "--no-color", "--name-status", "-r", "-z", commit],
+            ["diff-tree", "--no-color", "--no-commit-id", "--name-status", "-r", "-z", commit],
             cwd: repo
         )
         let out = r.stdout
         guard !out.isEmpty else { return [] }
         var result: [ChangedFileEntry] = []
-        let records = out.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+        let records = out.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
         var i = 0
         while i < records.count {
-            let rec = records[i]
-            guard !rec.isEmpty else { i += 1; continue }
-            let statusChar = String(rec.prefix(1))
+            let statusField = records[i]
+            let statusChar = String(statusField.prefix(1))
             let status = ChangedFileStatus(rawValue: statusChar) ?? .unknown
+            i += 1
             if status == .renamed || status == .copied {
-                let oldPath = String(rec.dropFirst())
+                let oldPath = i < records.count ? records[i] : ""
                 i += 1
                 let newPath = i < records.count ? records[i] : ""
+                i += 1
                 result.append(ChangedFileEntry(path: newPath, oldPath: oldPath.isEmpty ? nil : oldPath, status: status))
             } else {
-                result.append(ChangedFileEntry(path: String(rec.dropFirst()), oldPath: nil, status: status))
+                let path = i < records.count ? records[i] : ""
+                i += 1
+                guard !path.isEmpty else { continue }
+                result.append(ChangedFileEntry(path: path, oldPath: nil, status: status))
             }
-            i += 1
         }
         return result
     }

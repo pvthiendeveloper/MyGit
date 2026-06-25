@@ -13,6 +13,9 @@ protocol GitRepository: Sendable {
 
     // Commit / index
     func commit(at repo: URL, paths: [String], message: String) async throws
+    func amend(at repo: URL, paths: [String], newMessage: String?) async throws
+    func headExists(at repo: URL) async -> Bool
+    func headCommitMessage(at repo: URL) async throws -> String
     func stashPush(message: String?, at repo: URL) async throws
 
     // Remote

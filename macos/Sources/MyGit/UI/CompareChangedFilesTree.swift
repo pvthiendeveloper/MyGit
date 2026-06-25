@@ -1,64 +1,247 @@
 import SwiftUI
+import AppKit
 
 struct CompareChangedFilesTree: View {
     let nodes: [ChangedFileNode]
     let onSelect: (ChangedFileEntry) -> Void
 
+    @State private var expanded: Set<String> = []
+
+    private var compacted: [ChangedFileNode] { nodes.map(Self.compact) }
+    private var allDirIds: Set<String> { Set(Self.collectDirIds(compacted)) }
+    private var totalFiles: Int { nodes.reduce(0) { $0 + Self.countLeafs($1) } }
+    private var rootKey: String { nodes.map(\.id).joined(separator: "|") }
+
     var body: some View {
-        if nodes.isEmpty {
-            Text("Select a commit to see changed files")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        } else {
-            List(nodes, children: \.optionalChildren) { node in
-                CompareFileNodeRow(node: node)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if let entry = node.entry {
-                            onSelect(entry)
+        VStack(spacing: 0) {
+            actionsBar
+            Divider()
+            if nodes.isEmpty {
+                Text("Select a commit to see changed files")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(compacted) { node in
+                            CompareFileTreeRow(
+                                node: node,
+                                depth: 0,
+                                expanded: $expanded,
+                                onSelect: onSelect
+                            )
                         }
                     }
+                    .padding(.vertical, 2)
+                }
             }
-            .listStyle(.inset)
         }
+        .background(Color(NSColor.textBackgroundColor))
+        .task(id: rootKey) {
+            expanded = allDirIds
+        }
+    }
+
+    private var actionsBar: some View {
+        HStack(spacing: 2) {
+            Button { expanded = allDirIds } label: {
+                Image(systemName: "rectangle.expand.vertical")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.borderless)
+            .help("Expand All")
+
+            Button { expanded = [] } label: {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.borderless)
+            .help("Collapse All")
+
+            Divider().frame(height: 12).padding(.horizontal, 4)
+
+            if !nodes.isEmpty {
+                Text(totalFiles == 1 ? "1 file" : "\(totalFiles) files")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(NSColor.windowBackgroundColor).opacity(0.85))
+    }
+
+    private static func compact(_ node: ChangedFileNode) -> ChangedFileNode {
+        guard var children = node.children, !children.isEmpty else { return node }
+        children = children.map { compact($0) }
+        if children.count == 1, let only = children.first, only.children != nil {
+            let merged = ChangedFileNode(
+                id: node.id,
+                name: "\(node.name)/\(only.name)",
+                entry: nil,
+                children: only.children
+            )
+            return merged
+        }
+        node.children = children
+        return node
+    }
+
+    private static func collectDirIds(_ nodes: [ChangedFileNode]) -> [String] {
+        var result: [String] = []
+        for n in nodes {
+            if n.children != nil {
+                result.append(n.id)
+                result.append(contentsOf: collectDirIds(n.children ?? []))
+            }
+        }
+        return result
+    }
+
+    fileprivate static func countLeafs(_ node: ChangedFileNode) -> Int {
+        if node.children == nil { return 1 }
+        return (node.children ?? []).reduce(0) { $0 + countLeafs($1) }
     }
 }
 
-private struct CompareFileNodeRow: View {
+private struct CompareFileTreeRow: View {
     let node: ChangedFileNode
+    let depth: Int
+    @Binding var expanded: Set<String>
+    let onSelect: (ChangedFileEntry) -> Void
+
+    private var isDir: Bool { node.children != nil }
+    private var isExpanded: Bool { expanded.contains(node.id) }
 
     var body: some View {
-        HStack(spacing: 6) {
-            if node.children != nil {
-                Image(systemName: "folder.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            } else if let entry = node.entry {
-                Text(entry.statusGlyph)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(statusColor(entry.status))
-                    .frame(width: 14, alignment: .center)
-            }
-            if let entry = node.entry, let old = entry.oldPath {
-                Text("\(old.lastPathComponent) → \(node.name)")
-                    .font(.system(size: 12))
-                    .lineLimit(1)
-            } else {
-                Text(node.name)
-                    .font(.system(size: 12))
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 0) {
+            rowContent
+            if isDir, isExpanded {
+                ForEach(node.children ?? []) { child in
+                    CompareFileTreeRow(
+                        node: child,
+                        depth: depth + 1,
+                        expanded: $expanded,
+                        onSelect: onSelect
+                    )
+                }
             }
         }
-        .padding(.vertical, 1)
     }
 
-    private func statusColor(_ status: ChangedFileStatus) -> Color {
-        switch status {
+    @ViewBuilder
+    private var rowContent: some View {
+        HStack(spacing: 4) {
+            Color.clear.frame(width: CGFloat(depth) * 14, height: 1)
+
+            if isDir {
+                Button {
+                    toggle()
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                }
+                .buttonStyle(.plain)
+
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(Color(red: 0.85, green: 0.72, blue: 0.40))
+                    .font(.system(size: 11))
+
+                Text(node.name)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(countText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                Color.clear.frame(width: 10, height: 1)
+
+                Text(statusGlyph)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(statusColor)
+                    .frame(width: 12, alignment: .leading)
+
+                Image(systemName: fileSymbol)
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
+
+                fileNameText
+                    .font(.system(size: 12))
+                    .foregroundStyle(statusColor)
+                    .strikethrough(node.entry?.status == .deleted)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if isDir {
+                toggle()
+            } else if let entry = node.entry {
+                onSelect(entry)
+            }
+        }
+    }
+
+    private var fileNameText: Text {
+        if let entry = node.entry, let old = entry.oldPath {
+            return Text("\(old.lastPathComponent) → \(node.name)")
+        }
+        return Text(node.name)
+    }
+
+    private func toggle() {
+        if expanded.contains(node.id) {
+            expanded.remove(node.id)
+        } else {
+            expanded.insert(node.id)
+        }
+    }
+
+    private var countText: String {
+        let n = CompareChangedFilesTree.countLeafs(node)
+        return n == 1 ? "1 file" : "\(n) files"
+    }
+
+    private var statusGlyph: String {
+        node.entry?.statusGlyph ?? ""
+    }
+
+    private var statusColor: Color {
+        switch node.entry?.status {
         case .added: return .green
-        case .deleted: return .red
+        case .deleted: return Color(red: 0.55, green: 0.55, blue: 0.55)
         case .renamed, .copied: return .blue
-        default: return .secondary
+        case .modified: return Color(red: 0.40, green: 0.65, blue: 1.00)
+        case .typeChanged: return .orange
+        case .unknown: return .orange
+        case .none: return .primary
+        }
+    }
+
+    private var fileSymbol: String {
+        let ext = (node.name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "md": return "doc.text"
+        case "swift", "py", "kt", "java", "js", "ts", "go", "rb", "rs", "c", "cpp", "h", "m", "mm":
+            return "chevron.left.forwardslash.chevron.right"
+        case "json", "yaml", "yml", "toml", "xml", "plist":
+            return "doc.badge.gearshape"
+        case "png", "jpg", "jpeg", "gif", "svg", "webp":
+            return "photo"
+        default:
+            return "doc"
         }
     }
 }
