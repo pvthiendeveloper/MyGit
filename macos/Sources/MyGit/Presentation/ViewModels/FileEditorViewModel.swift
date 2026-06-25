@@ -34,11 +34,15 @@ final class FileEditorViewModel: ObservableObject {
 
     func openFile(_ node: FileTreeNode) {
         guard !node.isDirectory else { return }
-        if let existing = openFileTabs.first(where: { $0.path == node.id }) {
+        openFile(path: node.id)
+    }
+
+    func openFile(path: String) {
+        if let existing = openFileTabs.first(where: { $0.path == path }) {
             activeFileTabId = existing.id
             return
         }
-        let tab = OpenFileTab(path: node.id)
+        let tab = OpenFileTab(path: path)
         openFileTabs.append(tab)
         activeFileTabId = tab.id
         Task { await loadFileTab(tab) }

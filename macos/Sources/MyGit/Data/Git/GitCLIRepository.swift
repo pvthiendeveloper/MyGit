@@ -6,7 +6,7 @@ struct GitCLIRepository: GitRepository {
 
     func status(at repo: URL) async throws -> GitStatusSummary {
         let out = try await GitRunner.runOrThrow(
-            ["status", "--porcelain=v1", "-z", "--branch"],
+            ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],
             cwd: repo
         )
         return GitStatusParser.parse(out)
@@ -105,6 +105,53 @@ struct GitCLIRepository: GitRepository {
         var args = ["stash", "push", "--include-untracked"]
         if let m = message, !m.isEmpty { args += ["-m", m] }
         _ = try await GitRunner.runOrThrow(args, cwd: repo)
+    }
+
+    // MARK: - File ops
+
+    func restore(at repo: URL, paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await GitRunner.runOrThrow(
+            ["restore", "--staged", "--worktree", "--"] + paths,
+            cwd: repo
+        )
+    }
+
+    func addToIndex(at repo: URL, paths: [String]) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await GitRunner.runOrThrow(["add", "--"] + paths, cwd: repo)
+    }
+
+    func removeFile(at repo: URL, path: String, tracked: Bool) async throws {
+        if tracked {
+            _ = try await GitRunner.runOrThrow(["rm", "-f", "--", path], cwd: repo)
+        } else {
+            let url = repo.appendingPathComponent(path)
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    func diffPatch(at repo: URL, changes: [FileChange]) async throws -> String {
+        guard !changes.isEmpty else { return "" }
+        var patch = ""
+        let tracked = changes.filter { !$0.isUntracked }.map { $0.path }
+        let untracked = changes.filter { $0.isUntracked }.map { $0.path }
+
+        if !tracked.isEmpty {
+            let r = try await GitRunner.run(
+                ["diff", "HEAD", "--no-color", "--binary", "--"] + tracked,
+                cwd: repo
+            )
+            patch += r.stdout
+        }
+        for path in untracked {
+            let r = try? await GitRunner.run(
+                ["diff", "--no-index", "--no-color", "--binary", "--", "/dev/null", path],
+                cwd: repo
+            )
+            patch += r?.stdout ?? ""
+        }
+        return patch
     }
 
     // MARK: - Remote
@@ -286,5 +333,63 @@ struct GitCLIRepository: GitRepository {
         let out = try await GitRunner.runOrThrow(args, cwd: repo)
         let hashes = Set(out.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
         return hashes
+    }
+
+    func diffFileVsWorking(commit: String, path: String, at repo: URL) async throws -> FileDiff {
+        let r = try await GitRunner.run(["diff", "--no-color", commit, "--", path], cwd: repo)
+        return GitDiffParser.parse(r.stdout, path: path)
+    }
+
+    func diffFileBeforeVsWorking(commit: String, path: String, at repo: URL) async throws -> FileDiff {
+        let r = try await GitRunner.run(["diff", "--no-color", "\(commit)^1", "--", path], cwd: repo)
+        return GitDiffParser.parse(r.stdout, path: path)
+    }
+
+    func extractFileAtCommit(commit: String, path: String, at repo: URL) async throws -> URL {
+        let out = try await GitRunner.runOrThrow(["show", "\(commit):\(path)"], cwd: repo)
+        let base = (path as NSString).lastPathComponent
+        let shortCommit = String(commit.prefix(7))
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MyGit-\(shortCommit)-\(UUID().uuidString.prefix(6))", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+        let outURL = tmpDir.appendingPathComponent(base)
+        try out.write(to: outURL, atomically: true, encoding: .utf8)
+        return outURL
+    }
+
+    func revertFileInCommit(commit: String, path: String, at repo: URL) async throws {
+        let patch = try await GitRunner.runOrThrow(
+            ["show", commit, "--no-color", "--format=", "--", path],
+            cwd: repo
+        )
+        guard !patch.isEmpty else { return }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("mygit-revert-\(UUID().uuidString).patch")
+        try patch.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        _ = try await GitRunner.runOrThrow(["apply", "--reverse", "--3way", tmp.path], cwd: repo)
+    }
+
+    func cherryPickFileFromCommit(commit: String, path: String, at repo: URL) async throws {
+        let patch = try await GitRunner.runOrThrow(
+            ["show", commit, "--no-color", "--format=", "--", path],
+            cwd: repo
+        )
+        guard !patch.isEmpty else { return }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("mygit-pick-\(UUID().uuidString).patch")
+        try patch.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        _ = try await GitRunner.runOrThrow(["apply", "--3way", tmp.path], cwd: repo)
+    }
+
+    func patchForFile(commit: String, path: String, at repo: URL) async throws -> String {
+        try await GitRunner.runOrThrow(
+            ["show", commit, "--no-color", "--format=", "--", path],
+            cwd: repo
+        )
+    }
+
+    func readFileAtCommit(commit: String, path: String, at repo: URL) async throws -> String {
+        let r = try await GitRunner.run(["show", "\(commit):\(path)"], cwd: repo)
+        return r.stdout
     }
 }

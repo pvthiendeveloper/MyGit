@@ -17,6 +17,10 @@ struct CompareCommitPanel: View {
             : "Commits that exist in \(vm.pair.b) but don't exist in \(vm.pair.a)"
     }
 
+    private var upToHash: String? {
+        side == .aMinusB ? vm.upToCommitAB : vm.upToCommitBA
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -27,6 +31,25 @@ struct CompareCommitPanel: View {
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                 Spacer()
+                if let upTo = upToHash {
+                    Button {
+                        vm.clearHistoryUpTo(side: side)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text("up to \(String(upTo.prefix(7)))")
+                                .font(.system(size: 10))
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 10))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.2))
+                        .clipShape(Capsule())
+                        .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear history clamp")
+                }
                 Text("\(commits.count)")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)

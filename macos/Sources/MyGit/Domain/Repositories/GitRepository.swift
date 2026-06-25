@@ -18,6 +18,12 @@ protocol GitRepository: Sendable {
     func headCommitMessage(at repo: URL) async throws -> String
     func stashPush(message: String?, at repo: URL) async throws
 
+    // File ops
+    func restore(at repo: URL, paths: [String]) async throws
+    func addToIndex(at repo: URL, paths: [String]) async throws
+    func removeFile(at repo: URL, path: String, tracked: Bool) async throws
+    func diffPatch(at repo: URL, changes: [FileChange]) async throws -> String
+
     // Remote
     func fetch(at repo: URL, auth: AuthOverride?) async throws
     func pull(at repo: URL, auth: AuthOverride?) async throws
@@ -46,4 +52,11 @@ protocol GitRepository: Sendable {
     func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry]
     func showFileAtCommit(commit: String, path: String, at repo: URL) async throws -> FileDiff
     func touchedHashes(range: String, paths: [String], at repo: URL) async throws -> Set<String>
+    func diffFileVsWorking(commit: String, path: String, at repo: URL) async throws -> FileDiff
+    func diffFileBeforeVsWorking(commit: String, path: String, at repo: URL) async throws -> FileDiff
+    func extractFileAtCommit(commit: String, path: String, at repo: URL) async throws -> URL
+    func revertFileInCommit(commit: String, path: String, at repo: URL) async throws
+    func cherryPickFileFromCommit(commit: String, path: String, at repo: URL) async throws
+    func patchForFile(commit: String, path: String, at repo: URL) async throws -> String
+    func readFileAtCommit(commit: String, path: String, at repo: URL) async throws -> String
 }

@@ -1,10 +1,15 @@
 import Foundation
 import Combine
+#if canImport(AppKit)
+import AppKit
+#endif
 
 enum CommitMode: Equatable {
     case commit
     case amendKeepMessage
     case amendUpdateMessage
+    case commitAndPush
+    case commitAndForcePush
 }
 
 @MainActor
@@ -17,11 +22,16 @@ final class ChangesViewModel: ObservableObject {
     @Published var commitDescription: String = ""
     @Published var commitMode: CommitMode = .commit
     @Published var canAmend: Bool = false
+    @Published var pendingRollback: FileChange?
+    @Published var pendingDelete: FileChange?
+    @Published var jumpToSourcePath: String?
+    @Published var pendingForcePushConfirm: Bool = false
 
     private let git: GitRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
     private var onFinished: () async -> Void = {}
+    private var pushAfterCommit: (Bool) async -> Void = { _ in }
     private var previousPaths: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
 
@@ -41,6 +51,10 @@ final class ChangesViewModel: ObservableObject {
 
     func setOnFinished(_ block: @escaping () async -> Void) {
         self.onFinished = block
+    }
+
+    func setPushAfterCommit(_ block: @escaping (Bool) async -> Void) {
+        self.pushAfterCommit = block
     }
 
     func repositoryDidChange() {
@@ -112,7 +126,7 @@ final class ChangesViewModel: ObservableObject {
         guard repoSource() != nil else { return false }
         let hasSummary = !commitSummary.trimmingCharacters(in: .whitespaces).isEmpty
         switch commitMode {
-        case .commit:
+        case .commit, .commitAndPush, .commitAndForcePush:
             return hasSummary && !stagedPaths.isEmpty
         case .amendKeepMessage:
             return canAmend
@@ -142,9 +156,10 @@ final class ChangesViewModel: ObservableObject {
             .filter { stagedPaths.contains($0.path) }
             .map { $0.path }
         let composedMessage = composeMessage()
+        let modeAtStart = commitMode
         do {
-            switch commitMode {
-            case .commit:
+            switch modeAtStart {
+            case .commit, .commitAndPush, .commitAndForcePush:
                 try await git.commit(at: repo.url, paths: toStage, message: composedMessage)
             case .amendKeepMessage:
                 try await git.amend(at: repo.url, paths: toStage, newMessage: nil)
@@ -155,6 +170,15 @@ final class ChangesViewModel: ObservableObject {
             commitDescription = ""
             commitMode = .commit
             await onFinished()
+
+            switch modeAtStart {
+            case .commitAndPush:
+                await pushAfterCommit(false)
+            case .commitAndForcePush:
+                await pushAfterCommit(true)
+            default:
+                break
+            }
         } catch {
             main.errorMessage = error.localizedDescription
         }
@@ -165,5 +189,108 @@ final class ChangesViewModel: ObservableObject {
         let descTrim = commitDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !descTrim.isEmpty { msg += "\n\n" + descTrim }
         return msg
+    }
+
+    // MARK: - Context menu actions
+
+    func commitFile(_ change: FileChange) async {
+        guard let repo = repoSource() else { return }
+        let msg = composeMessage().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !msg.isEmpty else {
+            main.errorMessage = "Enter a commit summary first."
+            return
+        }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.commit(at: repo.url, paths: [change.path], message: msg)
+            commitSummary = ""
+            commitDescription = ""
+            commitMode = .commit
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func requestRollback(_ change: FileChange) {
+        pendingRollback = change
+    }
+
+    func confirmRollback(_ change: FileChange) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            if change.isUntracked {
+                try await git.removeFile(at: repo.url, path: change.path, tracked: false)
+            } else {
+                try await git.restore(at: repo.url, paths: [change.path])
+            }
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func addToVCS(_ change: FileChange) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.addToIndex(at: repo.url, paths: [change.path])
+            stagedPaths.insert(change.path)
+            await refreshStatus()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func requestDelete(_ change: FileChange) {
+        pendingDelete = change
+    }
+
+    func confirmDelete(_ change: FileChange) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.removeFile(at: repo.url, path: change.path, tracked: !change.isUntracked)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func copyPatch(_ change: FileChange) async {
+        guard let repo = repoSource() else { return }
+        do {
+            let patch = try await git.diffPatch(at: repo.url, changes: [change])
+            #if canImport(AppKit)
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(patch, forType: .string)
+            #endif
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func createPatch(_ change: FileChange, to url: URL) async {
+        guard let repo = repoSource() else { return }
+        do {
+            let patch = try await git.diffPatch(at: repo.url, changes: [change])
+            try patch.data(using: .utf8)?.write(to: url)
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func jumpToSource(_ change: FileChange) {
+        jumpToSourcePath = change.path
+    }
+
+    func refresh() async {
+        await refreshStatus()
     }
 }

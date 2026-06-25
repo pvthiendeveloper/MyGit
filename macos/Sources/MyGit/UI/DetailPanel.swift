@@ -9,7 +9,7 @@ struct DetailPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if main.comparePair != nil {
+            if main.comparePair != nil || !main.diffTabs.isEmpty {
                 detailTabBar
                 Divider()
             }
@@ -19,41 +19,88 @@ struct DetailPanel: View {
         .background(Color(NSColor.textBackgroundColor))
     }
 
-    // Tab bar shown only when compare is active
+    // Tab bar shown when compare or any diff tab is active
     private var detailTabBar: some View {
-        HStack(spacing: 0) {
-            detailTabButton(label: tabContentLabel, tab: .content)
-
-            Divider().frame(height: 16).padding(.horizontal, 4)
-
-            // Compare tab with close button
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 0) {
-                Button { main.detailTab = .compare } label: {
-                    Text("Compare")
-                        .font(.system(size: 12, weight: main.detailTab == .compare ? .semibold : .regular))
-                        .foregroundStyle(main.detailTab == .compare ? Color.accentColor : Color.primary)
-                        .padding(.leading, 10)
-                        .padding(.vertical, 5)
-                }
-                .buttonStyle(.plain)
+                detailTabButton(label: tabContentLabel, tab: .content)
 
-                Button { main.closeCompare() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
+                if main.comparePair != nil {
+                    Divider().frame(height: 16).padding(.horizontal, 4)
+                    compareTabChip
                 }
-                .buttonStyle(.plain)
+
+                ForEach(main.diffTabs) { tab in
+                    Divider().frame(height: 16).padding(.horizontal, 4)
+                    diffTabChip(tab)
+                }
+
+                Spacer(minLength: 0)
             }
-            .background(main.detailTab == .compare ? Color.accentColor.opacity(0.15) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-
-            Spacer()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var compareTabChip: some View {
+        let isActive = main.detailTab == .compare
+        return HStack(spacing: 0) {
+            Button { main.detailTab = .compare } label: {
+                Text("Compare")
+                    .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+                    .padding(.leading, 10)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+
+            Button { main.closeCompare() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+        }
+        .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func diffTabChip(_ tab: DiffTab) -> some View {
+        let isActive: Bool = {
+            if case let .diff(id) = main.detailTab { return id == tab.id }
+            return false
+        }()
+        return HStack(spacing: 0) {
+            Button { main.selectDiffTab(tab.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    Text(tab.title)
+                        .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+                        .lineLimit(1)
+                }
+                .padding(.leading, 10)
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .help(tab.path)
+
+            Button { main.closeDiffTab(tab.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+        }
+        .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func detailTabButton(label: String, tab: MainViewModel.DetailTab) -> some View {
@@ -79,9 +126,16 @@ struct DetailPanel: View {
 
     @ViewBuilder
     private var content: some View {
-        if main.detailTab == .compare, main.comparePair != nil {
-            comparePane
-        } else {
+        switch main.detailTab {
+        case .compare:
+            if main.comparePair != nil { comparePane } else { normalContent }
+        case .diff(let id):
+            if let tab = main.diffTabs.first(where: { $0.id == id }) {
+                SideBySideDiffTabView(tab: tab)
+            } else {
+                normalContent
+            }
+        case .content:
             normalContent
         }
     }
@@ -131,7 +185,7 @@ struct DetailPanel: View {
                 VSplitView {
                     CompareChangedFilesTree(
                         nodes: ChangedFileTreeBuilder.build(from: compareVM.changedFiles),
-                        onSelect: { compareVM.openFile($0) }
+                        onAction: { entry, action in compareVM.perform(action, on: entry) }
                     )
                     .frame(minHeight: 160)
                     .overlay {
@@ -149,12 +203,18 @@ struct DetailPanel: View {
                 compareVM.configure(
                     pair: pair,
                     git: coordinator.container.git,
-                    repoSource: { [weak coordinator] in coordinator?.repos.selected?.url }
+                    repoSource: { [weak coordinator] in coordinator?.repos.selected?.url },
+                    openDiffTab: { [weak main] commitHash, commitShortHash, path, mode, forceNew in
+                        main?.openDiffTab(
+                            commitHash: commitHash,
+                            commitShortHash: commitShortHash,
+                            path: path,
+                            mode: mode,
+                            forceNew: forceNew
+                        )
+                    }
                 )
                 await compareVM.load()
-            }
-            .sheet(item: $compareVM.openFileDiff) { state in
-                CompareFileDiffSheet(state: state)
             }
             .alert("Error", isPresented: Binding(
                 get: { compareVM.errorMessage != nil },

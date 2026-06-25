@@ -71,10 +71,18 @@ final class ChangedFileNode: Identifiable {
     }
 }
 
-struct OpenFileDiff: Identifiable {
-    let id = UUID()
-    let entry: ChangedFileEntry
-    let diff: FileDiff
+enum CompareFileAction {
+    case showDiff
+    case showDiffInNewTab
+    case compareWithLocal
+    case compareBeforeWithLocal
+    case editSource
+    case openRepositoryVersion
+    case revertChanges
+    case cherryPickChanges
+    case dropChanges
+    case createPatch
+    case historyUpToHere
 }
 
 // Build a hierarchical tree from a flat list of file paths

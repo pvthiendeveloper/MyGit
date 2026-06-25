@@ -3,7 +3,7 @@ import AppKit
 
 struct CompareChangedFilesTree: View {
     let nodes: [ChangedFileNode]
-    let onSelect: (ChangedFileEntry) -> Void
+    let onAction: (ChangedFileEntry, CompareFileAction) -> Void
 
     @State private var expanded: Set<String> = []
 
@@ -29,7 +29,7 @@ struct CompareChangedFilesTree: View {
                                 node: node,
                                 depth: 0,
                                 expanded: $expanded,
-                                onSelect: onSelect
+                                onAction: onAction
                             )
                         }
                     }
@@ -111,7 +111,7 @@ private struct CompareFileTreeRow: View {
     let node: ChangedFileNode
     let depth: Int
     @Binding var expanded: Set<String>
-    let onSelect: (ChangedFileEntry) -> Void
+    let onAction: (ChangedFileEntry, CompareFileAction) -> Void
 
     private var isDir: Bool { node.children != nil }
     private var isExpanded: Bool { expanded.contains(node.id) }
@@ -125,7 +125,7 @@ private struct CompareFileTreeRow: View {
                         node: child,
                         depth: depth + 1,
                         expanded: $expanded,
-                        onSelect: onSelect
+                        onAction: onAction
                     )
                 }
             }
@@ -189,9 +189,32 @@ private struct CompareFileTreeRow: View {
             if isDir {
                 toggle()
             } else if let entry = node.entry {
-                onSelect(entry)
+                onAction(entry, .showDiff)
             }
         }
+        .contextMenu {
+            if !isDir, let entry = node.entry {
+                fileContextMenu(for: entry)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileContextMenu(for entry: ChangedFileEntry) -> some View {
+        Button("Show Diff") { onAction(entry, .showDiff) }
+        Button("Show Diff in a New Tab") { onAction(entry, .showDiffInNewTab) }
+        Button("Compare with Local") { onAction(entry, .compareWithLocal) }
+        Button("Compare Before with Local") { onAction(entry, .compareBeforeWithLocal) }
+        Divider()
+        Button("Edit Source") { onAction(entry, .editSource) }
+        Button("Open Repository Version") { onAction(entry, .openRepositoryVersion) }
+        Divider()
+        Button("Revert Selected Changes") { onAction(entry, .revertChanges) }
+        Button("Cherry-Pick Selected Changes") { onAction(entry, .cherryPickChanges) }
+        Button("Drop Selected Changes") { onAction(entry, .dropChanges) }
+        Divider()
+        Button("Create Patch...") { onAction(entry, .createPatch) }
+        Button("History Up to Here") { onAction(entry, .historyUpToHere) }
     }
 
     private var fileNameText: Text {

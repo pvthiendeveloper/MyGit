@@ -30,15 +30,13 @@ struct CommitComposerView: View {
                 .disabled(vm.commitMode == .amendKeepMessage)
 
             HStack(spacing: 6) {
-                Button(action: { Task { await vm.commit() } }) {
-                    HStack {
-                        Spacer()
-                        Text(commitButtonTitle).fontWeight(.medium)
-                        Spacer()
-                    }
-                    .padding(.vertical, 6)
+                Button(action: triggerCommit) {
+                    Text(commitButtonTitle)
+                        .fontWeight(.medium)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .frame(height: 32)
                 .disabled(!vm.canCommit || main.isBusy)
 
                 Menu {
@@ -47,6 +45,17 @@ struct CommitComposerView: View {
                     } label: {
                         Label("Commit", systemImage: vm.commitMode == .commit ? "checkmark" : "")
                     }
+                    Button {
+                        vm.setCommitMode(.commitAndPush)
+                    } label: {
+                        Label("Commit & Push", systemImage: vm.commitMode == .commitAndPush ? "checkmark" : "")
+                    }
+                    Button {
+                        vm.setCommitMode(.commitAndForcePush)
+                    } label: {
+                        Label("Commit & Force Push", systemImage: vm.commitMode == .commitAndForcePush ? "checkmark" : "")
+                    }
+                    Divider()
                     Button {
                         vm.setCommitMode(.amendKeepMessage)
                     } label: {
@@ -62,17 +71,27 @@ struct CommitComposerView: View {
                 } label: {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize()
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .frame(width: 28, height: 32)
                 .background(Color.accentColor)
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
                 .disabled(main.isBusy)
             }
+        }
+        .alert(
+            "Force push?",
+            isPresented: $vm.pendingForcePushConfirm
+        ) {
+            Button("Commit & Force Push", role: .destructive) {
+                Task { await vm.commit() }
+            }
+            Button("Cancel", role: .cancel) { vm.pendingForcePushConfirm = false }
+        } message: {
+            Text("Force push rewrites remote history on '\(vm.status?.branch ?? "current branch")' and can overwrite teammates' commits. Continue?")
         }
     }
 
@@ -81,10 +100,22 @@ struct CommitComposerView: View {
         switch vm.commitMode {
         case .commit:
             return branch.isEmpty ? "Commit" : "Commit to \(branch)"
+        case .commitAndPush:
+            return branch.isEmpty ? "Commit & Push" : "Commit & Push to \(branch)"
+        case .commitAndForcePush:
+            return branch.isEmpty ? "Commit & Force Push" : "Commit & Force Push to \(branch)"
         case .amendKeepMessage:
             return "Amend (keep message)"
         case .amendUpdateMessage:
             return "Amend (update message)"
+        }
+    }
+
+    private func triggerCommit() {
+        if vm.commitMode == .commitAndForcePush {
+            vm.pendingForcePushConfirm = true
+        } else {
+            Task { await vm.commit() }
         }
     }
 }

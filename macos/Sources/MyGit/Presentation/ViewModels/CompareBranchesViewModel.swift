@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 @MainActor
 final class CompareBranchesViewModel: ObservableObject {
@@ -12,31 +13,43 @@ final class CompareBranchesViewModel: ObservableObject {
     @Published var selectedBA: GitCommit?
     @Published var focused: CompareSide = .aMinusB
     @Published var changedFiles: [ChangedFileEntry] = []
-    @Published var openFileDiff: OpenFileDiff? = nil
     @Published var isLoading = false
     @Published var isLoadingFiles = false
     @Published var errorMessage: String? = nil
     @Published var pathsFilterHashesAB: Set<String>? = nil
     @Published var pathsFilterHashesBA: Set<String>? = nil
+    @Published var upToCommitAB: String? = nil
+    @Published var upToCommitBA: String? = nil
 
     private var git: GitRepository = GitCLIRepository()
     private var repoSource: () -> URL? = { nil }
+    private var openDiffTab: (String, String, String, DiffTab.Mode, Bool) -> Void = { _, _, _, _, _ in }
     private var cancellables = Set<AnyCancellable>()
     private var pipelineSetup = false
 
     // Configure after view appearance when environment objects are available
-    func configure(pair: ComparePair, git: GitRepository, repoSource: @escaping () -> URL?) {
+    func configure(
+        pair: ComparePair,
+        git: GitRepository,
+        repoSource: @escaping () -> URL?,
+        openDiffTab: @escaping (String, String, String, DiffTab.Mode, Bool) -> Void
+    ) {
         self.pair = pair
         self.git = git
         self.repoSource = repoSource
+        self.openDiffTab = openDiffTab
         if !pipelineSetup { setupPipelines() }
     }
 
     var authorsAB: [String] { Array(Set(commitsAB.map { $0.author })).sorted() }
     var authorsBA: [String] { Array(Set(commitsBA.map { $0.author })).sorted() }
 
-    var filteredAB: [GitCommit] { applyFilter(filterAB, to: commitsAB, pathHashes: pathsFilterHashesAB) }
-    var filteredBA: [GitCommit] { applyFilter(filterBA, to: commitsBA, pathHashes: pathsFilterHashesBA) }
+    var filteredAB: [GitCommit] {
+        applyFilter(filterAB, to: commitsAB, pathHashes: pathsFilterHashesAB, upTo: upToCommitAB)
+    }
+    var filteredBA: [GitCommit] {
+        applyFilter(filterBA, to: commitsBA, pathHashes: pathsFilterHashesBA, upTo: upToCommitBA)
+    }
 
     func load() async {
         guard !pair.a.isEmpty, let repoURL = repoSource() else { return }
@@ -70,17 +83,10 @@ final class CompareBranchesViewModel: ObservableObject {
     }
 
     func openFile(_ entry: ChangedFileEntry) {
-        guard let repoURL = repoSource() else { return }
+        guard repoSource() != nil else { return }
         let commit = focused == .aMinusB ? selectedAB : selectedBA
         guard let commit else { return }
-        Task {
-            do {
-                let diff = try await git.showFileAtCommit(commit: commit.hash, path: entry.path, at: repoURL)
-                openFileDiff = OpenFileDiff(entry: entry, diff: diff)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
+        openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsParent, false)
     }
 
     func applyPathsFilter(paths: [String], side: CompareSide) {
@@ -107,8 +113,16 @@ final class CompareBranchesViewModel: ObservableObject {
         }
     }
 
-    private func applyFilter(_ filter: CompareFilter, to commits: [GitCommit], pathHashes: Set<String>?) -> [GitCommit] {
+    private func applyFilter(
+        _ filter: CompareFilter,
+        to commits: [GitCommit],
+        pathHashes: Set<String>?,
+        upTo: String?
+    ) -> [GitCommit] {
         var result = commits
+        if let upTo, let idx = result.firstIndex(where: { $0.hash == upTo }) {
+            result = Array(result[idx...])
+        }
         if !filter.text.isEmpty {
             let q = filter.text.lowercased()
             result = result.filter { $0.subject.lowercased().contains(q) || $0.shortHash.contains(q) }
@@ -127,6 +141,79 @@ final class CompareBranchesViewModel: ObservableObject {
             result = result.filter { hashes.contains($0.hash) }
         }
         return filter.sort == .newestFirst ? result : result.reversed()
+    }
+
+    func clearHistoryUpTo(side: CompareSide) {
+        if side == .aMinusB { upToCommitAB = nil } else { upToCommitBA = nil }
+    }
+
+    func perform(_ action: CompareFileAction, on entry: ChangedFileEntry) {
+        guard let repoURL = repoSource() else { return }
+        let commit = focused == .aMinusB ? selectedAB : selectedBA
+        guard let commit else { return }
+        switch action {
+        case .showDiff:
+            openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsParent, false)
+        case .showDiffInNewTab:
+            openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsParent, true)
+        case .compareWithLocal:
+            openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsWorking, true)
+        case .compareBeforeWithLocal:
+            openDiffTab(commit.hash, commit.shortHash, entry.path, .parentVsWorking, true)
+        case .editSource:
+            let url = repoURL.appendingPathComponent(entry.path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                NSWorkspace.shared.open(url)
+            } else {
+                errorMessage = "File no longer exists in the working tree."
+            }
+        case .openRepositoryVersion:
+            Task {
+                do {
+                    let url = try await git.extractFileAtCommit(commit: commit.hash, path: entry.path, at: repoURL)
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        case .revertChanges:
+            Task {
+                do { try await git.revertFileInCommit(commit: commit.hash, path: entry.path, at: repoURL) }
+                catch { errorMessage = error.localizedDescription }
+            }
+        case .cherryPickChanges:
+            Task {
+                do { try await git.cherryPickFileFromCommit(commit: commit.hash, path: entry.path, at: repoURL) }
+                catch { errorMessage = error.localizedDescription }
+            }
+        case .dropChanges:
+            errorMessage = "Drop Selected Changes requires history rewrite and isn't supported yet."
+        case .createPatch:
+            Task {
+                do {
+                    let patch = try await git.patchForFile(commit: commit.hash, path: entry.path, at: repoURL)
+                    let suggested = "\(commit.shortHash)-\((entry.path as NSString).lastPathComponent).patch"
+                    savePatch(patch, suggestedName: suggested)
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        case .historyUpToHere:
+            if focused == .aMinusB { upToCommitAB = commit.hash } else { upToCommitBA = commit.hash }
+        }
+    }
+
+    private func savePatch(_ patch: String, suggestedName: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try patch.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func setupPipelines() {
