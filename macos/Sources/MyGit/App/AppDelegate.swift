@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(coordinator.account)
             .environmentObject(coordinator.remote)
             .environmentObject(coordinator.compareVM)
+            .environmentObject(coordinator.settings)
             .frame(minWidth: 900, minHeight: 560)
 
         let hosting = NSHostingController(rootView: root)
@@ -48,6 +49,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         ))
+        appMenu.addItem(.separator())
+        let settingsItem = NSMenuItem(
+            title: "Settings…",
+            action: #selector(openSettings),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
         appMenu.addItem(.separator())
         appMenu.addItem(NSMenuItem(
             title: "Quit MyGit",
@@ -98,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = main
     }
 
+    @objc private func openSettings() { SettingsWindow.open(settings: coordinator.settings) }
     @objc private func addLocalRepository() { coordinator.repos.pickRepository() }
     @objc private func fetchOrigin() { Task { await coordinator.remote.fetchOrigin() } }
     @objc private func pullRemote() { Task { await coordinator.remote.pull() } }

@@ -6,6 +6,7 @@ struct AppContainer {
     let repos: RepoListRepository
     let credentials: CredentialRepository
     let fileEditor: FileEditorRepository
+    let commitMessage: CommitMessageRepository
 
     @MainActor
     static func live() -> AppContainer {
@@ -13,7 +14,8 @@ struct AppContainer {
             git: GitCLIRepository(),
             repos: UserDefaultsRepoListRepository(),
             credentials: KeychainCredentialRepository(),
-            fileEditor: FileSystemFileEditorRepository()
+            fileEditor: FileSystemFileEditorRepository(),
+            commitMessage: AICommitMessageRepository()
         )
     }
 }

@@ -15,6 +15,7 @@ final class AppCoordinator: ObservableObject {
     let account: AccountViewModel
     let remote: RemoteViewModel
     let compareVM: CompareBranchesViewModel
+    let settings: SettingsViewModel
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -29,9 +30,18 @@ final class AppCoordinator: ObservableObject {
 
         let repoSource: () -> Repository? = { [weak repos] in repos?.selected }
 
+        let settings = SettingsViewModel(credentials: container.credentials)
+        self.settings = settings
+
         // Forward-declared closures need objects first. Build VMs, wire onSaved/onFinished after.
-        let changes = ChangesViewModel(git: container.git, main: main, repoSource: repoSource)
+        let changes = ChangesViewModel(
+            git: container.git,
+            main: main,
+            repoSource: repoSource,
+            commitMessageRepo: container.commitMessage
+        )
         self.changes = changes
+        changes.setAIConfigSource { [weak settings] in settings?.requestConfig() }
 
         let history = HistoryViewModel(git: container.git, main: main, repoSource: repoSource)
         self.history = history

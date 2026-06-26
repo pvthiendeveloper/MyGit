@@ -30,18 +30,13 @@ struct AccountBadge: View {
             .frame(width: 28, height: 28)
             .clipShape(Circle())
         } else {
-            Image(systemName: hostIconName)
+            Image(systemName: "person.crop.circle.fill")
+                .resizable()
                 .font(.system(size: 22))
+                .foregroundStyle(.secondary)
                 .frame(width: 28, height: 28)
+                .clipShape(Circle())
         }
-    }
-
-    private var hostIconName: String {
-        guard let host = account.account?.host?.lowercased() else { return "person.crop.circle" }
-        if host.contains("github") { return "chevron.left.forwardslash.chevron.right" }
-        if host.contains("bitbucket") { return "shippingbox" }
-        if host.contains("gitlab") { return "rectangle.stack.fill" }
-        return "globe"
     }
 }
 

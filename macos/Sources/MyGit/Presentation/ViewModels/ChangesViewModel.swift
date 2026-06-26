@@ -26,19 +26,28 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingDelete: FileChange?
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
+    @Published var isGeneratingMessage: Bool = false
 
     private let git: GitRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
+    private let commitMessageRepo: CommitMessageRepository
+    private var aiConfigSource: () -> AIRequestConfig? = { nil }
     private var onFinished: () async -> Void = {}
     private var pushAfterCommit: (Bool) async -> Void = { _ in }
     private var previousPaths: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
 
-    init(git: GitRepository, main: MainViewModel, repoSource: @escaping () -> Repository?) {
+    init(
+        git: GitRepository,
+        main: MainViewModel,
+        repoSource: @escaping () -> Repository?,
+        commitMessageRepo: CommitMessageRepository
+    ) {
         self.git = git
         self.main = main
         self.repoSource = repoSource
+        self.commitMessageRepo = commitMessageRepo
 
         $selectedChange
             .removeDuplicates()
@@ -51,6 +60,10 @@ final class ChangesViewModel: ObservableObject {
 
     func setOnFinished(_ block: @escaping () async -> Void) {
         self.onFinished = block
+    }
+
+    func setAIConfigSource(_ block: @escaping () -> AIRequestConfig?) {
+        self.aiConfigSource = block
     }
 
     func setPushAfterCommit(_ block: @escaping (Bool) async -> Void) {
@@ -178,6 +191,39 @@ final class ChangesViewModel: ObservableObject {
                 await pushAfterCommit(true)
             default:
                 break
+            }
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    var canGenerateMessage: Bool {
+        repoSource() != nil && !stagedPaths.isEmpty && !isGeneratingMessage && !main.isBusy
+    }
+
+    /// Build the staged diff and ask the configured LLM for a commit message,
+    /// filling in summary + description.
+    func generateCommitMessage() async {
+        guard let repo = repoSource(), let status, !stagedPaths.isEmpty else { return }
+        guard let config = aiConfigSource() else {
+            main.errorMessage = CommitMessageError.missingAPIKey.localizedDescription
+            return
+        }
+        let changes = status.changes.filter { stagedPaths.contains($0.path) }
+        guard !changes.isEmpty else { return }
+
+        isGeneratingMessage = true
+        defer { isGeneratingMessage = false }
+        do {
+            var diff = try await git.diffPatch(at: repo.url, changes: changes)
+            let maxChars = 24_000
+            if diff.count > maxChars {
+                diff = String(diff.prefix(maxChars)) + "\n…(diff truncated)…"
+            }
+            let suggestion = try await commitMessageRepo.generate(diff: diff, config: config)
+            commitSummary = suggestion.summary
+            if config.includeBody {
+                commitDescription = suggestion.body
             }
         } catch {
             main.errorMessage = error.localizedDescription

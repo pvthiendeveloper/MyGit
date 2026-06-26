@@ -3,12 +3,35 @@ import SwiftUI
 struct CommitComposerView: View {
     @EnvironmentObject var vm: ChangesViewModel
     @EnvironmentObject var main: MainViewModel
+    @EnvironmentObject var settings: SettingsViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextField("Summary (required)", text: $vm.commitSummary)
-                .textFieldStyle(.roundedBorder)
-                .disabled(vm.commitMode == .amendKeepMessage)
+            HStack(spacing: 6) {
+                TextField("Summary (required)", text: $vm.commitSummary)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(vm.commitMode == .amendKeepMessage)
+
+                Button(action: { Task { await vm.generateCommitMessage() } }) {
+                    if vm.isGeneratingMessage {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 16, height: 16)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 16, height: 16)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .help("Generate commit message with AI")
+                .disabled(!vm.canGenerateMessage)
+
+                Toggle("Description", isOn: $settings.generateBody)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Also generate a commit description with AI")
+            }
 
             TextEditor(text: $vm.commitDescription)
                 .font(.system(size: 12))
@@ -29,14 +52,18 @@ struct CommitComposerView: View {
                 }
                 .disabled(vm.commitMode == .amendKeepMessage)
 
-            HStack(spacing: 6) {
+            HStack(alignment: .center, spacing: 6) {
                 Button(action: triggerCommit) {
                     Text(commitButtonTitle)
                         .fontWeight(.medium)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
                 .frame(height: 32)
+                .background(Color.accentColor.opacity((!vm.canCommit || main.isBusy) ? 0.5 : 1))
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
                 .disabled(!vm.canCommit || main.isBusy)
 
                 Menu {
@@ -69,16 +96,19 @@ struct CommitComposerView: View {
                     }
                     .disabled(!vm.canAmend)
                 } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Color.clear
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: 28, height: 32)
-                .background(Color.accentColor)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .frame(width: 32, height: 32)
+                .background(Color.accentColor.opacity((!vm.canCommit || main.isBusy) ? 0.5 : 1))
+                .overlay(
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .allowsHitTesting(false)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 6))
                 .disabled(main.isBusy)
             }
         }
