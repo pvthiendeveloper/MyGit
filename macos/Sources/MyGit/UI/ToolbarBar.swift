@@ -437,13 +437,18 @@ private struct SpinningFetchIcon: View {
             .rotationEffect(.degrees(degrees))
             .task(id: isBusy) {
                 if isBusy {
+                    // Spin up fast, then settle into a steady loop.
+                    withAnimation(.easeIn(duration: 0.5)) { degrees += 360 }
+                    try? await Task.sleep(nanoseconds: 500_000_000)
                     while !Task.isCancelled {
-                        withAnimation(.linear(duration: 0.8)) { degrees += 360 }
-                        try? await Task.sleep(nanoseconds: 800_000_000)
+                        withAnimation(.linear(duration: 0.6)) { degrees += 360 }
+                        try? await Task.sleep(nanoseconds: 600_000_000)
                     }
                 } else {
-                    let target = (degrees / 360).rounded(.up) * 360
-                    withAnimation(.easeOut(duration: 0.25)) { degrees = target }
+                    // Wind down: finish the current turn plus two decelerating
+                    // turns so it coasts to a stop instead of snapping.
+                    let target = (degrees / 360).rounded(.up) * 360 + 720
+                    withAnimation(.easeOut(duration: 1.0)) { degrees = target }
                 }
             }
     }
