@@ -94,6 +94,25 @@ final class RepoBundle: Identifiable {
         await files.refreshFileTree()
     }
 
+    private var isRefreshing = false
+    private var refreshPending = false
+
+    /// Entry point for the file-system watcher. Coalesces overlapping fires: if
+    /// a refresh is already running, the next event is remembered and one more
+    /// refresh runs after it finishes (no unbounded pile-up of refreshes).
+    func refreshFromWatcher() {
+        if isRefreshing { refreshPending = true; return }
+        isRefreshing = true
+        Task {
+            await refreshAll()
+            isRefreshing = false
+            if refreshPending {
+                refreshPending = false
+                refreshFromWatcher()
+            }
+        }
+    }
+
     func repositoryDidChange() {
         changes.repositoryDidChange()
         history.repositoryDidChange()

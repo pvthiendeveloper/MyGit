@@ -18,6 +18,9 @@ final class AppCoordinator: ObservableObject {
     /// UI shows the empty state in that case.
     private let emptyBundle: RepoBundle
     private var cancellables: Set<AnyCancellable> = []
+    /// One FSEvents watcher per active bundle; auto-refreshes that repo on
+    /// any on-disk change. Replaced wholesale when bundles rebuild.
+    private var watchers: [RepoWatcher] = []
 
     init(container: AppContainer) {
         self.container = container
@@ -54,8 +57,10 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func rebuildBundles(for workspace: Workspace?) {
+        watchers.forEach { $0.stop() }
         guard let workspace, !workspace.repos.isEmpty else {
             bundles = []
+            watchers = []
             activeBundle = emptyBundle
             return
         }
@@ -64,6 +69,11 @@ final class AppCoordinator: ObservableObject {
         }
         bundles = built
         activeBundle = built.first ?? emptyBundle
+        watchers = built.map { bundle in
+            RepoWatcher(url: bundle.repo.url) { [weak bundle] in
+                Task { @MainActor in bundle?.refreshFromWatcher() }
+            }
+        }
         Task {
             for bundle in built { await bundle.refreshAll() }
         }

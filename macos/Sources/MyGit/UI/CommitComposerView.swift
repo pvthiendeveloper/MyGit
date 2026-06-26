@@ -8,8 +8,12 @@ struct CommitComposerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                TextField("Summary (required)", text: $vm.commitSummary)
+                // axis: .vertical + lineLimit range lets a long subject wrap and
+                // the field grow (up to 4 lines) so it's fully readable instead of
+                // truncating in a single line.
+                TextField("Summary (required)", text: $vm.commitSummary, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
                     .disabled(vm.commitMode == .amendKeepMessage)
 
                 Button(action: { Task { await vm.generateCommitMessage() } }) {

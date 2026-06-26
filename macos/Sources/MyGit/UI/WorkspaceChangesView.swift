@@ -119,6 +119,14 @@ private struct RepoChangesSection: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
+            Button {
+                Task { await changesVM.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

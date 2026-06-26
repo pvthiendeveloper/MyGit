@@ -30,6 +30,12 @@ final class SettingsViewModel: ObservableObject {
     private let defaults: UserDefaults
     private let ai: CommitMessageRepository
 
+    /// Session cache of keychain-resolved keys, keyed by `AIProvider.rawValue`.
+    /// Reading the secret data triggers the keychain ACL prompt, so we read each
+    /// provider's key at most once per launch instead of on every generation.
+    /// Invalidated whenever the key is edited or re-saved.
+    private var resolvedKeys: [String: String] = [:]
+
     private enum Keys {
         static let provider = "MyGit.ai.provider"
         static let generateBody = "MyGit.ai.generateBody"
@@ -106,6 +112,7 @@ final class SettingsViewModel: ObservableObject {
     func setAPIKey(_ value: String, for p: AIProvider) {
         apiKeys[p.rawValue] = value
         testStatus[p.rawValue] = nil
+        resolvedKeys[p.rawValue] = nil
     }
 
     // MARK: Connection test
@@ -155,13 +162,13 @@ final class SettingsViewModel: ObservableObject {
         } else {
             credentials.setToken(key, host: p.keychainAccount)
         }
+        resolvedKeys[p.rawValue] = key
     }
 
     /// Build a request config for the active provider, or nil if no key set.
     func requestConfig() -> AIRequestConfig? {
         let p = activeProvider
-        let key = (credentials.token(host: p.keychainAccount) ?? "")
-            .trimmingCharacters(in: .whitespaces)
+        let key = resolvedKey(for: p)
         guard !key.isEmpty else { return nil }
         let m = model(for: p).trimmingCharacters(in: .whitespaces)
         guard !m.isEmpty else { return nil }
@@ -172,5 +179,21 @@ final class SettingsViewModel: ObservableObject {
             apiKey: key,
             includeBody: generateBody
         )
+    }
+
+    /// Resolve a provider's key, hitting the keychain only on the first miss
+    /// this session (subsequent generations reuse the cached value — one ACL
+    /// prompt per launch at most). Prefers an unsaved edit if one is present.
+    private func resolvedKey(for p: AIProvider) -> String {
+        if let edited = apiKeys[p.rawValue], !edited.isEmpty {
+            return edited.trimmingCharacters(in: .whitespaces)
+        }
+        if let cached = resolvedKeys[p.rawValue] {
+            return cached
+        }
+        let fetched = (credentials.token(host: p.keychainAccount) ?? "")
+            .trimmingCharacters(in: .whitespaces)
+        resolvedKeys[p.rawValue] = fetched
+        return fetched
     }
 }

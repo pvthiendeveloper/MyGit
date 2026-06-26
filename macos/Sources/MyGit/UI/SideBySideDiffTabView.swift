@@ -340,19 +340,23 @@ struct SideBySideDiffTabView: View {
         let charW = fontSize * 0.62
         let leftMax = rows.compactMap { $0.leftText?.count }.max() ?? 0
         let rightMax = rows.compactMap { $0.rightText?.count }.max() ?? 0
+        // Both panes share one scroll-content width = the wider side. Otherwise an
+        // empty side (added/deleted file) collapses to ~24pt, and its per-row
+        // highlight band stops there — drawing a stray vertical edge mid-pane.
         let leftContentW = CGFloat(leftMax) * charW + 24
         let rightContentW = CGFloat(rightMax) * charW + 24
+        let contentW = max(leftContentW, rightContentW)
         // Each column is its own scroll view so the horizontal scroller pins to the
         // viewport bottom (always visible) instead of the bottom of the tall content.
         // Vertical scrolling is kept in sync across the three via syncY. Panes flex to
         // half the panel each (maxWidth: .infinity) so the divider stays centered.
         return HStack(alignment: .top, spacing: 0) {
-            codePane(rows, isLeft: true, contentWidth: leftContentW, col: 0, pos: $leftScroll)
+            codePane(rows, isLeft: true, contentWidth: contentW, col: 0, pos: $leftScroll)
             gutterColumn(rows, pos: $gutterScroll)
             if isRightEditable {
                 rightEditorPane
             } else {
-                codePane(rows, isLeft: false, contentWidth: rightContentW, col: 2, pos: $rightScroll)
+                codePane(rows, isLeft: false, contentWidth: contentW, col: 2, pos: $rightScroll)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
