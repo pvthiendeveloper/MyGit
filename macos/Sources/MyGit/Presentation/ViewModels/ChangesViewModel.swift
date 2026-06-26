@@ -18,8 +18,8 @@ final class ChangesViewModel: ObservableObject {
     @Published var selectedChange: FileChange?
     @Published var diff: FileDiff?
     @Published var stagedPaths: Set<String> = []
-    @Published var commitSummary: String = ""
-    @Published var commitDescription: String = ""
+    @Published var commitSummary: String = "" { didSet { saveDraft() } }
+    @Published var commitDescription: String = "" { didSet { saveDraft() } }
     @Published var commitMode: CommitMode = .commit
     @Published var canAmend: Bool = false
     @Published var pendingRollback: FileChange?
@@ -27,11 +27,18 @@ final class ChangesViewModel: ObservableObject {
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
+    /// Most recent commit for this repo (cached + refreshed). Drives the
+    /// "last commit" line shown per project.
+    @Published var lastCommit: CachedCommit?
 
     private let git: GitRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
     private let commitMessageRepo: CommitMessageRepository
+    private let lastCommitStore = LastCommitStore()
+    private let draftStore = CommitDraftStore()
+    /// Suppresses draft persistence while we load/clear programmatically.
+    private var loadingDraft = false
     private var aiConfigSource: () -> AIRequestConfig? = { nil }
     private var onFinished: () async -> Void = {}
     private var pushAfterCommit: (Bool) async -> Void = { _ in }
@@ -48,6 +55,12 @@ final class ChangesViewModel: ObservableObject {
         self.main = main
         self.repoSource = repoSource
         self.commitMessageRepo = commitMessageRepo
+        self.lastCommit = repoSource().flatMap { LastCommitStore().get($0.url.path) }
+        if let repo = repoSource() {
+            let draft = CommitDraftStore().get(repo.url.path)
+            self.commitSummary = draft.summary
+            self.commitDescription = draft.description
+        }
 
         $selectedChange
             .removeDuplicates()
@@ -56,6 +69,15 @@ final class ChangesViewModel: ObservableObject {
                 Task { await self.loadDiff(for: change) }
             }
             .store(in: &cancellables)
+    }
+
+    private func saveDraft() {
+        guard !loadingDraft, let repo = repoSource() else { return }
+        draftStore.set(
+            summary: commitSummary,
+            description: commitDescription,
+            repoPath: repo.url.path
+        )
     }
 
     func setOnFinished(_ block: @escaping () async -> Void) {
@@ -103,6 +125,20 @@ final class ChangesViewModel: ObservableObject {
         } catch {
             main.errorMessage = error.localizedDescription
         }
+        await updateLastCommit()
+    }
+
+    /// Refresh + persist this repo's most recent commit.
+    private func updateLastCommit() async {
+        guard let repo = repoSource() else { return }
+        guard let latest = try? await git.log(at: repo.url, limit: 1).first else { return }
+        let cached = CachedCommit(
+            subject: latest.subject,
+            shortHash: latest.shortHash,
+            dateEpoch: latest.date.timeIntervalSince1970
+        )
+        lastCommit = cached
+        lastCommitStore.set(cached, repoPath: repo.url.path)
     }
 
     func setCommitMode(_ mode: CommitMode) {

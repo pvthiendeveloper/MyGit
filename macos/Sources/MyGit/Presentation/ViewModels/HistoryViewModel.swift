@@ -6,6 +6,12 @@ final class HistoryViewModel: ObservableObject {
     @Published var commits: [GitCommit] = []
     @Published var selectedCommit: GitCommit?
     @Published var diff: FileDiff?
+    /// True when the last fetch hit the limit — more commits may exist.
+    @Published private(set) var hasMore = false
+    @Published private(set) var isLoadingMore = false
+
+    private let pageSize = 100
+    private var limit = 100
 
     private let git: GitRepository
     private let main: MainViewModel
@@ -30,17 +36,31 @@ final class HistoryViewModel: ObservableObject {
         selectedCommit = nil
         diff = nil
         commits = []
+        limit = pageSize
+        hasMore = false
     }
 
     func refreshLog() async {
-        guard let repo = repoSource() else { commits = []; return }
+        guard let repo = repoSource() else { commits = []; hasMore = false; return }
         do {
-            commits = try await git.log(at: repo.url, limit: 300)
+            let loaded = try await git.log(at: repo.url, limit: limit)
+            commits = loaded
+            hasMore = loaded.count >= limit
             if selectedCommit == nil { selectedCommit = commits.first }
         } catch {
             commits = []
+            hasMore = false
             main.errorMessage = error.localizedDescription
         }
+    }
+
+    /// Grow the window by one page and reload. Selection is preserved.
+    func loadMore() async {
+        guard hasMore, !isLoadingMore else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        limit += pageSize
+        await refreshLog()
     }
 
     private func loadDiff(for commit: GitCommit) async {

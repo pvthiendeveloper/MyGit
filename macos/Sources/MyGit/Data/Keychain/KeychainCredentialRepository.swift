@@ -44,5 +44,19 @@ struct KeychainCredentialRepository: CredentialRepository {
         SecItemDelete(q as CFDictionary)
     }
 
-    func hasToken(host: String) -> Bool { token(host: host) != nil }
+    /// Existence check only. Crucially does NOT request `kSecReturnData`, so
+    /// macOS does not trigger the keychain ACL ("…wants to access key…")
+    /// prompt — only reading the secret data does. Lets the UI show
+    /// signed-in state at launch without prompting.
+    func hasToken(host: String) -> Bool {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: host,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess
+    }
 }

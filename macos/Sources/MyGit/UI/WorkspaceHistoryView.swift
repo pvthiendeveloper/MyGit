@@ -50,7 +50,7 @@ private struct RepoHistorySection: View {
                         .padding(.horizontal, 16).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    ForEach(historyVM.commits.prefix(50)) { commit in
+                    ForEach(historyVM.commits) { commit in
                         CommitRow(commit: commit)
                             .padding(.horizontal, 8)
                             .background(
@@ -64,10 +64,43 @@ private struct RepoHistorySection: View {
                             }
                             .padding(.horizontal, 6)
                     }
+                    if historyVM.hasMore {
+                        LoadMoreButton(isLoading: historyVM.isLoadingMore) {
+                            await historyVM.loadMore()
+                        }
+                    }
                 }
             }
         }
         .background(isActive ? Color.accentColor.opacity(0.06) : Color.clear)
+    }
+}
+
+/// "Load more" affordance for paginated lists.
+struct LoadMoreButton: View {
+    let isLoading: Bool
+    let action: () async -> Void
+
+    var body: some View {
+        Button {
+            Task { await action() }
+        } label: {
+            HStack(spacing: 6) {
+                if isLoading {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                }
+                Text(isLoading ? "Loading…" : "Load more")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
     }
 }
 
@@ -103,5 +136,8 @@ struct RepoSectionHeader: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
+        }
     }
 }

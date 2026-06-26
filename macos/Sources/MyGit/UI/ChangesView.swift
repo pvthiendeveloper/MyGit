@@ -129,6 +129,7 @@ struct ChangeRow: View {
                 .fill(isSelected ? Color.accentColor : Color.clear)
         )
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { showDiff() }
         .onTapGesture { vm.selectedChange = change }
         .contextMenu { contextMenu }
     }
@@ -145,16 +146,7 @@ struct ChangeRow: View {
 
         Divider()
 
-        Button("Show Diff") {
-            vm.selectedChange = change
-            main.openDiffTab(
-                commitHash: "HEAD",
-                commitShortHash: "HEAD",
-                path: change.path,
-                mode: .commitVsWorking,
-                forceNew: false
-            )
-        }
+        Button("Show Diff") { showDiff() }
         .keyboardShortcut("d", modifiers: .command)
         Button("Show Diff in a New Tab") {
             main.openDiffTab(
@@ -195,6 +187,17 @@ struct ChangeRow: View {
         Button("Refresh") {
             Task { await vm.refresh() }
         }
+    }
+
+    private func showDiff() {
+        vm.selectedChange = change
+        main.openDiffTab(
+            commitHash: "HEAD",
+            commitShortHash: "HEAD",
+            path: change.path,
+            mode: .commitVsWorking,
+            forceNew: false
+        )
     }
 
     private func createPatch() {

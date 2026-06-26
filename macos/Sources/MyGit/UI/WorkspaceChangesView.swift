@@ -92,9 +92,17 @@ private struct RepoChangesSection: View {
             .toggleStyle(.checkbox)
 
             Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(.secondary)
-            Text(bundle.name)
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(bundle.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                if let last = changesVM.lastCommit {
+                    Text("\(last.shortHash) · \(last.subject)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
 
             Text("\(changes.count)")
                 .font(.system(size: 11, weight: .medium))
@@ -115,6 +123,9 @@ private struct RepoChangesSection: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
+        }
         .onTapGesture { coordinator.setActive(bundle) }
     }
 }

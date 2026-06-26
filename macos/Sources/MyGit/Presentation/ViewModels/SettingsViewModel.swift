@@ -50,15 +50,27 @@ final class SettingsViewModel: ObservableObject {
 
         var m: [String: String] = [:]
         var b: [String: String] = [:]
-        var k: [String: String] = [:]
         for p in AIProvider.allCases {
             m[p.rawValue] = defaults.string(forKey: Keys.model(p)) ?? (p.defaultModels.first ?? "")
             b[p.rawValue] = defaults.string(forKey: Keys.baseURL(p)) ?? p.defaultBaseURL
-            k[p.rawValue] = credentials.token(host: p.keychainAccount) ?? ""
         }
         self.models = m
         self.baseURLs = b
-        self.apiKeys = k
+        // API keys are read lazily (see loadKey) so launching the app never
+        // touches the keychain — that would pop the ACL prompt every run.
+        self.apiKeys = [:]
+    }
+
+    /// Read a provider's stored key into the editable field. Called when its
+    /// Settings tab appears, so the keychain prompt (if any) happens only when
+    /// the user opens Settings — not on every launch.
+    private var loadedKeys: Set<String> = []
+    func loadKey(for p: AIProvider) {
+        guard !loadedKeys.contains(p.rawValue) else { return }
+        loadedKeys.insert(p.rawValue)
+        if apiKeys[p.rawValue]?.isEmpty ?? true {
+            apiKeys[p.rawValue] = credentials.token(host: p.keychainAccount) ?? ""
+        }
     }
 
     // MARK: Active provider

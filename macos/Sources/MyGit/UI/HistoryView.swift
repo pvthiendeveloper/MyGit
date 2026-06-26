@@ -15,6 +15,12 @@ struct HistoryListView: View {
                     CommitRow(commit: commit)
                         .tag(commit as GitCommit?)
                 }
+                if vm.hasMore {
+                    LoadMoreButton(isLoading: vm.isLoadingMore) {
+                        await vm.loadMore()
+                    }
+                    .selectionDisabled()
+                }
             }
             .listStyle(.inset)
         }

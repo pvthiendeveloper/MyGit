@@ -139,6 +139,7 @@ struct AICommitSettingsView: View {
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(provider.displayName)
+        .onAppear { settings.loadKey(for: provider) }
     }
 
     @ViewBuilder
