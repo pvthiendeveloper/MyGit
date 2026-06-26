@@ -57,13 +57,13 @@ struct CommitComposerView: View {
                     Text(commitButtonTitle)
                         .fontWeight(.medium)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .frame(height: 32)
                 .background(Color.accentColor.opacity((!vm.canCommit || main.isBusy) ? 0.5 : 1))
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
                 .disabled(!vm.canCommit || main.isBusy)
 
                 Menu {
