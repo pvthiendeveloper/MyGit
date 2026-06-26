@@ -3,12 +3,13 @@ import Combine
 
 @MainActor
 final class UserDefaultsRepoListRepository: RepoListRepository, ObservableObject {
-    @Published private(set) var repositories: [Repository] = []
-    @Published private(set) var selected: Repository?
+    @Published private(set) var workspaces: [Workspace] = []
+    @Published private(set) var selected: Workspace?
 
-    var repositoriesPublisher: AnyPublisher<[Repository], Never> { $repositories.eraseToAnyPublisher() }
-    var selectedPublisher: AnyPublisher<Repository?, Never> { $selected.eraseToAnyPublisher() }
+    var workspacesPublisher: AnyPublisher<[Workspace], Never> { $workspaces.eraseToAnyPublisher() }
+    var selectedPublisher: AnyPublisher<Workspace?, Never> { $selected.eraseToAnyPublisher() }
 
+    /// Stores the FOLDER paths the user added (each rescanned into a workspace).
     private let pathsKey = "MyGit.repositoryPaths"
     private let selectedKey = "MyGit.selectedRepositoryPath"
 
@@ -18,44 +19,45 @@ final class UserDefaultsRepoListRepository: RepoListRepository, ObservableObject
 
     func reload() {
         let paths = UserDefaults.standard.array(forKey: pathsKey) as? [String] ?? []
-        repositories = paths
+        workspaces = paths
             .map { URL(fileURLWithPath: $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent(".git").path) }
-            .map { Repository(url: $0) }
+            .map { WorkspaceScanner.scan($0) }
+            .filter { !$0.repos.isEmpty }
 
         if let sel = UserDefaults.standard.string(forKey: selectedKey),
-           let match = repositories.first(where: { $0.url.path == sel }) {
+           let match = workspaces.first(where: { $0.url.path == sel }) {
             selected = match
         } else {
-            selected = repositories.first
+            selected = workspaces.first
         }
     }
 
     func add(_ url: URL) {
         let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
-        if let existing = repositories.first(where: { $0.url == resolved }) {
+        if let existing = workspaces.first(where: { $0.url == resolved }) {
             select(existing)
             return
         }
-        let repo = Repository(url: resolved)
-        repositories.append(repo)
-        selected = repo
+        let workspace = WorkspaceScanner.scan(resolved)
+        guard !workspace.repos.isEmpty else { return }
+        workspaces.append(workspace)
+        selected = workspace
         persist()
     }
 
-    func remove(_ repo: Repository) {
-        repositories.removeAll { $0.url == repo.url }
-        if selected == repo { selected = repositories.first }
+    func remove(_ workspace: Workspace) {
+        workspaces.removeAll { $0.url == workspace.url }
+        if selected?.url == workspace.url { selected = workspaces.first }
         persist()
     }
 
-    func select(_ repo: Repository) {
-        selected = repo
-        UserDefaults.standard.set(repo.url.path, forKey: selectedKey)
+    func select(_ workspace: Workspace) {
+        selected = workspace
+        UserDefaults.standard.set(workspace.url.path, forKey: selectedKey)
     }
 
     private func persist() {
-        UserDefaults.standard.set(repositories.map { $0.url.path }, forKey: pathsKey)
+        UserDefaults.standard.set(workspaces.map { $0.url.path }, forKey: pathsKey)
         if let sel = selected {
             UserDefaults.standard.set(sel.url.path, forKey: selectedKey)
         } else {

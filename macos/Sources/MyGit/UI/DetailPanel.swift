@@ -203,7 +203,7 @@ struct DetailPanel: View {
                 compareVM.configure(
                     pair: pair,
                     git: coordinator.container.git,
-                    repoSource: { [weak coordinator] in coordinator?.repos.selected?.url },
+                    repoSource: { [weak coordinator] in coordinator?.activeBundle.repo.url },
                     openDiffTab: { [weak main] commitHash, commitShortHash, path, mode, forceNew in
                         main?.openDiffTab(
                             commitHash: commitHash,

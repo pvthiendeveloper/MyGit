@@ -17,16 +17,11 @@ struct SidebarPanel: View {
 
             switch main.tab {
             case .changes:
-                VStack(spacing: 0) {
-                    ChangesListView()
-                    Divider()
-                    CommitComposerView()
-                        .padding(10)
-                }
+                WorkspaceChangesView()
             case .history:
-                HistoryListView()
+                WorkspaceHistoryView()
             case .files:
-                FilesView()
+                WorkspaceFilesView()
             }
         }
         .background(Color(NSColor.controlBackgroundColor))

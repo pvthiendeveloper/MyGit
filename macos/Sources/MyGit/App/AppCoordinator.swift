@@ -7,16 +7,16 @@ final class AppCoordinator: ObservableObject {
 
     let main: MainViewModel
     let repos: RepositoryListViewModel
-    let changes: ChangesViewModel
-    let history: HistoryViewModel
-    let files: FilesViewModel
-    let editor: FileEditorViewModel
-    let branches: BranchesViewModel
-    let account: AccountViewModel
-    let remote: RemoteViewModel
-    let compareVM: CompareBranchesViewModel
     let settings: SettingsViewModel
 
+    /// One bundle per repo in the selected workspace.
+    @Published private(set) var bundles: [RepoBundle] = []
+    /// The bundle that the single-repo UI (toolbar, detail panel, menus) acts on.
+    @Published private(set) var activeBundle: RepoBundle
+
+    /// Placeholder used when no workspace is selected. Never exercised — the
+    /// UI shows the empty state in that case.
+    private let emptyBundle: RepoBundle
     private var cancellables: Set<AnyCancellable> = []
 
     init(container: AppContainer) {
@@ -28,102 +28,48 @@ final class AppCoordinator: ObservableObject {
         let repos = RepositoryListViewModel(store: container.repos, main: main)
         self.repos = repos
 
-        let repoSource: () -> Repository? = { [weak repos] in repos?.selected }
-
         let settings = SettingsViewModel(credentials: container.credentials)
         self.settings = settings
 
-        // Forward-declared closures need objects first. Build VMs, wire onSaved/onFinished after.
-        let changes = ChangesViewModel(
-            git: container.git,
-            main: main,
-            repoSource: repoSource,
-            commitMessageRepo: container.commitMessage
-        )
-        self.changes = changes
-        changes.setAIConfigSource { [weak settings] in settings?.requestConfig() }
-
-        let history = HistoryViewModel(git: container.git, main: main, repoSource: repoSource)
-        self.history = history
-
-        let files = FilesViewModel(git: container.git, main: main, repoSource: repoSource)
-        self.files = files
-
-        let account = AccountViewModel(
-            git: container.git,
-            credentials: container.credentials,
-            main: main,
-            repoSource: repoSource
-        )
-        self.account = account
-
-        let editor = FileEditorViewModel(
-            fileEditor: container.fileEditor,
-            main: main,
-            repoSource: repoSource,
-            onSaved: { [weak changes] in await changes?.refreshStatus() }
-        )
-        self.editor = editor
-
-        let currentBranch: () -> String? = { [weak changes] in changes?.status?.branch }
-
-        var refreshAll: () async -> Void = {}
-
-        let branches = BranchesViewModel(
-            git: container.git,
-            main: main,
-            repoSource: repoSource,
-            currentBranch: currentBranch,
-            onFinished: { await refreshAll() }
-        )
-        self.branches = branches
-
-        let remote = RemoteViewModel(
-            git: container.git,
-            account: account,
-            main: main,
-            repoSource: repoSource,
-            currentBranch: currentBranch,
-            onFinished: { await refreshAll() }
-        )
-        self.remote = remote
-
-        let compareVM = CompareBranchesViewModel()
-        self.compareVM = compareVM
-
-        refreshAll = { [weak self] in await self?.refreshAll() }
-        changes.setOnFinished { await refreshAll() }
-        changes.setPushAfterCommit { [weak remote] force in
-            if force {
-                await remote?.forcePush()
-            } else {
-                await remote?.push()
-            }
-        }
+        let placeholder = Repository(url: URL(fileURLWithPath: "/"))
+        self.emptyBundle = RepoBundle(repo: placeholder, container: container, main: main, settings: settings)
+        self.activeBundle = emptyBundle
 
         container.repos.selectedPublisher
             .removeDuplicates()
-            .sink { [weak self] _ in
-                Task { await self?.repositorySwitched() }
+            .sink { [weak self] workspace in
+                self?.rebuildBundles(for: workspace)
             }
             .store(in: &cancellables)
+
+        rebuildBundles(for: container.repos.selected)
+    }
+
+    // Convenience forwarders for menu/toolbar code that acts on the active repo.
+    var changes: ChangesViewModel { activeBundle.changes }
+    var remote: RemoteViewModel { activeBundle.remote }
+
+    func setActive(_ bundle: RepoBundle) {
+        activeBundle = bundle
+    }
+
+    private func rebuildBundles(for workspace: Workspace?) {
+        guard let workspace, !workspace.repos.isEmpty else {
+            bundles = []
+            activeBundle = emptyBundle
+            return
+        }
+        let built = workspace.repos.map {
+            RepoBundle(repo: $0, container: container, main: main, settings: settings)
+        }
+        bundles = built
+        activeBundle = built.first ?? emptyBundle
+        Task {
+            for bundle in built { await bundle.refreshAll() }
+        }
     }
 
     func refreshAll() async {
-        await changes.refreshStatus()
-        await history.refreshLog()
-        await account.refreshAccount()
-        await branches.refresh()
-        await files.refreshFileTree()
-    }
-
-    private func repositorySwitched() async {
-        changes.repositoryDidChange()
-        history.repositoryDidChange()
-        files.repositoryDidChange()
-        editor.repositoryDidChange()
-        branches.repositoryDidChange()
-        account.repositoryDidChange()
-        await refreshAll()
+        for bundle in bundles { await bundle.refreshAll() }
     }
 }

@@ -3,13 +3,14 @@ import Combine
 
 @MainActor
 protocol RepoListRepository: AnyObject {
-    var repositories: [Repository] { get }
-    var selected: Repository? { get }
-    var repositoriesPublisher: AnyPublisher<[Repository], Never> { get }
-    var selectedPublisher: AnyPublisher<Repository?, Never> { get }
+    var workspaces: [Workspace] { get }
+    var selected: Workspace? { get }
+    var workspacesPublisher: AnyPublisher<[Workspace], Never> { get }
+    var selectedPublisher: AnyPublisher<Workspace?, Never> { get }
 
     func reload()
+    /// Add a folder: scanned into a workspace (single repo or nested repos).
     func add(_ url: URL)
-    func remove(_ repo: Repository)
-    func select(_ repo: Repository)
+    func remove(_ workspace: Workspace)
+    func select(_ workspace: Workspace)
 }

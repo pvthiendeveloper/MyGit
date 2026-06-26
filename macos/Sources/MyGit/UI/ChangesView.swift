@@ -93,7 +93,7 @@ struct ChangesListView: View {
     }
 }
 
-private struct ChangeRow: View {
+struct ChangeRow: View {
     @EnvironmentObject var vm: ChangesViewModel
     @EnvironmentObject var main: MainViewModel
     let change: FileChange

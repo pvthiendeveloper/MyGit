@@ -3,6 +3,7 @@ import SwiftUI
 struct ToolbarBar: View {
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var repos: RepositoryListViewModel
+    @EnvironmentObject var coordinator: AppCoordinator
     @EnvironmentObject var changes: ChangesViewModel
     @EnvironmentObject var branches: BranchesViewModel
     @EnvironmentObject var remote: RemoteViewModel
@@ -158,7 +159,10 @@ struct ToolbarBar: View {
                 Image(systemName: "rectangle.stack")
                     .font(.system(size: 16))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Current Repository").font(.caption).foregroundStyle(.secondary)
+                    Text(coordinator.bundles.count > 1
+                         ? "Active · \(coordinator.activeBundle.name)"
+                         : "Current Repository")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Text(repos.selected?.name ?? "-")
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)

@@ -4,8 +4,8 @@ import Combine
 
 @MainActor
 final class RepositoryListViewModel: ObservableObject {
-    @Published private(set) var repositories: [Repository] = []
-    @Published private(set) var selected: Repository?
+    @Published private(set) var workspaces: [Workspace] = []
+    @Published private(set) var selected: Workspace?
 
     private let store: RepoListRepository
     private let main: MainViewModel
@@ -14,12 +14,12 @@ final class RepositoryListViewModel: ObservableObject {
     init(store: RepoListRepository, main: MainViewModel) {
         self.store = store
         self.main = main
-        self.repositories = store.repositories
+        self.workspaces = store.workspaces
         self.selected = store.selected
 
-        store.repositoriesPublisher
+        store.workspacesPublisher
             .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.repositories = $0 }
+            .sink { [weak self] in self?.workspaces = $0 }
             .store(in: &cancellables)
         store.selectedPublisher
             .receive(on: RunLoop.main)
@@ -27,10 +27,10 @@ final class RepositoryListViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var selectedPublisher: AnyPublisher<Repository?, Never> { store.selectedPublisher }
+    var selectedPublisher: AnyPublisher<Workspace?, Never> { store.selectedPublisher }
 
-    func select(_ repo: Repository) { store.select(repo) }
-    func remove(_ repo: Repository) { store.remove(repo) }
+    func select(_ workspace: Workspace) { store.select(workspace) }
+    func remove(_ workspace: Workspace) { store.remove(workspace) }
 
     func pickRepository() {
         let panel = NSOpenPanel()
@@ -38,13 +38,13 @@ final class RepositoryListViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Add Repository"
-        panel.message = "Choose a local Git repository"
+        panel.message = "Choose a git repository or a folder containing several repos"
         if panel.runModal() == .OK, let url = panel.url {
-            let gitDir = url.appendingPathComponent(".git")
-            if FileManager.default.fileExists(atPath: gitDir.path) {
-                store.add(url)
+            let workspace = WorkspaceScanner.scan(url)
+            if workspace.repos.isEmpty {
+                main.errorMessage = "No git repository found in: \(url.path)"
             } else {
-                main.errorMessage = "Not a git repository: \(url.path)"
+                store.add(url)
             }
         }
     }

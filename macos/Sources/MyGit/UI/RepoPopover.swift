@@ -5,9 +5,9 @@ struct RepoPopover: View {
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
 
-    private var filtered: [Repository] {
-        guard !searchText.isEmpty else { return repos.repositories }
-        return repos.repositories.filter {
+    private var filtered: [Workspace] {
+        guard !searchText.isEmpty else { return repos.workspaces }
+        return repos.workspaces.filter {
             $0.name.localizedCaseInsensitiveContains(searchText)
         }
     }
@@ -76,12 +76,12 @@ struct RepoPopover: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if !filtered.isEmpty {
                         sectionHeader("Other")
-                        ForEach(filtered) { repo in
-                            RepoRow(repo: repo) {
-                                repos.select(repo)
+                        ForEach(filtered) { workspace in
+                            RepoRow(workspace: workspace) {
+                                repos.select(workspace)
                                 dismiss()
                             } onRemove: {
-                                repos.remove(repo)
+                                repos.remove(workspace)
                             }
                         }
                     } else {
@@ -108,26 +108,33 @@ struct RepoPopover: View {
 }
 
 private struct RepoRow: View {
-    let repo: Repository
+    let workspace: Workspace
     let onSelect: () -> Void
     let onRemove: () -> Void
 
     @EnvironmentObject var repos: RepositoryListViewModel
     @State private var isHovered = false
 
-    private var isCurrent: Bool { repos.selected == repo }
+    private var isCurrent: Bool { repos.selected?.url == workspace.url }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "desktopcomputer")
+            Image(systemName: workspace.isSingle ? "desktopcomputer" : "rectangle.stack")
                 .font(.system(size: 13))
                 .foregroundStyle(isCurrent ? Color.white : Color.primary)
                 .frame(width: 18)
 
-            Text(repo.name)
-                .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
-                .foregroundStyle(isCurrent ? Color.white : Color.primary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(workspace.name)
+                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Color.white : Color.primary)
+                    .lineLimit(1)
+                if !workspace.isSingle {
+                    Text("\(workspace.repos.count) repos")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isCurrent ? Color.white.opacity(0.85) : Color.secondary)
+                }
+            }
 
             Spacer()
 

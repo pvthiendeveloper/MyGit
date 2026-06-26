@@ -9,19 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
 
-        let root = MainView()
+        let root = RootView()
             .environmentObject(coordinator)
-            .environmentObject(coordinator.main)
-            .environmentObject(coordinator.repos)
-            .environmentObject(coordinator.changes)
-            .environmentObject(coordinator.history)
-            .environmentObject(coordinator.files)
-            .environmentObject(coordinator.editor)
-            .environmentObject(coordinator.branches)
-            .environmentObject(coordinator.account)
-            .environmentObject(coordinator.remote)
-            .environmentObject(coordinator.compareVM)
-            .environmentObject(coordinator.settings)
             .frame(minWidth: 900, minHeight: 560)
 
         let hosting = NSHostingController(rootView: root)

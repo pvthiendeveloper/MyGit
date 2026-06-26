@@ -731,7 +731,7 @@ struct SideBySideDiffTabView: View {
     }
 
     private func editSource() {
-        guard let repoURL = coordinator.repos.selected?.url else { return }
+        let repoURL = coordinator.activeBundle.repo.url
         let url = repoURL.appendingPathComponent(tab.path)
         if FileManager.default.fileExists(atPath: url.path) {
             NSWorkspace.shared.open(url)
@@ -741,10 +741,7 @@ struct SideBySideDiffTabView: View {
     }
 
     private func save() {
-        guard let repoURL = coordinator.repos.selected?.url else {
-            loadError = "No repository selected."
-            return
-        }
+        let repoURL = coordinator.activeBundle.repo.url
         do {
             try coordinator.container.fileEditor.write(at: repoURL, path: tab.path, content: workingText)
             diskText = workingText
@@ -757,10 +754,7 @@ struct SideBySideDiffTabView: View {
         loading = true
         loadError = nil
         defer { loading = false }
-        guard let repoURL = coordinator.repos.selected?.url else {
-            loadError = "No repository selected."
-            return
-        }
+        let repoURL = coordinator.activeBundle.repo.url
         do {
             async let src = readSource(repoURL: repoURL)
             async let work = readWorking(repoURL: repoURL)
@@ -775,7 +769,8 @@ struct SideBySideDiffTabView: View {
     }
 
     private func reloadForCurrentVersionToggle() async {
-        guard tab.mode == .commitVsParent, let repoURL = coordinator.repos.selected?.url else { return }
+        guard tab.mode == .commitVsParent else { return }
+        let repoURL = coordinator.activeBundle.repo.url
         do {
             let newRight: String
             if useCurrentVersion {
