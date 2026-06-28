@@ -4,6 +4,16 @@ A native, GitHub Desktop–style git client for macOS — built with SwiftUI + A
 
 > ⚠️ Early-stage / personal project. Useful day-to-day, but expect rough edges.
 
+## Screenshots
+
+**Branch compare** — see exactly which commits exist on one branch but not the other, with the changed-file tree on the right.
+
+![Branch compare view](docs/screenshots/compare.png)
+
+**Side-by-side diff** — per-hunk include/exclude, line numbers on both sides, whitespace and highlight options, editable working-tree side.
+
+![Side-by-side diff view](docs/screenshots/diff.png)
+
 ## Features
 
 - **Multi-repo workspaces** — pick a folder; MyGit scans it (recursively) for git repos and shows them all. A plain repo opens as a single project; a parent folder full of repos (or a repo that nests more repos) opens them side by side.
