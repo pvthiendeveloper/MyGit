@@ -7,10 +7,20 @@ enum GitError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .nonZeroExit(args, code, stderr):
-            let cmd = "git " + args.joined(separator: " ")
+            let cmd = "git " + GitError.redactSecrets(args).joined(separator: " ")
             return "\(cmd) exited \(code): \(stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
         case let .launchFailed(reason):
             return "Failed to launch git: \(reason)"
+        }
+    }
+
+    /// Strip the bearer token from `-c http.extraheader=AUTHORIZATION: bearer …`
+    /// so the PAT never appears in a user-visible / logged error string.
+    static func redactSecrets(_ args: [String]) -> [String] {
+        args.map { arg in
+            arg.lowercased().contains("extraheader") || arg.lowercased().contains("authorization")
+                ? "http.extraheader=AUTHORIZATION: bearer ***"
+                : arg
         }
     }
 }

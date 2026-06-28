@@ -27,27 +27,27 @@ AppKit shell + SwiftUI content. `Sources/MyGit/App/main.swift` boots `NSApplicat
 
 Source layout follows Clean Architecture:
 
-- `Domain/Entities/` — value types (`Repository`, `AuthOverride`, `OpenFileTab`).
-- `Domain/Repositories/` — protocols only: `GitRepository`, `CredentialRepository`, `RepoListRepository`, `FileEditorRepository`.
-- `Data/{Git,Keychain,Persistence,FileSystem}/` — concrete implementations (`GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`).
-- `Presentation/ViewModels/` — per-feature `@MainActor ObservableObject` VMs (`MainViewModel`, `ChangesViewModel`, `HistoryViewModel`, `FilesViewModel`, `BranchesViewModel`, `AccountViewModel`, `RemoteViewModel`, `RepositoryListViewModel`, `FileEditorViewModel`, `CompareBranchesViewModel`).
-- `UI/` — SwiftUI views, each reading the VMs it needs as `@EnvironmentObject`.
+- `Domain/Entities/` — value types (`Repository`, `Workspace`, `AuthOverride`, `OpenFileTab`, `AICommitConfig`, `CachedCommit`).
+- `Domain/Repositories/` — protocols only: `GitRepository`, `CredentialRepository`, `RepoListRepository`, `FileEditorRepository`, `CommitMessageRepository`.
+- `Data/{Git,Keychain,Persistence,FileSystem,AI}/` — concrete implementations (`GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`), plus `WorkspaceScanner` and the FSEvents `RepoWatcher`.
+- `Presentation/ViewModels/` — per-feature `@MainActor ObservableObject` VMs (`MainViewModel`, `ChangesViewModel`, `HistoryViewModel`, `FilesViewModel`, `BranchesViewModel`, `AccountViewModel`, `RemoteViewModel`, `RepositoryListViewModel`, `FileEditorViewModel`, `CompareBranchesViewModel`, `SettingsViewModel`).
+- `UI/` — SwiftUI views, each reading the VMs it needs as `@EnvironmentObject`. `Workspace*View` are the multi-repo variants; `SettingsView`/`SettingsWindow` host AI config.
 - `Git/` — shared models + helpers used by both Data and Presentation (`GitStatus`, `GitLog`, `GitDiff`, `GitBranch`, `GitAccount`, `GitFileTree`, `CompareModels`, `DiffTab`, `LineDiffer`).
 
 ### Wiring
 
-`AppContainer` (`App/AppContainer.swift`) is the DI seam — `.live()` returns the four repository protocols backed by their concrete implementations. `AppCoordinator` (`App/AppCoordinator.swift`) instantiates every ViewModel and wires their cross-references via closures:
+`AppContainer` (`App/AppContainer.swift`) is the DI seam — `.live()` returns the five repository protocols (`git`, `repos`, `credentials`, `fileEditor`, `commitMessage`) backed by their concrete implementations.
 
-- `repoSource: () -> Repository?` — pulled from `RepositoryListViewModel.selected` so VMs read the current repo lazily without holding stale URLs.
+The per-repo ViewModels are grouped into a `RepoBundle` (`App/RepoBundle.swift`) — one bundle per git repo, holding that repo's `changes`/`history`/`files`/`editor`/`branches`/`account`/`remote`/`compare` VMs wired together with a constant `repoSource = { repo }`. `MainViewModel` and `SettingsViewModel` are **shared** (global) across all bundles. `RepoBundle` reproduces the cross-reference wiring that used to live inline in `AppCoordinator.init`:
+
+- `repoSource: () -> Repository?` — constant `{ repo }` for the bundle.
 - `currentBranch: () -> String?` — pulled from `ChangesViewModel.status?.branch`.
-- `onFinished: () async -> Void` — most action VMs call this after a remote/branch op; it's `AppCoordinator.refreshAll()`.
+- `onFinished: () async -> Void` — most action VMs call this after a remote/branch op; it's the bundle's `refreshAll()`.
 - `ChangesViewModel.pushAfterCommit` is bound to `RemoteViewModel.push()` / `forcePush()`.
 
-Because there are forward references (e.g. `branches` needs `refreshAll`, but `refreshAll` depends on `branches`), the coordinator uses a `var refreshAll` shim that's reassigned after all VMs are built.
+`AppCoordinator` (`App/AppCoordinator.swift`) holds `bundles: [RepoBundle]` (one per repo in the selected workspace) and `activeBundle` (the bundle the single-repo UI — toolbar, detail panel, menus — acts on). It exposes convenience forwarders (`changes`, `remote`, …) onto `activeBundle`. `AppDelegate` injects the coordinator and the shared VMs as `@EnvironmentObject` on `MainView`; views reach per-repo VMs through `coordinator.activeBundle`.
 
-`AppDelegate` injects every VM (plus the coordinator) as an `@EnvironmentObject` on `MainView`. There is no single hub object — views grab the specific VMs they need.
-
-Repository switching: `RepoListRepository.selectedPublisher` → Combine sink on the coordinator → `repositorySwitched()` calls `repositoryDidChange()` on each VM (to clear per-repo state) then `refreshAll()`.
+Workspace switching: `RepoListRepository.selectedPublisher` (a `Workspace?`) → Combine sink → `rebuildBundles(for:)`, which stops old `RepoWatcher`s, builds a fresh bundle per repo, picks the first as `activeBundle`, starts one watcher per bundle, and `refreshAll()`s each.
 
 ### Git execution
 
@@ -83,9 +83,21 @@ Two ways to show a file diff, both built on `Git/LineDiffer.swift` + `Git/DiffTa
 
 Data path is new `GitRepository` methods (all in `GitCLIRepository`): `diffFileVsWorking`, `diffFileBeforeVsWorking`, `readFileAtCommit`, `extractFileAtCommit`, `patchForFile`, `revertFileInCommit`, `cherryPickFileFromCommit`, plus working-tree file ops `restore`, `addToIndex`, `removeFile`, `diffPatch`.
 
+### Workspaces & multi-repo
+
+A picked folder becomes a `Workspace` via `WorkspaceScanner.scan`: the whole tree is walked recursively for `.git` (via `FileManager.enumerator` with `.skipsHiddenFiles`, which keeps the walk out of each repo's `.git/` internals while still descending into a repo's working tree), and the root is included when it is a git repo too. So a plain repo with no nested repos → single-repo workspace (`isSingle`); a repo that *also* nests git repos at any depth → root + nested; a non-repo parent of repos → just the descendants. `RepoListRepository` now deals in `Workspace`s, not raw repos — `workspaces` / `selected` (a `Workspace?`) with matching publishers. The coordinator builds one `RepoBundle` per repo in the selected workspace; `Workspace*View` render the multi-repo UI, falling back to single-repo views when `isSingle`.
+
+### Auto-refresh (filesystem watcher)
+
+`RepoWatcher` (`Data/FileSystem/RepoWatcher.swift`) wraps FSEvents over a repo's working tree (including `.git/`), coalesced by the FSEvents latency window. Its callback fires on a private dispatch queue — `onChange` must hop back to `@MainActor`. The coordinator runs one watcher per active bundle and calls `bundle.refreshFromWatcher()` on change, so status/history/branches update without a manual Refresh. Watchers are torn down and rebuilt wholesale whenever bundles rebuild.
+
+### AI commit messages
+
+`CommitMessageRepository.generate(diff:config:)` turns a staged unified diff into a Conventional Commits message; `AICommitMessageRepository` implements it over REST. OpenAI and "custom (OpenAI-compatible)" share the chat-completions path; Gemini has its own. `SettingsViewModel` holds per-provider model/base-URL (UserDefaults) and API keys (keychain, one per provider), with `activeProvider` selecting which is used. `testConnection` validates a provider without spending generation tokens. Errors surface via `CommitMessageError` (e.g. missing key → "Open Settings (⌘,)").
+
 ### Repository persistence
 
-`UserDefaultsRepoListRepository` persists the repo list under `MyGit.repositoryPaths` and the selection under `MyGit.selectedRepositoryPath`. On load it filters out paths whose `.git` no longer exists. `repositoriesPublisher` / `selectedPublisher` are the Combine seams the rest of the app reacts to.
+`UserDefaultsRepoListRepository` persists added workspace folders and the selection; on load it drops paths whose `.git` no longer exists. `workspacesPublisher` / `selectedPublisher` are the Combine seams the rest of the app reacts to. Two small UserDefaults caches in `CachedCommit.swift` improve perceived launch speed and avoid data loss: `LastCommitStore` (keyed `MyGit.lastCommit.<repoPath>`) shows each repo's last commit instantly before the log loads; `CommitDraftStore` persists the in-progress commit summary/description per repo. `HistoryViewModel` paginates the log — `pageSize = 100`, `hasMore` true while a fetch fills the limit, raising `limit` to load more.
 
 ## Conventions
 

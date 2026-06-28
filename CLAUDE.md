@@ -25,11 +25,12 @@ No tests. `Tests/` and `Sources/MyGit/DesignSystem/` are empty placeholders. Add
 ## Big picture
 
 - AppKit shell + SwiftUI content. `App/main.swift` boots `NSApplication` manually (no `@main`); `AppDelegate` installs the menu and hosts `MainView` in an `NSHostingController`.
-- Clean Architecture layers under `Sources/MyGit/`: `Domain/` (protocols + entities), `Data/` (implementations: `GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`), `Presentation/ViewModels/` (one VM per feature).
-- `AppContainer` is the live DI container; `AppCoordinator` builds all ViewModels and wires their cross-references (closures for `repoSource`, `currentBranch`, `onFinished`, `pushAfterCommit`). `AppDelegate` injects each VM as an `@EnvironmentObject`.
+- Clean Architecture layers under `Sources/MyGit/`: `Domain/` (protocols + entities), `Data/` (implementations: `GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`), `Presentation/ViewModels/` (one VM per feature).
+- `AppContainer` is the live DI container. Per-repo VMs are grouped into a `RepoBundle` (closures for `repoSource`, `currentBranch`, `onFinished`, `pushAfterCommit`); `AppCoordinator` holds one bundle per repo in the selected `Workspace` plus an `activeBundle`, with `MainViewModel`/`SettingsViewModel` shared. `AppDelegate` injects the coordinator + shared VMs as `@EnvironmentObject`.
 - All git work shells out to `/usr/bin/git` via `GitRunner` (`Data/Git/`) with `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`. App is **unsandboxed** so it can spawn `git` against user-selected directories.
 - HTTPS auth bypasses `git-credential-osxkeychain` entirely: PATs stored in MyGit's own keychain (`KeychainCredentialRepository`, service `com.thienpham.MyGit`). `AccountViewModel.currentAuth() -> AuthOverride?` resolves a bearer token for the current repo's host; remote methods on `GitRepository` take an `AuthOverride?` and inject `-c credential.helper= -c http.extraheader=AUTHORIZATION: bearer <PAT>` per command. See `macos/CLAUDE.md` for why.
 - Staging mirrors GitHub Desktop: `ChangesViewModel.stagedPaths: Set<String>` of user-checked paths; commit resets index then `git add`s only checked paths.
+- A picked folder becomes a `Workspace` (single repo, or one level of nested sibling repos via `WorkspaceScanner`). Each repo gets an FSEvents `RepoWatcher` that auto-refreshes it on disk changes. AI commit messages: `CommitMessageRepository`/`AICommitMessageRepository` turn a staged diff into a Conventional Commits message via OpenAI/Gemini/custom, configured in `SettingsViewModel`.
 
 ## Conventions
 
