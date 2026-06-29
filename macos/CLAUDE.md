@@ -72,6 +72,12 @@ PATs are stored by host in MyGit's own keychain via `KeychainCredentialRepositor
 
 Mirrors GitHub Desktop: `ChangesViewModel.stagedPaths` is a `Set<String>` of paths the user has checked. On commit, `GitCLIRepository.commit(at:paths:message:)` resets the index (`git reset --mixed -q`), then `git add`s only the checked paths, then `git commit -m`. Status refresh defaults newly-appeared paths to checked while preserving explicit unchecks (`previousPaths` diff).
 
+### Branches & remote
+
+`BranchesViewModel` drives the `BranchPopover` (which `.task`-refreshes its list on open). Checking out a remote-tracking branch uses `GitBranch.checkoutName` — it strips the remote prefix (`origin/feature/x` → `feature/x`) so git DWIM-creates/switches the local tracking branch instead of `git checkout origin/x` detaching HEAD. `checkout`, `checkoutAndRebase`, and `checkoutAndUpdate` all go through `checkoutName`.
+
+Push confirmation (`ToolbarBar`): regular push runs immediately (no confirm dialog); only **force push** prompts (`pendingPush = .force`). Same split in `CommitComposerView` — `commitAndPush` is silent, `commitAndForcePush` shows the alert.
+
 ### Diff viewer
 
 Two ways to show a file diff, both built on `Git/LineDiffer.swift` + `Git/DiffTab.swift`:
@@ -80,6 +86,8 @@ Two ways to show a file diff, both built on `Git/LineDiffer.swift` + `Git/DiffTa
 - **Standalone window** — `UI/DiffWindow.open(diff:)` hosts `DiffView` in a detached `NSWindow`, retained in a static array and removed on `willCloseNotification`.
 
 `DiffTab.Mode` (`commitVsParent`, `commitVsWorking`, `parentVsWorking`) drives `rightIsEditable` — only the working-tree side can be edited and saved to disk. `SideBySideDiffTabView` (the big view) loads `sourceText`/`workingText`/`diskText`, runs `LineDiffer.diff` (LCS DP, capped at `maxLines = 6000` — beyond that it degrades to delete-all/insert-all), and renders `LineHunk`s with per-hunk exclude/apply. Viewer/whitespace/highlight options are the enums in `DiffTab.swift` (`DiffViewerMode`, `DiffWhitespaceMode`, `DiffHighlightMode`); whitespace `normalize` is applied before diffing.
+
+Side-by-side scroll sync has two layouts. **Non-editable** (both sides read-only): one shared `ScrollView` holds left column + gutter + right column, so they can never desync. **Editable** (right side is the live working-tree file): the right pane is `SyncedTextEditor` — an `NSViewRepresentable` over `NSTextView` (SwiftUI `TextEditor` exposes no scroll hook). Sync runs through the `syncX`/`syncY`/`activeCol` state: the column under the pointer (`activeCol`, set on hover/scroll; the editor is col 2) drives, the others follow via `scrollPosition`/`scrollTo`. The editor reports its offset on `boundsDidChangeNotification` and follows `external:` when not active, guarding programmatic scrolls with a `suppress` flag to avoid feedback loops. The editor is no-wrap (`lineFragmentPadding = 0`, `textContainerInset = (8, topInset)`) so each line is exactly one row, matching the left grid's fixed `rowHeight` and anchoring both sides to the top.
 
 Data path is new `GitRepository` methods (all in `GitCLIRepository`): `diffFileVsWorking`, `diffFileBeforeVsWorking`, `readFileAtCommit`, `extractFileAtCommit`, `patchForFile`, `revertFileInCommit`, `cherryPickFileFromCommit`, plus working-tree file ops `restore`, `addToIndex`, `removeFile`, `diffPatch`.
 

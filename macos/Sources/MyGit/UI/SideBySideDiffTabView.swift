@@ -481,15 +481,23 @@ struct SideBySideDiffTabView: View {
     }
 
     // Editable Current pane. Edits flow into workingText -> live re-diff (onChange)
-    // updates the left pane + hunks, and Save writes to disk. Own scroll, no Y-sync.
+    // updates the left pane + hunks, and Save writes to disk. Scroll is Y-synced with
+    // the left code + gutter via syncY (col 2): scrolling the editor drives the others,
+    // and the editor follows when the left/gutter drive.
     private var rightEditorPane: some View {
-        TextEditor(text: $workingText)
-            .font(.system(size: fontSize, design: .monospaced))
-            .scrollContentBackground(.hidden)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 4)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color(NSColor.textBackgroundColor))
+        SyncedTextEditor(
+            text: $workingText,
+            fontSize: fontSize,
+            topInset: 4,
+            external: activeCol == 2 ? nil : CGPoint(x: syncX, y: syncY),
+            onScroll: { p in
+                activeCol = 2
+                syncX = p.x
+                syncY = p.y
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(NSColor.textBackgroundColor))
     }
 
     private func gutterColumn(_ rows: [AlignedDiffRow], pos: Binding<ScrollPosition>) -> some View {
@@ -1054,6 +1062,101 @@ enum UnifiedRowBuilder {
 }
 
 // MARK: - Word-level highlighter (common prefix/suffix fold)
+
+// MARK: - Scroll-synced editable text pane
+
+// An NSTextView-backed editor that reports its vertical scroll offset (onScroll) and
+// follows an external offset (externalY) when it is not the active/driving column.
+// No line wrapping so each line is exactly one row -> 1:1 height with the left code
+// column and gutter, anchored to the top. SwiftUI's TextEditor exposes no scroll hook,
+// hence the AppKit bridge.
+private struct SyncedTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    var fontSize: CGFloat
+    var topInset: CGFloat
+    /// Offset to follow; nil while this pane is the active driver (don't fight the user).
+    var external: CGPoint?
+    var onScroll: (CGPoint) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let tv = NSTextView()
+        tv.delegate = context.coordinator
+        tv.isRichText = false
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.allowsUndo = true
+        tv.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        tv.textContainerInset = NSSize(width: 8, height: topInset)
+        tv.textContainer?.lineFragmentPadding = 0
+        tv.drawsBackground = false
+        tv.string = text
+        // No wrapping: one visual line per logical line -> matches the left row grid.
+        tv.isHorizontallyResizable = true
+        tv.isVerticallyResizable = true
+        tv.autoresizingMask = []
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.widthTracksTextView = false
+        tv.textContainer?.size = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+        let scroll = NSScrollView()
+        scroll.documentView = tv
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = true
+        scroll.drawsBackground = false
+        scroll.contentView.postsBoundsChangedNotifications = true
+
+        context.coordinator.textView = tv
+        context.coordinator.scrollView = scroll
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.boundsChanged(_:)),
+            name: NSView.boundsDidChangeNotification,
+            object: scroll.contentView
+        )
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let tv = scroll.documentView as? NSTextView else { return }
+        if tv.string != text { tv.string = text }
+        if (tv.font?.pointSize ?? 0) != fontSize {
+            tv.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        }
+        if let p = external {
+            let clip = scroll.contentView
+            if abs(clip.bounds.origin.y - p.y) > 0.5 || abs(clip.bounds.origin.x - p.x) > 0.5 {
+                context.coordinator.suppress = true
+                clip.scroll(to: NSPoint(x: p.x, y: p.y))
+                scroll.reflectScrolledClipView(clip)
+                context.coordinator.suppress = false
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SyncedTextEditor
+        weak var textView: NSTextView?
+        weak var scrollView: NSScrollView?
+        var suppress = false
+
+        init(_ p: SyncedTextEditor) { parent = p }
+
+        func textDidChange(_ notification: Notification) {
+            guard let tv = textView else { return }
+            parent.text = tv.string
+        }
+
+        // Fires only on user-driven scroll: programmatic follows set `suppress`.
+        @objc func boundsChanged(_ note: Notification) {
+            guard !suppress, let clip = scrollView?.contentView else { return }
+            parent.onScroll(clip.bounds.origin)
+        }
+    }
+}
 
 enum WordHighlighter {
     static func attribute(for s: String, vs other: String, isLeft: Bool) -> AttributedString {
