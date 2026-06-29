@@ -272,7 +272,7 @@ struct ToolbarBar: View {
             return
         }
         if let s = changes.status, s.ahead > 0 {
-            pendingPush = .regular(s.ahead)
+            Task { await remote.push() }
             return
         }
         Task { await remote.fetchOrigin() }
@@ -328,7 +328,7 @@ struct ToolbarBar: View {
                     badge: "\(s.ahead) ↑"
                 ) {
                     showRemoteMenu = false
-                    pendingPush = .regular(s.ahead)
+                    Task { await remote.push() }
                 }
             }
             Divider()
