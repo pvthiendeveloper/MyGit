@@ -53,7 +53,7 @@ final class BranchesViewModel: ObservableObject {
     }
 
     func checkout(_ branch: GitBranch) async {
-        await runOp { try await self.git.checkout(branch.name, at: $0) }
+        await runOp { try await self.git.checkout(branch.checkoutName, at: $0) }
     }
 
     func createBranch(name: String, from: GitBranch) async {
@@ -68,11 +68,11 @@ final class BranchesViewModel: ObservableObject {
     }
 
     func checkoutAndRebase(branch: GitBranch, onto: String) async {
-        await runOp { try await self.git.checkoutAndRebase(branch: branch.name, onto: onto, at: $0) }
+        await runOp { try await self.git.checkoutAndRebase(branch: branch.checkoutName, onto: onto, at: $0) }
     }
 
     func checkoutAndUpdate(_ branch: GitBranch) async {
-        await runOp { try await self.git.checkoutAndUpdate(branch: branch.name, at: $0) }
+        await runOp { try await self.git.checkoutAndUpdate(branch: branch.checkoutName, at: $0) }
     }
 
     func compare(_ branch: GitBranch, vs current: String) {

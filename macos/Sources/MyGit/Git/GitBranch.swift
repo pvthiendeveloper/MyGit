@@ -18,6 +18,15 @@ struct GitBranch: Identifiable, Hashable {
         guard let g = group else { return name }
         return String(name.dropFirst(g.count + 1))
     }
+
+    /// Branch to land on when checking out. For remote-tracking refs
+    /// (`origin/feature/x`) strip the remote prefix so git DWIM-creates or
+    /// switches to the local tracking branch instead of detaching HEAD.
+    var checkoutName: String {
+        guard isRemote else { return name }
+        let parts = name.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? String(parts[1]) : name
+    }
 }
 
 enum GitBranchParser {

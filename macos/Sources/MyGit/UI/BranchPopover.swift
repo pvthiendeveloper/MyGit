@@ -101,6 +101,7 @@ struct BranchPopover: View {
             }
         }
         .frame(width: 340, height: 480)
+        .task { await branchesVM.refresh() }
         .sheet(isPresented: $showRevisionSheet) {
             TextInputSheet(
                 title: "Checkout Tag or Revision",
