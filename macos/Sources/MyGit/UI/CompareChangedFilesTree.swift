@@ -130,6 +130,7 @@ private struct CompareFileTreeRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -182,8 +183,7 @@ private struct CompareFileTreeRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture {
             if isDir {

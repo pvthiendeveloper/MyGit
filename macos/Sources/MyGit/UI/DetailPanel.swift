@@ -155,10 +155,15 @@ struct DetailPanel: View {
             if let commit = history.selectedCommit {
                 CommitDetailHeader(commit: commit)
                 Divider()
-                if let diff = history.diff {
-                    DiffView(diff: diff)
-                } else {
-                    placeholder("Loading commit…")
+                CompareChangedFilesTree(
+                    nodes: ChangedFileTreeBuilder.build(from: history.changedFiles),
+                    onAction: { entry, action in history.perform(action, on: entry) }
+                )
+                .overlay {
+                    if history.isLoadingFiles {
+                        ProgressView()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    }
                 }
             } else {
                 placeholder("Select a commit to see its diff.")

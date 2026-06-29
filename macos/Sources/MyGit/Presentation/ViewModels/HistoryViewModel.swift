@@ -1,11 +1,14 @@
 import Foundation
 import Combine
+import AppKit
 
 @MainActor
 final class HistoryViewModel: ObservableObject {
     @Published var commits: [GitCommit] = []
     @Published var selectedCommit: GitCommit?
     @Published var diff: FileDiff?
+    @Published var changedFiles: [ChangedFileEntry] = []
+    @Published var isLoadingFiles = false
     /// True when the last fetch hit the limit — more commits may exist.
     @Published private(set) var hasMore = false
     @Published private(set) var isLoadingMore = false
@@ -27,7 +30,7 @@ final class HistoryViewModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] commit in
                 guard let self, let commit else { return }
-                Task { await self.loadDiff(for: commit) }
+                Task { await self.loadChangedFiles(for: commit) }
             }
             .store(in: &cancellables)
     }
@@ -35,6 +38,7 @@ final class HistoryViewModel: ObservableObject {
     func repositoryDidChange() {
         selectedCommit = nil
         diff = nil
+        changedFiles = []
         commits = []
         limit = pageSize
         hasMore = false
@@ -63,12 +67,80 @@ final class HistoryViewModel: ObservableObject {
         await refreshLog()
     }
 
-    private func loadDiff(for commit: GitCommit) async {
+    private func loadChangedFiles(for commit: GitCommit) async {
         guard let repo = repoSource() else { return }
+        isLoadingFiles = true
+        defer { isLoadingFiles = false }
         do {
-            diff = try await git.diff(at: repo.url, commit: commit)
+            changedFiles = try await git.changedFiles(commit: commit.hash, at: repo.url)
         } catch {
+            changedFiles = []
             main.errorMessage = error.localizedDescription
+        }
+    }
+
+    func perform(_ action: CompareFileAction, on entry: ChangedFileEntry) {
+        guard let repo = repoSource(), let commit = selectedCommit else { return }
+        let repoURL = repo.url
+        switch action {
+        case .showDiff:
+            main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsParent, forceNew: false)
+        case .showDiffInNewTab:
+            main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsParent, forceNew: true)
+        case .compareWithLocal:
+            main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsWorking, forceNew: true)
+        case .compareBeforeWithLocal:
+            main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .parentVsWorking, forceNew: true)
+        case .editSource:
+            let url = repoURL.appendingPathComponent(entry.path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                NSWorkspace.shared.open(url)
+            } else {
+                main.errorMessage = "File no longer exists in the working tree."
+            }
+        case .openRepositoryVersion:
+            Task {
+                do {
+                    let url = try await git.extractFileAtCommit(commit: commit.hash, path: entry.path, at: repoURL)
+                    NSWorkspace.shared.open(url)
+                } catch {
+                    main.errorMessage = error.localizedDescription
+                }
+            }
+        case .revertChanges:
+            Task {
+                do { try await git.revertFileInCommit(commit: commit.hash, path: entry.path, at: repoURL) }
+                catch { main.errorMessage = error.localizedDescription }
+            }
+        case .cherryPickChanges:
+            Task {
+                do { try await git.cherryPickFileFromCommit(commit: commit.hash, path: entry.path, at: repoURL) }
+                catch { main.errorMessage = error.localizedDescription }
+            }
+        case .dropChanges:
+            main.errorMessage = "Drop Selected Changes requires history rewrite and isn't supported yet."
+        case .createPatch:
+            Task {
+                do {
+                    let patch = try await git.patchForFile(commit: commit.hash, path: entry.path, at: repoURL)
+                    let suggested = "\(commit.shortHash)-\((entry.path as NSString).lastPathComponent).patch"
+                    savePatch(patch, suggestedName: suggested)
+                } catch {
+                    main.errorMessage = error.localizedDescription
+                }
+            }
+        case .historyUpToHere:
+            break
+        }
+    }
+
+    private func savePatch(_ patch: String, suggestedName: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try patch.write(to: url, atomically: true, encoding: .utf8) }
+            catch { main.errorMessage = error.localizedDescription }
         }
     }
 }

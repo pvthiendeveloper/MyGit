@@ -330,34 +330,58 @@ struct SideBySideDiffTabView: View {
     // MARK: - Aligned side-by-side rows (shared scroll)
 
     private var alignedContent: some View {
-        let srcLines = sourceText.components(separatedBy: "\n")
-        let wrkLines = workingText.components(separatedBy: "\n")
+        let srcLines = Self.splitLines(sourceText)
+        let wrkLines = Self.splitLines(workingText)
         let rows = AlignedRowBuilder.build(source: srcLines, working: wrkLines, hunks: hunks)
-        // Scroll-content min width per pane = longest line. The pane itself flexes to
-        // half the panel (maxWidth: .infinity), so content fills the viewport when short
-        // and scrolls horizontally when it exceeds the pane — no dependency on a measured
-        // pane width (which lags a frame on resize and broke the layout).
         let charW = fontSize * 0.62
         let leftMax = rows.compactMap { $0.leftText?.count }.max() ?? 0
         let rightMax = rows.compactMap { $0.rightText?.count }.max() ?? 0
-        // Both panes share one scroll-content width = the wider side. Otherwise an
-        // empty side (added/deleted file) collapses to ~24pt, and its per-row
-        // highlight band stops there — drawing a stray vertical edge mid-pane.
-        let leftContentW = CGFloat(leftMax) * charW + 24
-        let rightContentW = CGFloat(rightMax) * charW + 24
-        let contentW = max(leftContentW, rightContentW)
-        // Each column is its own scroll view so the horizontal scroller pins to the
-        // viewport bottom (always visible) instead of the bottom of the tall content.
-        // Vertical scrolling is kept in sync across the three via syncY. Panes flex to
-        // half the panel each (maxWidth: .infinity) so the divider stays centered.
-        return HStack(alignment: .top, spacing: 0) {
-            codePane(rows, isLeft: true, contentWidth: contentW, col: 0, pos: $leftScroll)
-            gutterColumn(rows, pos: $gutterScroll)
-            if isRightEditable {
-                rightEditorPane
-            } else {
-                codePane(rows, isLeft: false, contentWidth: contentW, col: 2, pos: $rightScroll)
+        let leftW = max(CGFloat(leftMax) * charW + 24, 120)
+        let rightW = max(CGFloat(rightMax) * charW + 24, 120)
+
+        if isRightEditable {
+            return AnyView(editableAligned(rows: rows, leftW: max(leftW, rightW)))
+        }
+        // Non-editable: ONE scroll view holds left column + gutter + right column.
+        // A single shared vertical scroll means the three can't desync — every row's
+        // code, line-number, and highlight band line up 1:1, anchored to the top.
+        // GeometryReader sizes each code column to at least half the panel (so the
+        // panes fill the width and the divider stays centered) and pins content to the
+        // top-left, so a short file doesn't float in the middle of the viewport.
+        return AnyView(
+            GeometryReader { geo in
+                let half = max((geo.size.width - Self.gutterColWidth) / 2, 120)
+                let leftColW = max(leftW, half)
+                let rightColW = max(rightW, half)
+                ScrollViewReader { proxy in
+                    ScrollView([.horizontal, .vertical]) {
+                        HStack(alignment: .top, spacing: 0) {
+                            codeColumn(rows, isLeft: true, width: leftColW)
+                            gutterStack(rows)
+                            codeColumn(rows, isLeft: false, width: rightColW)
+                        }
+                        .frame(minHeight: geo.size.height, alignment: .topLeading)
+                        .padding(.vertical, 4)
+                    }
+                    .onChange(of: currentHunkIndex) { _, new in
+                        guard new >= 0, new < hunks.count,
+                              let target = rows.first(where: { $0.hunkId == hunks[new].id }) else { return }
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(rowAnchor(target.id), anchor: .center)
+                        }
+                    }
+                }
             }
+        )
+    }
+
+    // Editable Current pane keeps its own scroll (TextEditor can't live inside the
+    // shared row scroll). Left code + gutter sync to it via syncY as before.
+    private func editableAligned(rows: [AlignedDiffRow], leftW: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            codePane(rows, isLeft: true, contentWidth: leftW, col: 0, pos: $leftScroll)
+            gutterColumn(rows, pos: $gutterScroll)
+            rightEditorPane
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onChange(of: currentHunkIndex) { _, new in
@@ -366,37 +390,75 @@ struct SideBySideDiffTabView: View {
             let anchor = rowAnchor(target.id)
             withAnimation(.easeOut(duration: 0.15)) {
                 leftScroll.scrollTo(id: anchor, anchor: .center)
-                rightScroll.scrollTo(id: anchor, anchor: .center)
                 gutterScroll.scrollTo(id: anchor, anchor: .center)
             }
         }
     }
 
+    // One column of fixed-height code rows, NO own ScrollView — it lives inside the
+    // shared scroll in alignedContent so it can never drift from the gutter.
+    private func codeColumn(_ rows: [AlignedDiffRow], isLeft: Bool, width: CGFloat) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(rows) { row in
+                ZStack(alignment: .leading) {
+                    if highlightMode == .lines {
+                        isLeft ? leftBg(row.kind) : rightBg(row.kind)
+                    }
+                    Text(lineAttributed(row, isLeft: isLeft))
+                        .font(.system(size: fontSize, design: .monospaced))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .textSelection(.enabled)
+                        .padding(.leading, 8)
+                }
+                .frame(width: width, height: rowHeight, alignment: .leading)
+                .id(isLeft ? rowAnchor(row.id) : "\(rowAnchor(row.id))-R")
+            }
+        }
+    }
+
+    // Gutter rows, NO own ScrollView — shares the alignedContent scroll.
+    private func gutterStack(_ rows: [AlignedDiffRow]) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(rows) { row in
+                HStack(spacing: 0) {
+                    gutterMark(row.kind, left: true)
+                    gutterNumber(row.leftLineNum)
+                    centerGutter(row)
+                    gutterNumber(row.rightLineNum)
+                    gutterMark(row.kind, left: false)
+                }
+                .frame(height: rowHeight)
+            }
+        }
+        .frame(width: Self.gutterColWidth)
+    }
+
     private func rowAnchor(_ id: Int) -> String { "R-\(id)" }
 
-    // One Text per pane (a single multi-line AttributedString) so a drag selects
-    // across lines and ⌘C copies the range. Full-width line highlight is a background
-    // layer behind the text; row height = the font's real line height so the layer,
-    // the text lines, and the gutter line numbers all align.
+    // One fixed-height row per line so the code text, the per-line highlight band, and
+    // the gutter line numbers all line up 1:1 — no dependence on SwiftUI's Text line
+    // height matching the gutter's rowHeight (which drifts and broke alignment).
     private func codePane(_ rows: [AlignedDiffRow], isLeft: Bool, contentWidth: CGFloat,
                           col: Int, pos: Binding<ScrollPosition>) -> some View {
         ScrollView([.horizontal, .vertical]) {
-            ZStack(alignment: .topLeading) {
-                if highlightMode == .lines {
-                    VStack(spacing: 0) {
-                        ForEach(rows) { row in
-                            (isLeft ? leftBg(row.kind) : rightBg(row.kind))
-                                .frame(height: rowHeight)
+            LazyVStack(spacing: 0) {
+                ForEach(rows) { row in
+                    ZStack(alignment: .leading) {
+                        if highlightMode == .lines {
+                            isLeft ? leftBg(row.kind) : rightBg(row.kind)
                         }
+                        Text(lineAttributed(row, isLeft: isLeft))
+                            .font(.system(size: fontSize, design: .monospaced))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .textSelection(.enabled)
+                            .padding(.leading, 8)
                     }
-                    .frame(minWidth: contentWidth, maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: contentWidth, maxWidth: .infinity, minHeight: rowHeight,
+                           maxHeight: rowHeight, alignment: .leading)
+                    .id(rowAnchor(row.id))
                 }
-                Text(paneAttributed(rows, isLeft: isLeft))
-                    .font(.system(size: fontSize, design: .monospaced))
-                    .lineSpacing(0)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .padding(.leading, 8)
             }
             .frame(minWidth: contentWidth, maxWidth: .infinity, alignment: .topLeading)
             .padding(.vertical, 4)
@@ -480,21 +542,23 @@ struct SideBySideDiffTabView: View {
         NSLayoutManager().defaultLineHeight(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular))
     }
 
-    // Whole-pane code as a single AttributedString (one line per row, "" for gaps).
-    private func paneAttributed(_ rows: [AlignedDiffRow], isLeft: Bool) -> AttributedString {
-        var out = AttributedString()
-        let wordMode = highlightMode == .words
-        for (i, row) in rows.enumerated() {
-            let text = (isLeft ? row.leftText : row.rightText) ?? ""
-            let counterpart = isLeft ? pairedRightFor(row) : pairedLeftFor(row)
-            if wordMode, let other = counterpart {
-                appendWordDiff(&out, text: text, other: other, isLeft: isLeft)
-            } else {
-                out += AttributedString(text)
-            }
-            if i != rows.count - 1 { out += AttributedString("\n") }
+    // Empty text == 0 lines, not one phantom empty line. A phantom "" spuriously
+    // LCS-matches a blank line in the other side, mis-aligning added/deleted files.
+    static func splitLines(_ s: String) -> [String] {
+        s.isEmpty ? [] : s.components(separatedBy: "\n")
+    }
+
+    // One row's code as an AttributedString ("" for a gap row). Word mode shades the
+    // differing run against its modification counterpart.
+    private func lineAttributed(_ row: AlignedDiffRow, isLeft: Bool) -> AttributedString {
+        let text = (isLeft ? row.leftText : row.rightText) ?? ""
+        if highlightMode == .words,
+           let other = isLeft ? pairedRightFor(row) : pairedLeftFor(row) {
+            var out = AttributedString()
+            appendWordDiff(&out, text: text, other: other, isLeft: isLeft)
+            return out
         }
-        return out
+        return AttributedString(text)
     }
 
     // Word-level highlight: shade only the run that differs (common prefix/suffix fold).
@@ -712,8 +776,8 @@ struct SideBySideDiffTabView: View {
     }
 
     private func recomputeHunks() {
-        let src = sourceText.components(separatedBy: "\n")
-        let wrk = workingText.components(separatedBy: "\n")
+        let src = Self.splitLines(sourceText)
+        let wrk = Self.splitLines(workingText)
         hunks = LineDiffer.hunks(source: src, working: wrk, whitespace: whitespaceMode)
         if hunks.isEmpty {
             currentHunkIndex = -1

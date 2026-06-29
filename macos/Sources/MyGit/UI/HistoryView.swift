@@ -10,19 +10,27 @@ struct HistoryListView: View {
                 .padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         } else {
-            List(selection: $vm.selectedCommit) {
-                ForEach(vm.commits) { commit in
-                    CommitRow(commit: commit)
-                        .tag(commit as GitCommit?)
-                }
-                if vm.hasMore {
-                    LoadMoreButton(isLoading: vm.isLoadingMore) {
-                        await vm.loadMore()
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(vm.commits) { commit in
+                        CommitRow(commit: commit)
+                            .padding(.horizontal, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4).fill(
+                                    vm.selectedCommit == commit ? Color.accentColor.opacity(0.25) : .clear
+                                )
+                            )
+                            .onTapGesture { vm.selectedCommit = commit }
+                            .padding(.horizontal, 6)
                     }
-                    .selectionDisabled()
+                    if vm.hasMore {
+                        LoadMoreButton(isLoading: vm.isLoadingMore) {
+                            await vm.loadMore()
+                        }
+                    }
                 }
+                .padding(.vertical, 4)
             }
-            .listStyle(.inset)
         }
     }
 }
@@ -46,6 +54,7 @@ struct CommitRow: View {
             .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
