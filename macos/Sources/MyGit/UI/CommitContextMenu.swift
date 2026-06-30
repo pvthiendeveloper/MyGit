@@ -130,15 +130,18 @@ struct CommitInputSheet: View {
     let title: String
     let prompt: String
     let placeholder: String
+    let allowEmpty: Bool
     let onConfirm: (String) -> Void
     @State private var text: String
     @Environment(\.dismiss) private var dismiss
 
     init(title: String, prompt: String, placeholder: String, seed: String,
+         allowEmpty: Bool = false,
          onConfirm: @escaping (String) -> Void) {
         self.title = title
         self.prompt = prompt
         self.placeholder = placeholder
+        self.allowEmpty = allowEmpty
         self.onConfirm = onConfirm
         _text = State(initialValue: seed)
     }
@@ -154,11 +157,11 @@ struct CommitInputSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("OK") {
                     let v = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !v.isEmpty else { return }
+                    guard allowEmpty || !v.isEmpty else { return }
                     onConfirm(v); dismiss()
                 }
                 .keyboardShortcut(.return, modifiers: [])
-                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!allowEmpty && text.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(24).frame(width: 380)

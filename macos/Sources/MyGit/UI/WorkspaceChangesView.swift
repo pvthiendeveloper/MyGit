@@ -71,6 +71,7 @@ private struct RepoChangesSection: View {
         .onChange(of: changesVM.selectedChange) {
             coordinator.setActive(bundle)
         }
+        .changesGitActionHost(bundle.changes)
     }
 
     private var header: some View {
@@ -120,6 +121,15 @@ private struct RepoChangesSection: View {
                     .lineLimit(1)
             }
 
+            Menu {
+                ChangesGitMenu(bundle: bundle)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Git actions")
             Button {
                 Task { await changesVM.refresh() }
             } label: {
@@ -135,5 +145,6 @@ private struct RepoChangesSection: View {
             withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
         }
         .onTapGesture { coordinator.setActive(bundle) }
+        .contextMenu { ChangesGitMenu(bundle: bundle) }
     }
 }

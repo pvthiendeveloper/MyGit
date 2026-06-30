@@ -24,6 +24,12 @@ final class ChangesViewModel: ObservableObject {
     @Published var canAmend: Bool = false
     @Published var pendingRollback: FileChange?
     @Published var pendingDelete: FileChange?
+    // Triggers for the right-click "Git" menu's sheets/dialogs (hosted in the list view).
+    @Published var pendingNewBranch = false
+    @Published var pendingNewTag = false
+    @Published var pendingResetHead = false
+    @Published var pendingDiscardAll = false
+    @Published var pendingStash = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
@@ -374,5 +380,124 @@ final class ChangesViewModel: ObservableObject {
 
     func refresh() async {
         await refreshStatus()
+    }
+
+    // MARK: - Repo-level actions (right-click Git menu)
+
+    /// Create a branch off the current branch and switch to it.
+    func createBranch(name: String) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.createBranch(name, from: status?.branch ?? "HEAD", at: repo.url)
+            try await git.checkout(name, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Stash all changes (incl. untracked) under an optional title.
+    func stashAll(message: String?) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        let m = message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try await git.stashPush(message: (m?.isEmpty ?? true) ? nil : m, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Tag the current HEAD.
+    func tagHead(name: String) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.createTag(name, at: "HEAD", message: nil, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Reset the current branch to HEAD with the given mode (hard discards working changes).
+    func resetHead(mode: GitResetMode) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.resetTo(commit: "HEAD", mode: mode, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Discard every uncommitted change: restore tracked files, delete untracked ones.
+    func discardAllChanges() async {
+        guard let repo = repoSource(), let status, !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            let tracked = status.changes.filter { !$0.isUntracked }.map { $0.path }
+            if !tracked.isEmpty { try await git.restore(at: repo.url, paths: tracked) }
+            for c in status.changes where c.isUntracked {
+                try await git.removeFile(at: repo.url, path: c.path, tracked: false)
+            }
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Save a patch of all local changes via a save panel.
+    func createPatchAllChanges() {
+        #if canImport(AppKit)
+        guard let status, !status.changes.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "local-changes.patch"
+        panel.canCreateDirectories = true
+        panel.title = "Save Patch"
+        guard panel.runModal() == .OK, let url = panel.url, let repo = repoSource() else { return }
+        let changes = status.changes
+        Task {
+            do {
+                let patch = try await git.diffPatch(at: repo.url, changes: changes)
+                try patch.data(using: .utf8)?.write(to: url)
+            } catch {
+                main.errorMessage = error.localizedDescription
+            }
+        }
+        #endif
+    }
+
+    /// Create a new worktree from the current branch in a user-picked directory.
+    func createWorktree() {
+        #if canImport(AppKit)
+        guard let repo = repoSource() else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.title = "Choose Worktree Location"
+        panel.prompt = "Create Worktree"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let from = status?.branch ?? "HEAD"
+        Task {
+            main.isBusy = true
+            defer { main.isBusy = false }
+            do {
+                try await git.newWorktree(path: url, from: from, at: repo.url)
+                await onFinished()
+            } catch {
+                main.errorMessage = error.localizedDescription
+            }
+        }
+        #endif
     }
 }

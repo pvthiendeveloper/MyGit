@@ -11,6 +11,8 @@ final class MainViewModel: ObservableObject {
     }
 
     @Published var tab: Tab = .changes
+    /// Programmatically opens the toolbar's branch popover (from the Changes Git menu).
+    @Published var showBranchPopover = false
     @Published var detailTab: DetailTab = .content
     @Published var comparePair: ComparePair? = nil
     @Published var errorMessage: String?

@@ -7,7 +7,6 @@ struct ToolbarBar: View {
     @EnvironmentObject var changes: ChangesViewModel
     @EnvironmentObject var branches: BranchesViewModel
     @EnvironmentObject var remote: RemoteViewModel
-    @State private var showBranchPopover = false
     @State private var showRepoPopover = false
     @State private var showRemoteMenu = false
     @State private var pendingPush: PendingPush?
@@ -116,7 +115,7 @@ struct ToolbarBar: View {
     private var branchButton: some View {
         Button {
             guard repos.selected != nil else { return }
-            showBranchPopover.toggle()
+            main.showBranchPopover.toggle()
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "arrow.triangle.branch")
@@ -129,7 +128,7 @@ struct ToolbarBar: View {
                 }
                 .layoutPriority(1)
                 Spacer(minLength: 4)
-                DropdownBadge(isOpen: showBranchPopover)
+                DropdownBadge(isOpen: main.showBranchPopover)
             }
             .padding(.horizontal, 12)
             .frame(minWidth: 120, maxWidth: 220, maxHeight: .infinity)
@@ -143,7 +142,7 @@ struct ToolbarBar: View {
             Color(NSColor.separatorColor).frame(width: 1)
         }
         .disabled(repos.selected == nil)
-        .popover(isPresented: $showBranchPopover, arrowEdge: .bottom) {
+        .popover(isPresented: $main.showBranchPopover, arrowEdge: .bottom) {
             BranchPopover()
                 .environmentObject(main)
                 .environmentObject(repos)

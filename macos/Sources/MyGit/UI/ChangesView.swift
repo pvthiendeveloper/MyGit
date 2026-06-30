@@ -5,6 +5,7 @@ struct ChangesListView: View {
     @EnvironmentObject var vm: ChangesViewModel
     @EnvironmentObject var editor: FileEditorViewModel
     @EnvironmentObject var main: MainViewModel
+    @EnvironmentObject var coordinator: AppCoordinator
 
     private var changes: [FileChange] { vm.status?.changes ?? [] }
 
@@ -66,6 +67,7 @@ struct ChangesListView: View {
             main.tab = .files
             DispatchQueue.main.async { vm.jumpToSourcePath = nil }
         }
+        .changesGitActionHost(vm)
     }
 
     private var header: some View {
@@ -80,6 +82,15 @@ struct ChangesListView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
+            Menu {
+                ChangesGitMenu(bundle: coordinator.activeBundle)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Git actions")
             Button {
                 Task { await vm.refresh() }
             } label: {
@@ -90,6 +101,8 @@ struct ChangesListView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .contextMenu { ChangesGitMenu(bundle: coordinator.activeBundle) }
     }
 }
 
