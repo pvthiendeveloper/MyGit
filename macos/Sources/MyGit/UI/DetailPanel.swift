@@ -59,8 +59,8 @@ struct DetailPanel: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -94,8 +94,8 @@ struct DetailPanel: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }

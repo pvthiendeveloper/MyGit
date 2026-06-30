@@ -64,9 +64,11 @@ private struct FileTabItem: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 14, height: 14)
+                    .frame(width: 16, height: 16)
                     .background(isHovered ? Color.secondary.opacity(0.2) : Color.clear)
                     .clipShape(Circle())
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
