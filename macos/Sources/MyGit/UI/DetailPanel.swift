@@ -155,6 +155,7 @@ struct DetailPanel: View {
     private var tabContentLabel: String {
         switch main.tab {
         case .changes: return "Diff"
+        case .stash:   return "Diff"
         case .history: return "Commit"
         case .files:   return "Editor"
         }
@@ -187,6 +188,8 @@ struct DetailPanel: View {
             } else {
                 placeholder("Select a file to view its diff.")
             }
+        case .stash:
+            placeholder("Expand a stash and pick a file to view its diff.")
         case .history:
             if let commit = history.selectedCommit {
                 CommitDetailHeader(commit: commit)

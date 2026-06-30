@@ -40,7 +40,7 @@ struct StashPanelView: View {
                 }
             }
         }
-        .frame(maxHeight: 240)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

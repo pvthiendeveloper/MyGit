@@ -7,6 +7,7 @@ struct SidebarPanel: View {
         VStack(spacing: 0) {
             Picker("", selection: $main.tab) {
                 Text("Changes").tag(MainViewModel.Tab.changes)
+                Text("Stash").tag(MainViewModel.Tab.stash)
                 Text("History").tag(MainViewModel.Tab.history)
                 Text("Files").tag(MainViewModel.Tab.files)
             }
@@ -18,6 +19,8 @@ struct SidebarPanel: View {
             switch main.tab {
             case .changes:
                 WorkspaceChangesView()
+            case .stash:
+                WorkspaceStashView()
             case .history:
                 WorkspaceHistoryView()
             case .files:

@@ -5,31 +5,15 @@ import SwiftUI
 /// file list and inline commit composer (commit + AI message target that repo).
 struct WorkspaceChangesView: View {
     @EnvironmentObject var coordinator: AppCoordinator
-    private enum BottomTab: Hashable { case commit, stash }
-    @State private var bottomTab: BottomTab = .commit
 
     var body: some View {
         if coordinator.bundles.count <= 1 {
-            // Single repo: changes list on top, a Commit/Stash tabbed composer below.
+            // Single repo: unchanged UX, driven by the active bundle in env.
             VStack(spacing: 0) {
                 ChangesListView()
                 Divider()
-                VStack(spacing: 8) {
-                    Picker("", selection: $bottomTab) {
-                        Text("Commit").tag(BottomTab.commit)
-                        Text("Stash").tag(BottomTab.stash)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    switch bottomTab {
-                    case .commit:
-                        CommitComposerView()
-                    case .stash:
-                        StashPanelView(vm: coordinator.activeBundle.stash)
-                    }
-                }
-                .padding(10)
+                CommitComposerView()
+                    .padding(10)
             }
         } else {
             ScrollView {
