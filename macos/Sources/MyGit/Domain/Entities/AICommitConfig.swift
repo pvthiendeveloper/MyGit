@@ -4,6 +4,7 @@ import Foundation
 enum AIProvider: String, CaseIterable, Identifiable, Sendable {
     case openai
     case gemini
+    case anthropic
     case custom
 
     var id: String { rawValue }
@@ -12,6 +13,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openai: return "OpenAI"
         case .gemini: return "Google Gemini"
+        case .anthropic: return "Anthropic Claude"
         case .custom: return "Custom (OpenAI-compatible)"
         }
     }
@@ -22,6 +24,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openai: return "https://api.openai.com/v1"
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
+        case .anthropic: return "https://api.anthropic.com/v1"
         case .custom: return "http://localhost:20128/v1"
         }
     }
@@ -32,6 +35,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
             return ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"]
         case .gemini:
             return ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
+        case .anthropic:
+            return ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
         case .custom:
             return ["cc/claude-opus-4-7", "kr/claude-sonnet-4.5", "glm/glm-5.1", "vertex/gemini-3.1-pro-preview"]
         }
@@ -41,7 +46,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
     var isOpenAICompatible: Bool {
         switch self {
         case .openai, .custom: return true
-        case .gemini: return false
+        case .gemini, .anthropic: return false
         }
     }
 
@@ -50,6 +55,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openai: return "OpenAI"
         case .gemini: return "Gemini"
+        case .anthropic: return "Anthropic"
         case .custom: return "Custom"
         }
     }
@@ -59,6 +65,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openai: return "brain"
         case .gemini: return "sparkles"
+        case .anthropic: return "ant"
         case .custom: return "slider.horizontal.3"
         }
     }
@@ -68,6 +75,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openai: return "Key from platform.openai.com. Stored in your keychain."
         case .gemini: return "Key from aistudio.google.com. Stored in your keychain."
+        case .anthropic: return "Key from console.anthropic.com. Native Messages API. Stored in your keychain."
         case .custom: return "OpenAI-compatible endpoint (9Router, Ollama, OpenRouter…). Key stored in keychain."
         }
     }

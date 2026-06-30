@@ -8,6 +8,11 @@ protocol CommitMessageRepository: Sendable {
     /// URL). Returns a short human-readable detail on success; throws on
     /// failure. Does not consume generation tokens.
     func testConnection(config: AIRequestConfig) async throws -> String
+
+    /// Fetch the model IDs the provider exposes for this config. Used to
+    /// populate the model picker with real options instead of hardcoded
+    /// defaults. Throws on failure; does not consume generation tokens.
+    func listModels(config: AIRequestConfig) async throws -> [String]
 }
 
 enum CommitMessageError: LocalizedError {

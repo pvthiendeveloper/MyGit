@@ -26,6 +26,11 @@ final class SettingsViewModel: ObservableObject {
     /// Transient connection-test result per provider (not persisted).
     @Published var testStatus: [String: ConnectionTestStatus] = [:]
 
+    /// Model IDs fetched from each provider's API (via Test Connection),
+    /// keyed by `AIProvider.rawValue`. Persisted so the picker keeps the real
+    /// list across launches. Empty until the user tests the connection.
+    @Published var fetchedModels: [String: [String]]
+
     private let credentials: CredentialRepository
     private let defaults: UserDefaults
     private let ai: CommitMessageRepository
@@ -41,6 +46,7 @@ final class SettingsViewModel: ObservableObject {
         static let generateBody = "MyGit.ai.generateBody"
         static func model(_ p: AIProvider) -> String { "MyGit.ai.model.\(p.rawValue)" }
         static func baseURL(_ p: AIProvider) -> String { "MyGit.ai.baseURL.\(p.rawValue)" }
+        static func modelList(_ p: AIProvider) -> String { "MyGit.ai.modelList.\(p.rawValue)" }
     }
 
     init(credentials: CredentialRepository,
@@ -56,12 +62,17 @@ final class SettingsViewModel: ObservableObject {
 
         var m: [String: String] = [:]
         var b: [String: String] = [:]
+        var fetched: [String: [String]] = [:]
         for p in AIProvider.allCases {
             m[p.rawValue] = defaults.string(forKey: Keys.model(p)) ?? (p.defaultModels.first ?? "")
             b[p.rawValue] = defaults.string(forKey: Keys.baseURL(p)) ?? p.defaultBaseURL
+            if let list = defaults.stringArray(forKey: Keys.modelList(p)), !list.isEmpty {
+                fetched[p.rawValue] = list
+            }
         }
         self.models = m
         self.baseURLs = b
+        self.fetchedModels = fetched
         // API keys are read lazily (see loadKey) so launching the app never
         // touches the keychain — that would pop the ACL prompt every run.
         self.apiKeys = [:]
@@ -138,14 +149,28 @@ final class SettingsViewModel: ObservableObject {
         testStatus[p.rawValue] = .testing
         Task { [ai] in
             do {
-                let detail = try await ai.testConnection(config: cfg)
-                testStatus[p.rawValue] = .success(detail)
+                let list = try await ai.listModels(config: cfg)
+                setFetchedModels(list, for: p)
+                testStatus[p.rawValue] = .success("Connected — \(list.count) models available")
             } catch {
                 let msg = (error as? LocalizedError)?.errorDescription
                     ?? error.localizedDescription
                 testStatus[p.rawValue] = .failure(msg)
             }
         }
+    }
+
+    /// Models offered in the picker for `p`: the API-fetched list when present
+    /// (after Test Connection), otherwise the hardcoded defaults.
+    func availableModels(for p: AIProvider) -> [String] {
+        let fetched = fetchedModels[p.rawValue] ?? []
+        return fetched.isEmpty ? p.defaultModels : fetched
+    }
+
+    /// Store and persist the model list fetched from a provider's API.
+    private func setFetchedModels(_ list: [String], for p: AIProvider) {
+        fetchedModels[p.rawValue] = list
+        defaults.set(list, forKey: Keys.modelList(p))
     }
 
     /// The base URL to send requests to for `p`.

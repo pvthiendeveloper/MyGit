@@ -99,7 +99,7 @@ struct AICommitSettingsView: View {
 
                 modelField
 
-                if provider == .custom {
+                if provider == .custom || provider == .anthropic {
                     HStack {
                         TextField("Base URL", text: Binding(
                             get: { settings.baseURL(for: provider) },
@@ -168,7 +168,7 @@ struct AICommitSettingsView: View {
 
     @ViewBuilder
     private var modelField: some View {
-        let models = provider.defaultModels
+        let models = settings.availableModels(for: provider)
         let current = settings.model(for: provider)
         Picker("Model", selection: Binding(
             get: { current },

@@ -41,6 +41,8 @@ struct AICommitMessageRepository: CommitMessageRepository {
         let raw: String
         if config.provider.isOpenAICompatible {
             raw = try await callOpenAI(config: config, user: userPrompt)
+        } else if config.provider == .anthropic {
+            raw = try await callAnthropic(config: config, user: userPrompt)
         } else {
             raw = try await callGemini(config: config, user: userPrompt)
         }
@@ -50,15 +52,23 @@ struct AICommitMessageRepository: CommitMessageRepository {
     // MARK: - Connection test
 
     func testConnection(config: AIRequestConfig) async throws -> String {
+        let models = try await listModels(config: config)
+        return "Connected — \(models.count) models available"
+    }
+
+    func listModels(config: AIRequestConfig) async throws -> [String] {
         guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
         if config.provider.isOpenAICompatible {
-            return try await listOpenAIModels(config: config)
+            return try await fetchOpenAIModels(config: config)
+        } else if config.provider == .anthropic {
+            return try await fetchAnthropicModels(config: config)
         } else {
-            return try await listGeminiModels(config: config)
+            return try await fetchGeminiModels(config: config)
         }
     }
 
-    private func listOpenAIModels(config: AIRequestConfig) async throws -> String {
+    /// OpenAI/compatible `GET /models` → `data[].id`.
+    private func fetchOpenAIModels(config: AIRequestConfig) async throws -> [String] {
         let base = config.baseURL.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/models") else {
@@ -71,11 +81,13 @@ struct AICommitMessageRepository: CommitMessageRepository {
         try Self.checkStatus(resp, data)
 
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let count = (json?["data"] as? [[String: Any]])?.count
-        return count.map { "Connected — \($0) models available" } ?? "Connected"
+        let ids = (json?["data"] as? [[String: Any]])?
+            .compactMap { $0["id"] as? String } ?? []
+        return ids.sorted()
     }
 
-    private func listGeminiModels(config: AIRequestConfig) async throws -> String {
+    /// Gemini `GET /models?key=` → `models[].name` with the `models/` prefix stripped.
+    private func fetchGeminiModels(config: AIRequestConfig) async throws -> [String] {
         let base = config.baseURL.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(base)/models?key=\(config.apiKey)") else {
@@ -85,8 +97,10 @@ struct AICommitMessageRepository: CommitMessageRepository {
         try Self.checkStatus(resp, data)
 
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let count = (json?["models"] as? [[String: Any]])?.count
-        return count.map { "Connected — \($0) models available" } ?? "Connected"
+        let ids = (json?["models"] as? [[String: Any]])?
+            .compactMap { $0["name"] as? String }
+            .map { $0.hasPrefix("models/") ? String($0.dropFirst("models/".count)) : $0 } ?? []
+        return ids.sorted()
     }
 
     // MARK: - OpenAI chat completions
@@ -187,6 +201,69 @@ struct AICommitMessageRepository: CommitMessageRepository {
               let text = parts.first?["text"] as? String else {
             throw CommitMessageError.badResponse(Self.snippet(data))
         }
+        return text
+    }
+
+    // MARK: - Anthropic Messages API
+
+    /// Anthropic version header required on every Messages API request.
+    private static let anthropicVersion = "2023-06-01"
+
+    /// Anthropic `GET /models` → `data[].id`.
+    private func fetchAnthropicModels(config: AIRequestConfig) async throws -> [String] {
+        let base = config.baseURL.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/models") else {
+            throw CommitMessageError.badResponse("bad base URL")
+        }
+        var req = URLRequest(url: url)
+        req.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
+        req.setValue(Self.anthropicVersion, forHTTPHeaderField: "anthropic-version")
+
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
+
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let ids = (json?["data"] as? [[String: Any]])?
+            .compactMap { $0["id"] as? String } ?? []
+        return ids.sorted()
+    }
+
+    private func callAnthropic(config: AIRequestConfig, user: String) async throws -> String {
+        let base = config.baseURL.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/messages") else {
+            throw CommitMessageError.badResponse("bad base URL")
+        }
+        // Note: no `temperature` — deprecated/rejected on Opus 4.7+ (400).
+        let body: [String: Any] = [
+            "model": config.model,
+            "max_tokens": 1024,
+            "system": Self.systemPrompt(includeBody: config.includeBody),
+            "messages": [
+                ["role": "user", "content": user]
+            ]
+        ]
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
+        req.setValue(Self.anthropicVersion, forHTTPHeaderField: "anthropic-version")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
+
+        // Response shape: { content: [ { type: "text", text: "…" }, … ] }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let blocks = json["content"] as? [[String: Any]] else {
+            throw CommitMessageError.badResponse(Self.snippet(data))
+        }
+        let text = blocks
+            .filter { ($0["type"] as? String) == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined()
+        guard !text.isEmpty else { throw CommitMessageError.badResponse(Self.snippet(data)) }
         return text
     }
 
