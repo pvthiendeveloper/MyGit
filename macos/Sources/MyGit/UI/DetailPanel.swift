@@ -66,6 +66,9 @@ struct DetailPanel: View {
         }
         .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu {
+            Button("Close") { main.closeCompare() }
+        }
     }
 
     private func diffTabChip(_ tab: DiffTab) -> some View {
@@ -101,6 +104,39 @@ struct DetailPanel: View {
         }
         .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu { diffTabMenu(tab) }
+    }
+
+    @ViewBuilder
+    private func diffTabMenu(_ tab: DiffTab) -> some View {
+        Button("Close") { main.closeDiffTab(tab.id) }
+        Button("Close Others") { main.closeOtherDiffTabs(keep: tab.id) }
+            .disabled(main.diffTabs.count < 2)
+        Button("Close All") { main.closeAllDiffTabs() }
+
+        Divider()
+
+        Button("Copy Full Path") {
+            if let abs = absolutePath(tab.path) { FileActions.copyToPasteboard(abs) }
+        }
+        Button("Copy Relative Path") { FileActions.copyToPasteboard(tab.path) }
+        if tab.mode != .commitVsParent {
+            Button("Reveal in Finder") {
+                if let abs = absolutePath(tab.path) { FileActions.reveal(absPath: abs) }
+            }
+            Button("Open in Default App") {
+                if let abs = absolutePath(tab.path) { FileActions.openDefault(absPath: abs) }
+            }
+        }
+
+        Divider()
+
+        Button("Reopen Closed Tab") { main.reopenClosedDiffTab() }
+            .disabled(!main.hasClosedDiffTabs)
+    }
+
+    private func absolutePath(_ relative: String) -> String? {
+        coordinator.activeBundle.repo.url.appendingPathComponent(relative).path
     }
 
     private func detailTabButton(label: String, tab: MainViewModel.DetailTab) -> some View {

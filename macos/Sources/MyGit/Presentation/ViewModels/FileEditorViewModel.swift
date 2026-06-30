@@ -4,6 +4,7 @@ import Foundation
 final class FileEditorViewModel: ObservableObject {
     @Published var openFileTabs: [OpenFileTab] = []
     @Published var activeFileTabId: UUID?
+    @Published private(set) var closedPaths: [String] = []
 
     var activeFileTab: OpenFileTab? {
         guard let id = activeFileTabId else { return nil }
@@ -30,6 +31,7 @@ final class FileEditorViewModel: ObservableObject {
     func repositoryDidChange() {
         openFileTabs.removeAll()
         activeFileTabId = nil
+        closedPaths.removeAll()
     }
 
     func openFile(_ node: FileTreeNode) {
@@ -76,7 +78,8 @@ final class FileEditorViewModel: ObservableObject {
 
     func closeFileTab(id: UUID) {
         guard let idx = openFileTabs.firstIndex(where: { $0.id == id }) else { return }
-        openFileTabs.remove(at: idx)
+        let removed = openFileTabs.remove(at: idx)
+        recordClosed(removed.path)
         if activeFileTabId == id {
             if openFileTabs.isEmpty {
                 activeFileTabId = nil
@@ -85,6 +88,60 @@ final class FileEditorViewModel: ObservableObject {
                 activeFileTabId = openFileTabs[newIdx].id
             }
         }
+    }
+
+    func closeOtherFileTabs(keep id: UUID) {
+        for tab in openFileTabs where tab.id != id {
+            recordClosed(tab.path)
+        }
+        openFileTabs.removeAll { $0.id != id }
+        activeFileTabId = id
+    }
+
+    func closeAllFileTabs() {
+        for tab in openFileTabs {
+            recordClosed(tab.path)
+        }
+        openFileTabs.removeAll()
+        activeFileTabId = nil
+    }
+
+    /// Closes every non-dirty tab; keeps tabs with unsaved edits.
+    func closeSavedFileTabs() {
+        for tab in openFileTabs where !tab.isDirty {
+            recordClosed(tab.path)
+        }
+        openFileTabs.removeAll { !$0.isDirty }
+        if let active = activeFileTabId, !openFileTabs.contains(where: { $0.id == active }) {
+            activeFileTabId = openFileTabs.first?.id
+        }
+    }
+
+    func reopenClosedTab() {
+        guard let path = closedPaths.popLast() else { return }
+        openFile(path: path)
+    }
+
+    private func recordClosed(_ path: String) {
+        closedPaths.removeAll { $0 == path }
+        closedPaths.append(path)
+    }
+
+    /// Absolute on-disk path for a tab, or nil if no repo is loaded.
+    func absolutePath(for tab: OpenFileTab) -> String? {
+        guard let repo = repoSource() else { return nil }
+        return repo.url.appendingPathComponent(tab.path).path
+    }
+
+    /// Opens a working-tree-vs-HEAD diff for the tab in a new detail diff tab.
+    func showDiffInNewTab(for tab: OpenFileTab) {
+        main.openDiffTab(
+            commitHash: "HEAD",
+            commitShortHash: "HEAD",
+            path: tab.path,
+            mode: .commitVsWorking,
+            forceNew: true
+        )
     }
 
     func saveFileTab(_ tab: OpenFileTab) async {

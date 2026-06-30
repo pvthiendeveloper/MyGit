@@ -79,6 +79,47 @@ private struct FileTabItem: View {
         .onHover { isHovered = $0 }
         .onTapGesture { vm.activeFileTabId = tab.id }
         .help(tab.path)
+        .contextMenu { contextMenu }
+    }
+
+    @ViewBuilder
+    private var contextMenu: some View {
+        Button("Close") { vm.closeFileTab(id: tab.id) }
+        Button("Close Others") { vm.closeOtherFileTabs(keep: tab.id) }
+            .disabled(vm.openFileTabs.count < 2)
+        Button("Close All") { vm.closeAllFileTabs() }
+        Button("Close Saved") { vm.closeSavedFileTabs() }
+            .disabled(!vm.openFileTabs.contains { !$0.isDirty })
+
+        Divider()
+
+        Button("Copy Full Path") {
+            if let abs = vm.absolutePath(for: tab) { FileActions.copyToPasteboard(abs) }
+        }
+        Button("Copy Relative Path") { FileActions.copyToPasteboard(tab.path) }
+        Button("Reveal in Finder") {
+            if let abs = vm.absolutePath(for: tab) { FileActions.reveal(absPath: abs) }
+        }
+        Button("Open in Default App") {
+            if let abs = vm.absolutePath(for: tab) { FileActions.openDefault(absPath: abs) }
+        }
+        Button("Open in Terminal") {
+            if let abs = vm.absolutePath(for: tab) {
+                FileActions.openTerminal(dir: (abs as NSString).deletingLastPathComponent)
+            }
+        }
+
+        Divider()
+
+        Button("Reopen Closed Tab") { vm.reopenClosedTab() }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+            .disabled(vm.closedPaths.isEmpty)
+
+        Divider()
+
+        Menu("Git") {
+            Button("Show Diff in New Tab") { vm.showDiffInNewTab(for: tab) }
+        }
     }
 }
 

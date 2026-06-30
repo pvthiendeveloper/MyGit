@@ -19,7 +19,16 @@ final class MainViewModel: ObservableObject {
     @Published var diffTabs: [DiffTab] = []
     @Published private(set) var tabHistory: [UUID] = []
     @Published private(set) var tabHistoryIndex: Int = -1
+    @Published private(set) var hasClosedDiffTabs: Bool = false
     private var navigating: Bool = false
+
+    private struct ClosedDiff {
+        let commitHash: String
+        let commitShortHash: String
+        let path: String
+        let mode: DiffTab.Mode
+    }
+    private var closedDiffs: [ClosedDiff] = []
 
     var canNavigateBackTab: Bool { tabHistoryIndex > 0 }
     var canNavigateForwardTab: Bool { tabHistoryIndex + 1 < tabHistory.count }
@@ -59,6 +68,9 @@ final class MainViewModel: ObservableObject {
             if case let .diff(active) = detailTab { return active == id }
             return false
         }()
+        if let tab = diffTabs.first(where: { $0.id == id }) {
+            recordClosedDiff(tab)
+        }
         diffTabs.removeAll { $0.id == id }
         tabHistory.removeAll { $0 == id }
         tabHistoryIndex = min(tabHistoryIndex, tabHistory.count - 1)
@@ -75,6 +87,48 @@ final class MainViewModel: ObservableObject {
                 detailTab = .content
             }
         }
+    }
+
+    func closeOtherDiffTabs(keep id: UUID) {
+        for tab in diffTabs where tab.id != id {
+            recordClosedDiff(tab)
+        }
+        diffTabs.removeAll { $0.id != id }
+        tabHistory.removeAll { $0 != id }
+        tabHistoryIndex = tabHistory.isEmpty ? -1 : tabHistory.count - 1
+        detailTab = .diff(id)
+    }
+
+    func closeAllDiffTabs() {
+        for tab in diffTabs {
+            recordClosedDiff(tab)
+        }
+        diffTabs.removeAll()
+        tabHistory.removeAll()
+        tabHistoryIndex = -1
+        detailTab = comparePair != nil ? .compare : .content
+    }
+
+    func reopenClosedDiffTab() {
+        guard let d = closedDiffs.popLast() else { return }
+        hasClosedDiffTabs = !closedDiffs.isEmpty
+        openDiffTab(
+            commitHash: d.commitHash,
+            commitShortHash: d.commitShortHash,
+            path: d.path,
+            mode: d.mode,
+            forceNew: true
+        )
+    }
+
+    private func recordClosedDiff(_ tab: DiffTab) {
+        closedDiffs.append(ClosedDiff(
+            commitHash: tab.commitHash,
+            commitShortHash: tab.commitShortHash,
+            path: tab.path,
+            mode: tab.mode
+        ))
+        hasClosedDiffTabs = true
     }
 
     func navigateBackTab() {
