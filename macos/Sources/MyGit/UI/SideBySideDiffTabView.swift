@@ -281,9 +281,13 @@ struct SideBySideDiffTabView: View {
 
     private var statsLabel: String {
         let count = hunks.count
+        let word = count == 1 ? "difference" : "differences"
+        // "included" only means something when hunks can be excluded from an apply,
+        // i.e. an editable right side. Read-only diffs just report the count.
+        guard isRightEditable else { return "\(count) \(word)" }
         let excluded = excludedHunks.intersection(Set(hunks.map(\.id))).count
         let included = count - excluded
-        return "\(count) \(count == 1 ? "difference" : "differences"), \(included) included"
+        return "\(count) \(word), \(included) included"
     }
 
     private var settingsPopover: some View {
@@ -342,37 +346,32 @@ struct SideBySideDiffTabView: View {
         if isRightEditable {
             return AnyView(editableAligned(rows: rows, leftW: max(leftW, rightW)))
         }
-        // Non-editable: ONE scroll view holds left column + gutter + right column.
-        // A single shared vertical scroll means the three can't desync — every row's
-        // code, line-number, and highlight band line up 1:1, anchored to the top.
-        // GeometryReader sizes each code column to at least half the panel (so the
-        // panes fill the width and the divider stays centered) and pins content to the
-        // top-left, so a short file doesn't float in the middle of the viewport.
-        return AnyView(
-            GeometryReader { geo in
-                let half = max((geo.size.width - Self.gutterColWidth) / 2, 120)
-                let leftColW = max(leftW, half)
-                let rightColW = max(rightW, half)
-                ScrollViewReader { proxy in
-                    ScrollView([.horizontal, .vertical]) {
-                        HStack(alignment: .top, spacing: 0) {
-                            codeColumn(rows, isLeft: true, width: leftColW)
-                            gutterStack(rows)
-                            codeColumn(rows, isLeft: false, width: rightColW)
-                        }
-                        .frame(minHeight: geo.size.height, alignment: .topLeading)
-                        .padding(.vertical, 4)
-                    }
-                    .onChange(of: currentHunkIndex) { _, new in
-                        guard new >= 0, new < hunks.count,
-                              let target = rows.first(where: { $0.hunkId == hunks[new].id }) else { return }
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(rowAnchor(target.id), anchor: .center)
-                        }
-                    }
-                }
+        // Non-editable: two independent code panes (col 0 / col 2) with a fixed-width
+        // gutter (col 1) between them. Both panes are maxWidth:.infinity so the gutter
+        // stays centered regardless of line length; each pane scrolls horizontally on
+        // its own, while X/Y stay synced through activeCol (same machinery as editable).
+        return AnyView(readonlyAligned(rows: rows, leftW: leftW, rightW: rightW))
+    }
+
+    // Read-only side-by-side: same per-pane scroll + center gutter as editableAligned,
+    // but the right side is a code pane (col 2) instead of the live editor.
+    private func readonlyAligned(rows: [AlignedDiffRow], leftW: CGFloat, rightW: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            codePane(rows, isLeft: true, contentWidth: leftW, col: 0, pos: $leftScroll)
+            gutterColumn(rows, pos: $gutterScroll)
+            codePane(rows, isLeft: false, contentWidth: rightW, col: 2, pos: $rightScroll)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onChange(of: currentHunkIndex) { _, new in
+            guard new >= 0, new < hunks.count,
+                  let target = rows.first(where: { $0.hunkId == hunks[new].id }) else { return }
+            let anchor = rowAnchor(target.id)
+            withAnimation(.easeOut(duration: 0.15)) {
+                leftScroll.scrollTo(id: anchor, anchor: .center)
+                gutterScroll.scrollTo(id: anchor, anchor: .center)
+                rightScroll.scrollTo(id: anchor, anchor: .center)
             }
-        )
+        }
     }
 
     // Editable Current pane keeps its own scroll (TextEditor can't live inside the
@@ -393,45 +392,6 @@ struct SideBySideDiffTabView: View {
                 gutterScroll.scrollTo(id: anchor, anchor: .center)
             }
         }
-    }
-
-    // One column of fixed-height code rows, NO own ScrollView — it lives inside the
-    // shared scroll in alignedContent so it can never drift from the gutter.
-    private func codeColumn(_ rows: [AlignedDiffRow], isLeft: Bool, width: CGFloat) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(rows) { row in
-                ZStack(alignment: .leading) {
-                    if highlightMode == .lines {
-                        isLeft ? leftBg(row.kind) : rightBg(row.kind)
-                    }
-                    Text(lineAttributed(row, isLeft: isLeft))
-                        .font(.system(size: fontSize, design: .monospaced))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .textSelection(.enabled)
-                        .padding(.leading, 8)
-                }
-                .frame(width: width, height: rowHeight, alignment: .leading)
-                .id(isLeft ? rowAnchor(row.id) : "\(rowAnchor(row.id))-R")
-            }
-        }
-    }
-
-    // Gutter rows, NO own ScrollView — shares the alignedContent scroll.
-    private func gutterStack(_ rows: [AlignedDiffRow]) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(rows) { row in
-                HStack(spacing: 0) {
-                    gutterMark(row.kind, left: true)
-                    gutterNumber(row.leftLineNum)
-                    centerGutter(row)
-                    gutterNumber(row.rightLineNum)
-                    gutterMark(row.kind, left: false)
-                }
-                .frame(height: rowHeight)
-            }
-        }
-        .frame(width: Self.gutterColWidth)
     }
 
     private func rowAnchor(_ id: Int) -> String { "R-\(id)" }
@@ -608,17 +568,18 @@ struct SideBySideDiffTabView: View {
     private func centerGutter(_ row: AlignedDiffRow) -> some View {
         ZStack {
             gutterBg
-            if row.isHunkStart, let hid = row.hunkId {
+            // Apply chevron + include checkbox only make sense when the right side is
+            // editable (working tree). In read-only diffs there's nothing to apply, so
+            // the gutter shows just the hunk polygon lines.
+            if row.isHunkStart, let hid = row.hunkId, isRightEditable {
                 HStack(spacing: 4) {
-                    if isRightEditable {
-                        Button { applyHunkById(hid) } label: {
-                            Image(systemName: "chevron.right.2")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Apply hunk to right")
+                    Button { applyHunkById(hid) } label: {
+                        Image(systemName: "chevron.right.2")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Color.accentColor)
                     }
+                    .buttonStyle(.borderless)
+                    .help("Apply hunk to right")
                     Button {
                         if excludedHunks.contains(hid) {
                             excludedHunks.remove(hid)
