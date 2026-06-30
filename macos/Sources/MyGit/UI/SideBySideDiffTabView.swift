@@ -25,6 +25,13 @@ struct SideBySideDiffTabView: View {
     @State private var excludedHunks: Set<Int> = []
     @State private var useCurrentVersion: Bool = false
 
+    // Syntax highlighting: full-file colors sliced per line (left = source, right =
+    // working). Recomputed only when the texts change (not on every keystroke).
+    @State private var syntaxOn: Bool = true
+    @State private var leftSyntax: [AttributedString] = []
+    @State private var rightSyntax: [AttributedString] = []
+    private var fileExt: String { (tab.path as NSString).pathExtension }
+
     // Side-by-side vertical-scroll sync. The column under the pointer drives;
     // the others follow its Y offset. Horizontal scroll stays per-pane.
     @State private var syncY: CGFloat = 0
@@ -72,6 +79,7 @@ struct SideBySideDiffTabView: View {
         .onChange(of: useCurrentVersion) { _, _ in
             Task { await reloadForCurrentVersionToggle() }
         }
+        .onChange(of: syntaxOn) { _, _ in recomputeSyntax() }
     }
 
     // MARK: - Secondary header (commit info + Current version)
@@ -131,10 +139,10 @@ struct SideBySideDiffTabView: View {
 
     private var toolbar: some View {
         HStack(spacing: 6) {
-            toolbarButton(systemName: "arrow.up", help: "Previous change", enabled: !hunks.isEmpty) {
+            toolbarButton(systemName: "arrow.up", help: "Previous change", enabled: canPrevHunk) {
                 jumpHunk(delta: -1)
             }
-            toolbarButton(systemName: "arrow.down", help: "Next change", enabled: !hunks.isEmpty) {
+            toolbarButton(systemName: "arrow.down", help: "Next change", enabled: canNextHunk) {
                 jumpHunk(delta: 1)
             }
             toolbarButton(systemName: "pencil", help: "Open in external editor", enabled: true) {
@@ -154,6 +162,7 @@ struct SideBySideDiffTabView: View {
             toolbarButton(systemName: "xmark", help: "Disable highlighting", enabled: highlightMode != .none) {
                 highlightMode = .none
             }
+            toolbarToggle(systemName: "paintbrush", help: "Syntax highlighting", isOn: $syntaxOn)
             toolbarToggle(systemName: "arrow.up.arrow.down.square", help: "Synchronize scrolling", isOn: $syncScroll)
             toolbarButton(systemName: "gearshape", help: "Diff settings", enabled: true) {
                 showSettings.toggle()
@@ -449,6 +458,7 @@ struct SideBySideDiffTabView: View {
             text: $workingText,
             fontSize: fontSize,
             topInset: 4,
+            syntaxExt: syntaxOn ? fileExt : nil,
             external: activeCol == 2 ? nil : CGPoint(x: syncX, y: syncY),
             onScroll: { p in
                 activeCol = 2
@@ -520,29 +530,30 @@ struct SideBySideDiffTabView: View {
     // differing run against its modification counterpart.
     private func lineAttributed(_ row: AlignedDiffRow, isLeft: Bool) -> AttributedString {
         let text = (isLeft ? row.leftText : row.rightText) ?? ""
+        let lineNum = isLeft ? row.leftLineNum : row.rightLineNum
+        var base = syntaxBase(isLeft: isLeft, lineNum: lineNum, fallback: text)
         if highlightMode == .words,
            let other = isLeft ? pairedRightFor(row) : pairedLeftFor(row) {
-            var out = AttributedString()
-            appendWordDiff(&out, text: text, other: other, isLeft: isLeft)
-            return out
+            overlayWordDiff(&base, text: text, other: other, isLeft: isLeft)
         }
-        return AttributedString(text)
+        return base
     }
 
-    // Word-level highlight: shade only the run that differs (common prefix/suffix fold).
-    private func appendWordDiff(_ out: inout AttributedString, text: String, other: String, isLeft: Bool) {
+    // Word-level highlight: shade the run that differs (common prefix/suffix fold) by
+    // applying a background over that character range of the (syntax-colored) base.
+    private func overlayWordDiff(_ base: inout AttributedString, text: String, other: String, isLeft: Bool) {
         let a = Array(text), b = Array(other)
         var p = 0
         while p < a.count && p < b.count && a[p] == b[p] { p += 1 }
         var la = a.count - 1, lb = b.count - 1
         while la >= p && lb >= p && a[la] == b[lb] { la -= 1; lb -= 1 }
-        if p > 0 { out += AttributedString(String(a[..<p])) }
-        if la >= p {
-            var mid = AttributedString(String(a[p...la]))
-            mid.backgroundColor = isLeft ? Color.red.opacity(0.4) : Color.green.opacity(0.4)
-            out += mid
-        }
-        if la + 1 < a.count { out += AttributedString(String(a[(la + 1)...])) }
+        guard la >= p else { return }
+        let count = base.characters.count
+        let lo = min(p, count), hi = min(la + 1, count)
+        guard lo < hi else { return }
+        let start = base.index(base.startIndex, offsetByCharacters: lo)
+        let end = base.index(base.startIndex, offsetByCharacters: hi)
+        base[start..<end].backgroundColor = isLeft ? Color.red.opacity(0.4) : Color.green.opacity(0.4)
     }
 
     private func pairedRightFor(_ row: AlignedDiffRow) -> String? {
@@ -689,9 +700,8 @@ struct SideBySideDiffTabView: View {
                 .font(.system(size: fontSize, design: .monospaced))
                 .foregroundStyle(unifiedFg(row.kind))
                 .frame(width: 14)
-            Text(row.text.isEmpty ? " " : row.text)
+            Text(unifiedAttributed(row))
                 .font(.system(size: fontSize, design: .monospaced))
-                .foregroundStyle(unifiedFg(row.kind))
                 .textSelection(.enabled)
             Spacer(minLength: 0)
         }
@@ -699,6 +709,21 @@ struct SideBySideDiffTabView: View {
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(unifiedBg(row.kind))
+    }
+
+    // Unified line text: syntax colors when on (deletion/context read from the source
+    // side, addition from the working side), else the flat add/del/context fg color.
+    private func unifiedAttributed(_ row: UnifiedRow) -> AttributedString {
+        let text = row.text.isEmpty ? " " : row.text
+        if syntaxOn {
+            let fromLeft = row.kind != .addition
+            let n = fromLeft ? row.leftNum : row.rightNum
+            let lines = fromLeft ? leftSyntax : rightSyntax
+            if let n, n - 1 >= 0, n - 1 < lines.count { return lines[n - 1] }
+        }
+        var a = AttributedString(text)
+        a.foregroundColor = unifiedFg(row.kind)
+        return a
     }
 
     private func unifiedPrefix(_ kind: UnifiedRow.Kind) -> String {
@@ -744,6 +769,23 @@ struct SideBySideDiffTabView: View {
         recomputeHunks()
     }
 
+    // Rebuild the per-line color slices from the current texts. Cheap after the first
+    // call per blob (SyntaxHighlighter memoizes by content), so safe to call on load.
+    private func recomputeSyntax() {
+        guard syntaxOn else { leftSyntax = []; rightSyntax = []; return }
+        leftSyntax = SyntaxHighlighter.shared.lines(sourceText, ext: fileExt, fontSize: fontSize)
+        rightSyntax = SyntaxHighlighter.shared.lines(workingText, ext: fileExt, fontSize: fontSize)
+    }
+
+    // Syntax base for one line, or plain text when off / unsupported / out of range.
+    private func syntaxBase(isLeft: Bool, lineNum: Int?, fallback: String) -> AttributedString {
+        guard syntaxOn, let n = lineNum else { return AttributedString(fallback) }
+        let lines = isLeft ? leftSyntax : rightSyntax
+        let idx = n - 1
+        guard idx >= 0, idx < lines.count else { return AttributedString(fallback) }
+        return lines[idx]
+    }
+
     private func recomputeHunks() {
         let src = Self.splitLines(sourceText)
         let wrk = Self.splitLines(workingText)
@@ -755,6 +797,11 @@ struct SideBySideDiffTabView: View {
         }
         excludedHunks = excludedHunks.intersection(Set(hunks.map(\.id)))
     }
+
+    // Nav is live only while there's somewhere to go. -1 (no hunk focused yet) can step
+    // either way; once focused, the end stops disable their direction.
+    private var canPrevHunk: Bool { !hunks.isEmpty && currentHunkIndex != 0 }
+    private var canNextHunk: Bool { !hunks.isEmpty && currentHunkIndex != hunks.count - 1 }
 
     private func jumpHunk(delta: Int) {
         guard !hunks.isEmpty else { return }
@@ -800,6 +847,7 @@ struct SideBySideDiffTabView: View {
             workingText = w
             diskText = w
             recomputeHunks()
+            recomputeSyntax()
         } catch {
             loadError = error.localizedDescription
         }
@@ -823,6 +871,7 @@ struct SideBySideDiffTabView: View {
             workingText = newRight
             diskText = newRight
             recomputeHunks()
+            recomputeSyntax()
         } catch {
             loadError = error.localizedDescription
         }
@@ -1035,6 +1084,8 @@ private struct SyncedTextEditor: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat
     var topInset: CGFloat
+    /// File extension for syntax highlighting; nil disables it (plain monospaced).
+    var syntaxExt: String?
     /// Offset to follow; nil while this pane is the active driver (don't fight the user).
     var external: CGPoint?
     var onScroll: (CGPoint) -> Void
@@ -1077,15 +1128,26 @@ private struct SyncedTextEditor: NSViewRepresentable {
             name: NSView.boundsDidChangeNotification,
             object: scroll.contentView
         )
+        context.coordinator.lastExt = syntaxExt
+        context.coordinator.applyHighlight(tv)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = scroll.documentView as? NSTextView else { return }
-        if tv.string != text { tv.string = text }
-        if (tv.font?.pointSize ?? 0) != fontSize {
+        let textChanged = tv.string != text
+        if textChanged { tv.string = text }
+        let fontChanged = (tv.font?.pointSize ?? 0) != fontSize
+        if fontChanged {
             tv.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        }
+        let extChanged = context.coordinator.lastExt != syntaxExt
+        // Re-color only on external text / font / toggle changes — NOT on the user's own
+        // keystrokes (those route through the debounced re-highlight to avoid clobbering).
+        if textChanged || fontChanged || extChanged {
+            context.coordinator.lastExt = syntaxExt
+            context.coordinator.applyHighlight(tv)
         }
         if let p = external {
             let clip = scroll.contentView
@@ -1103,12 +1165,44 @@ private struct SyncedTextEditor: NSViewRepresentable {
         weak var textView: NSTextView?
         weak var scrollView: NSScrollView?
         var suppress = false
+        var lastExt: String?
+        private var highlightWork: DispatchWorkItem?
 
         init(_ p: SyncedTextEditor) { parent = p }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
             parent.text = tv.string
+            // Re-color after the user pauses typing; coalesces bursts and keeps editing smooth.
+            highlightWork?.cancel()
+            guard parent.syntaxExt != nil else { return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, let tv = self.textView else { return }
+                self.applyHighlight(tv)
+            }
+            highlightWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
+
+        // Replace the text storage with syntax-colored attributes (selection preserved),
+        // or reset to a plain monospaced font when highlighting is off / unsupported.
+        @MainActor func applyHighlight(_ tv: NSTextView) {
+            let font = NSFont.monospacedSystemFont(ofSize: parent.fontSize, weight: .regular)
+            guard let ext = parent.syntaxExt,
+                  let attr = SyntaxHighlighter.shared.attributed(tv.string, ext: ext, fontSize: parent.fontSize) else {
+                let sel = tv.selectedRanges
+                tv.textStorage?.setAttributes(
+                    [.font: font, .foregroundColor: NSColor.textColor],
+                    range: NSRange(location: 0, length: (tv.string as NSString).length)
+                )
+                tv.typingAttributes = [.font: font, .foregroundColor: NSColor.textColor]
+                tv.selectedRanges = sel
+                return
+            }
+            let sel = tv.selectedRanges
+            tv.textStorage?.setAttributedString(attr)
+            tv.typingAttributes = [.font: font, .foregroundColor: NSColor.textColor]
+            tv.selectedRanges = sel
         }
 
         // Fires only on user-driven scroll: programmatic follows set `suppress`.

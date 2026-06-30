@@ -87,6 +87,15 @@ echo "▶︎ Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
+# SPM resource bundles (e.g. Highlightr's highlight.js + themes) live next to the
+# binary; Bundle.module finds them in Contents/Resources at runtime. Without this the
+# diff viewer's syntax highlighting silently no-ops (engine fails to load its JS).
+BIN_DIR="$(dirname "$BIN")"
+shopt -s nullglob
+for b in "$BIN_DIR"/*.bundle; do
+  cp -R "$b" "$APP/Contents/Resources/"
+done
+shopt -u nullglob
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 if [[ -f "$ROOT/Packaging/AppIcon.icns" ]]; then
   cp "$ROOT/Packaging/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
