@@ -42,6 +42,11 @@ struct SideBySideDiffTabView: View {
 
     struct HunkAnchor { let rowId: Int; let hunkIndex: Int }
 
+    // Transient flash on the hunk Prev/Next just landed on, so the user sees where the
+    // jump took them. Set strong, then animate back to 0.
+    @State private var flashHunkId: Int? = nil
+    @State private var flashOpacity: Double = 0
+
     // Side-by-side vertical-scroll sync. The column under the pointer drives;
     // the others follow its Y offset. Horizontal scroll stays per-pane.
     @State private var syncY: CGFloat = 0
@@ -436,6 +441,9 @@ struct SideBySideDiffTabView: View {
                         if highlightMode == .lines {
                             isLeft ? leftBg(row.kind) : rightBg(row.kind)
                         }
+                        if row.hunkId == flashHunkId {
+                            Color.accentColor.opacity(flashOpacity)
+                        }
                         Text(lineAttributed(row, isLeft: isLeft))
                             .font(.system(size: fontSize, design: .monospaced))
                             .lineLimit(1)
@@ -728,7 +736,12 @@ struct SideBySideDiffTabView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(unifiedBg(row.kind))
+        .background(
+            ZStack {
+                unifiedBg(row.kind)
+                if row.hunkId == flashHunkId { Color.accentColor.opacity(flashOpacity) }
+            }
+        )
     }
 
     // Unified line text: syntax colors when on (deletion/context read from the source
@@ -876,6 +889,7 @@ struct SideBySideDiffTabView: View {
             } else {
                 currentHunkIndex = max(0, min(hunks.count - 1, currentHunkIndex + delta))
             }
+            flashHunk(currentHunkIndex)
             return
         }
         let ref = referenceRowId
@@ -885,6 +899,26 @@ struct SideBySideDiffTabView: View {
         guard let t = target else { return }
         currentHunkIndex = t.hunkIndex   // existing onChange centers it into view
         advanceReference(toHunk: t.hunkIndex)
+        flashHunk(t.hunkIndex)
+    }
+
+    // Briefly tint the landed hunk's rows, then fade out.
+    private func flashHunk(_ index: Int) {
+        guard index >= 0, index < hunks.count else { return }
+        let h = hunks[index]
+        // Left code pane (and the right pane in read-only) flash via the SwiftUI band.
+        flashHunkId = h.id
+        flashOpacity = 0.5
+        withAnimation(.easeOut(duration: 0.9)) { flashOpacity = 0 }
+        // Editable right pane is an NSTextView, not a code-pane row — tint its text range.
+        if isRightEditable, let tv = editor.textView {
+            let startOff = workingLineStartOffset(h.workingStart + 1)
+            let endOff = workingLineStartOffset(h.workingEnd + 1)
+            let total = (tv.string as NSString).length
+            let len = endOff > startOff ? endOff - startOff : max(0, total - startOff)
+            editor.flash(range: NSRange(location: startOff, length: len),
+                         color: NSColor.controlAccentColor.withAlphaComponent(0.45))
+        }
     }
 
     // Move the reference onto the landed hunk so a repeated press steps on instead of
@@ -1214,6 +1248,21 @@ final class DiffEditorHandle: ObservableObject {
 
     func undo() { textView?.undoManager?.undo(); refresh() }
     func redo() { textView?.undoManager?.redo(); refresh() }
+
+    // Briefly tint a character range (the hunk Prev/Next landed on) then clear it, so the
+    // editable right pane flashes in step with the left code pane's band. Not undoable.
+    func flash(range: NSRange, color: NSColor) {
+        guard let ts = textView?.textStorage, ts.length > 0 else { return }
+        let loc = min(range.location, ts.length)
+        let len = min(range.length, ts.length - loc)
+        guard len > 0 else { return }
+        let r = NSRange(location: loc, length: len)
+        ts.addAttribute(.backgroundColor, value: color, range: r)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak ts] in
+            guard let ts, NSMaxRange(r) <= ts.length else { return }
+            ts.removeAttribute(.backgroundColor, range: r)
+        }
+    }
 
     deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
 }

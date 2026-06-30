@@ -144,6 +144,38 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(args, cwd: repo)
     }
 
+    func stashList(at repo: URL) async throws -> [GitStash] {
+        let out = try await GitRunner.runOrThrow(
+            ["stash", "list", "--format=\(GitStashParser.format)"],
+            cwd: repo
+        )
+        return GitStashParser.parse(out)
+    }
+
+    func stashApply(index: Int, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["stash", "apply", "stash@{\(index)}"], cwd: repo)
+    }
+
+    func stashPop(index: Int, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["stash", "pop", "stash@{\(index)}"], cwd: repo)
+    }
+
+    func stashDrop(index: Int, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["stash", "drop", "stash@{\(index)}"], cwd: repo)
+    }
+
+    func stashClear(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["stash", "clear"], cwd: repo)
+    }
+
+    func stashFiles(index: Int, at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(
+            ["stash", "show", "--name-only", "stash@{\(index)}"],
+            cwd: repo
+        )
+        return out.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+    }
+
     // MARK: - File ops
 
     func restore(at repo: URL, paths: [String]) async throws {

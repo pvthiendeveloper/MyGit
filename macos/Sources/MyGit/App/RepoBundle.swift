@@ -13,6 +13,7 @@ final class RepoBundle: Identifiable {
     var name: String { repo.name }
 
     let changes: ChangesViewModel
+    let stash: StashViewModel
     let history: HistoryViewModel
     let files: FilesViewModel
     let editor: FileEditorViewModel
@@ -33,6 +34,9 @@ final class RepoBundle: Identifiable {
         )
         self.changes = changes
         changes.setAIConfigSource { [weak settings] in settings?.requestConfig() }
+
+        let stash = StashViewModel(git: container.git, main: main, repoSource: repoSource)
+        self.stash = stash
 
         let history = HistoryViewModel(git: container.git, main: main, repoSource: repoSource)
         self.history = history
@@ -87,6 +91,7 @@ final class RepoBundle: Identifiable {
         }
         history.setOnFinished(refreshAll)
         history.setPushUpTo { [weak remote] commit in await remote?.pushUpToCommit(commit.id) }
+        stash.setOnFinished(refreshAll)
     }
 
     func refreshAll() async {
@@ -95,6 +100,7 @@ final class RepoBundle: Identifiable {
         await account.refreshAccount()
         await branches.refresh()
         await files.refreshFileTree()
+        await stash.refreshList()
     }
 
     private var isRefreshing = false
@@ -118,6 +124,7 @@ final class RepoBundle: Identifiable {
 
     func repositoryDidChange() {
         changes.repositoryDidChange()
+        stash.repositoryDidChange()
         history.repositoryDidChange()
         files.repositoryDidChange()
         editor.repositoryDidChange()

@@ -134,6 +134,13 @@ struct AICommitSettingsView: View {
                 Text(provider.hint)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if settings.isKeyInFile(provider) {
+                    Label("Keychain unavailable — saved to a plaintext file (~/Library/Application Support/MyGit). Less secure.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
         }
         .formStyle(.grouped)

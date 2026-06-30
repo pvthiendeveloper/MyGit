@@ -31,9 +31,15 @@ final class SettingsViewModel: ObservableObject {
     /// list across launches. Empty until the user tests the connection.
     @Published var fetchedModels: [String: [String]]
 
+    /// Providers whose key currently lives in the plaintext file fallback (keychain
+    /// save failed). Surfaced in the UI so the user knows it's not in the keychain.
+    @Published private(set) var keyInFile: Set<String> = []
+
     private let credentials: CredentialRepository
     private let defaults: UserDefaults
     private let ai: CommitMessageRepository
+    /// Last-resort secret store used only when the keychain is unavailable.
+    private let secretFile = SecretFileStore()
 
     /// Session cache of keychain-resolved keys, keyed by `AIProvider.rawValue`.
     /// Reading the secret data triggers the keychain ACL prompt, so we read each
@@ -86,9 +92,21 @@ final class SettingsViewModel: ObservableObject {
         guard !loadedKeys.contains(p.rawValue) else { return }
         loadedKeys.insert(p.rawValue)
         if apiKeys[p.rawValue]?.isEmpty ?? true {
-            apiKeys[p.rawValue] = credentials.token(host: p.keychainAccount) ?? ""
+            if let k = credentials.token(host: p.keychainAccount), !k.isEmpty {
+                apiKeys[p.rawValue] = k
+                keyInFile.remove(p.rawValue)
+            } else if let f = secretFile.get(account: p.keychainAccount), !f.isEmpty {
+                // Keychain couldn't return it — fall back to the plaintext file.
+                apiKeys[p.rawValue] = f
+                keyInFile.insert(p.rawValue)
+            } else {
+                apiKeys[p.rawValue] = ""
+            }
         }
     }
+
+    /// Whether `p`'s key is stored in the plaintext file fallback instead of the keychain.
+    func isKeyInFile(_ p: AIProvider) -> Bool { keyInFile.contains(p.rawValue) }
 
     // MARK: Active provider
 
@@ -182,10 +200,23 @@ final class SettingsViewModel: ObservableObject {
     /// Persist the API key to the keychain for `p`.
     func saveKey(for p: AIProvider) {
         let key = apiKey(for: p).trimmingCharacters(in: .whitespaces)
+        let account = p.keychainAccount
         if key.isEmpty {
-            credentials.delete(host: p.keychainAccount)
+            credentials.delete(host: account)
+            secretFile.delete(account: account)
+            keyInFile.remove(p.rawValue)
         } else {
-            credentials.setToken(key, host: p.keychainAccount)
+            credentials.setToken(key, host: account)
+            // setToken reports nothing; verify it actually landed (hasToken reads only
+            // attributes, so no ACL prompt). If the keychain rejected the write, persist
+            // to the plaintext file fallback instead so the key isn't silently lost.
+            if credentials.hasToken(host: account) {
+                secretFile.delete(account: account)   // keychain holds it; drop stale plaintext
+                keyInFile.remove(p.rawValue)
+            } else {
+                secretFile.set(key, account: account)
+                keyInFile.insert(p.rawValue)
+            }
         }
         resolvedKeys[p.rawValue] = key
     }
@@ -216,8 +247,9 @@ final class SettingsViewModel: ObservableObject {
         if let cached = resolvedKeys[p.rawValue] {
             return cached
         }
-        let fetched = (credentials.token(host: p.keychainAccount) ?? "")
-            .trimmingCharacters(in: .whitespaces)
+        let fetched = (credentials.token(host: p.keychainAccount)
+            ?? secretFile.get(account: p.keychainAccount)
+            ?? "").trimmingCharacters(in: .whitespaces)
         resolvedKeys[p.rawValue] = fetched
         return fetched
     }

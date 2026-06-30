@@ -19,6 +19,12 @@ protocol GitRepository: Sendable {
     func headExists(at repo: URL) async -> Bool
     func headCommitMessage(at repo: URL) async throws -> String
     func stashPush(message: String?, at repo: URL) async throws
+    func stashList(at repo: URL) async throws -> [GitStash]
+    func stashApply(index: Int, at repo: URL) async throws
+    func stashPop(index: Int, at repo: URL) async throws
+    func stashDrop(index: Int, at repo: URL) async throws
+    func stashClear(at repo: URL) async throws
+    func stashFiles(index: Int, at repo: URL) async throws -> [String]
 
     // File ops
     func restore(at repo: URL, paths: [String]) async throws
