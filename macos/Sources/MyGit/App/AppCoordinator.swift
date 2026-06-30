@@ -83,6 +83,8 @@ final class AppCoordinator: ObservableObject {
 
         refreshAll = { [weak self] in await self?.refreshAll() }
         changes.setOnFinished { await refreshAll() }
+        history.setOnFinished { await refreshAll() }
+        history.setPushUpTo { [weak remote] commit in await remote?.pushUpToCommit(commit.id) }
 
         container.repos.selectedPublisher
             .removeDuplicates()
