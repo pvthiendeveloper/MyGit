@@ -160,7 +160,7 @@ struct SideBySideDiffTabView: View {
             toolbarButton(systemName: "arrow.down", help: "Next change", enabled: canNextHunk) {
                 jumpHunk(delta: 1)
             }
-            toolbarButton(systemName: "pencil", help: "Open in external editor", enabled: true) {
+            toolbarButton(systemName: "pencil", help: "Edit file here", enabled: true) {
                 editSource()
             }
             Divider().frame(height: 14)
@@ -949,14 +949,24 @@ struct SideBySideDiffTabView: View {
         return idx
     }
 
+    // Edit the working-tree file in-place, in MyGit's own right pane — never an external
+    // app. If the right side is already editable, just focus it; for a commit-vs-parent
+    // diff, flip to the on-disk "Current version" (which makes the right pane editable),
+    // then focus once it's swapped in.
     private func editSource() {
-        let repoURL = coordinator.activeBundle.repo.url
-        let url = repoURL.appendingPathComponent(tab.path)
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.open(url)
+        if isRightEditable {
+            focusEditor()
+        } else if tab.mode == .commitVsParent {
+            useCurrentVersion = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { focusEditor() }
         } else {
-            loadError = "File no longer exists in the working tree."
+            loadError = "This diff has no editable working-tree side."
         }
+    }
+
+    private func focusEditor() {
+        guard let tv = editor.textView else { return }
+        tv.window?.makeFirstResponder(tv)
     }
 
     private func save() {
