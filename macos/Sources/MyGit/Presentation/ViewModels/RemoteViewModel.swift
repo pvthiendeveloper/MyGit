@@ -69,6 +69,15 @@ final class RemoteViewModel: ObservableObject {
         await runRemoteHandlingUpstream(args: ["push", "origin", branch.name], branchName: branch.name)
     }
 
+    /// Push commits up to `sha` (inclusive) onto the current branch on origin.
+    func pushUpToCommit(_ sha: String) async {
+        guard let branch = currentBranch() else { return }
+        await runRemoteHandlingUpstream(
+            args: ["push", "origin", "\(sha):\(branch)"],
+            branchName: branch
+        )
+    }
+
     func addOriginAndPush(url: String, branch: String) async {
         guard let repo = repoSource() else { return }
         main.isBusy = true

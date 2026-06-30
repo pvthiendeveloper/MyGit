@@ -31,6 +31,7 @@ struct CommitGraphList: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture { vm.selectedCommit = row.commit }
+                        .contextMenu { CommitContextMenu(commit: row.commit, vm: vm) }
                     }
                     if vm.hasMore {
                         LoadMoreButton(isLoading: vm.isLoadingMore) {
@@ -39,6 +40,7 @@ struct CommitGraphList: View {
                     }
                 }
             }
+            .commitActionHost(vm)
         }
     }
 }

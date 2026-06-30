@@ -315,6 +315,82 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(["checkout", rev], cwd: repo)
     }
 
+    // MARK: - Commit actions
+
+    func cherryPick(commit: String, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["cherry-pick", commit], cwd: repo)
+    }
+
+    func revertCommit(_ commit: String, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["revert", "--no-edit", commit], cwd: repo)
+    }
+
+    func resetTo(commit: String, mode: GitResetMode, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["reset", mode.flag, commit], cwd: repo)
+    }
+
+    func formatPatch(commit: String, at repo: URL) async throws -> String {
+        try await GitRunner.runOrThrow(["format-patch", "-1", "--stdout", commit], cwd: repo)
+    }
+
+    func createTag(_ name: String, at commit: String, message: String?, at repo: URL) async throws {
+        if let message, !message.isEmpty {
+            _ = try await GitRunner.runOrThrow(["tag", "-a", "-m", message, name, commit], cwd: repo)
+        } else {
+            _ = try await GitRunner.runOrThrow(["tag", name, commit], cwd: repo)
+        }
+    }
+
+    func lsTreeAtRevision(_ rev: String, at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(["ls-tree", "-r", "--name-only", rev], cwd: repo)
+        return out.split(separator: "\n").map(String.init)
+    }
+
+    func pushedHashes(at repo: URL) async throws -> Set<String> {
+        // No upstream → no pushed commits. `run` (not runOrThrow) so a missing
+        // upstream just yields an empty set instead of throwing.
+        let r = try await GitRunner.run(["rev-list", "@{upstream}"], cwd: repo)
+        guard r.exitCode == 0 else { return [] }
+        return Set(r.stdout.split(separator: "\n").map(String.init))
+    }
+
+    func amendMessage(_ message: String, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["commit", "--amend", "-m", message], cwd: repo)
+    }
+
+    func interactiveRebase(todo: [RebaseStep], onto base: String, at repo: URL) async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mygit-rebase-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let todoFile = dir.appendingPathComponent("todo")
+        let todoText = todo.map { $0.todoLine }.joined(separator: "\n") + "\n"
+        try todoText.write(to: todoFile, atomically: true, encoding: .utf8)
+
+        // Override the sequence editor so git never opens a terminal editor:
+        // git runs `<value> <git-todo-file>`, i.e. cp our todo over git's.
+        var cfg = ["-c", "sequence.editor=/bin/cp \(shellQuote(todoFile.path))"]
+
+        // A single reworded commit: feed its message via core.editor the same way.
+        if let msg = todo.compactMap({ $0.rewordMessage }).first {
+            let msgFile = dir.appendingPathComponent("msg")
+            try msg.write(to: msgFile, atomically: true, encoding: .utf8)
+            cfg += ["-c", "core.editor=/bin/cp \(shellQuote(msgFile.path))"]
+        }
+
+        let r = try await GitRunner.run(cfg + ["rebase", "-i", base], cwd: repo)
+        if r.exitCode != 0 {
+            // Leave the repo clean rather than mid-rebase on conflict/failure.
+            _ = try? await GitRunner.run(["rebase", "--abort"], cwd: repo)
+            throw GitError.nonZeroExit(args: ["rebase", "-i", base], code: r.exitCode, stderr: r.stderr)
+        }
+    }
+
+    private func shellQuote(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     // MARK: - Compare
 
     func commitsInRange(_ range: String, at repo: URL) async throws -> [GitCommit] {

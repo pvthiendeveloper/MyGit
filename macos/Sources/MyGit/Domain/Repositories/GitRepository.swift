@@ -49,6 +49,17 @@ protocol GitRepository: Sendable {
     func newWorktree(path: URL, from: String, at repo: URL) async throws
     func checkoutRevision(_ rev: String, at repo: URL) async throws
 
+    // Commit actions
+    func cherryPick(commit: String, at repo: URL) async throws
+    func revertCommit(_ commit: String, at repo: URL) async throws
+    func resetTo(commit: String, mode: GitResetMode, at repo: URL) async throws
+    func formatPatch(commit: String, at repo: URL) async throws -> String
+    func createTag(_ name: String, at commit: String, message: String?, at repo: URL) async throws
+    func lsTreeAtRevision(_ rev: String, at repo: URL) async throws -> [String]
+    func pushedHashes(at repo: URL) async throws -> Set<String>
+    func amendMessage(_ message: String, at repo: URL) async throws
+    func interactiveRebase(todo: [RebaseStep], onto base: String, at repo: URL) async throws
+
     // Compare
     func commitsInRange(_ range: String, at repo: URL) async throws -> [GitCommit]
     func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry]

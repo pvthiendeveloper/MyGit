@@ -34,7 +34,8 @@ final class RepoBundle: Identifiable {
         self.changes = changes
         changes.setAIConfigSource { [weak settings] in settings?.requestConfig() }
 
-        self.history = HistoryViewModel(git: container.git, main: main, repoSource: repoSource)
+        let history = HistoryViewModel(git: container.git, main: main, repoSource: repoSource)
+        self.history = history
         self.files = FilesViewModel(git: container.git, main: main, repoSource: repoSource)
 
         let account = AccountViewModel(
@@ -84,6 +85,8 @@ final class RepoBundle: Identifiable {
         changes.setPushAfterCommit { [weak remote] force in
             if force { await remote?.forcePush() } else { await remote?.push() }
         }
+        history.setOnFinished(refreshAll)
+        history.setPushUpTo { [weak remote] commit in await remote?.pushUpToCommit(commit.id) }
     }
 
     func refreshAll() async {
