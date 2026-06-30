@@ -18,10 +18,14 @@ struct MainView: View {
             } else {
                 HSplitView {
                     SidebarPanel()
-                        .frame(minWidth: 280, idealWidth: 280, maxWidth: 480)
+                        .frame(
+                            minWidth: main.tab == .history ? 520 : 280,
+                            idealWidth: main.tab == .history ? 760 : 280,
+                            maxWidth: main.tab == .history ? 1200 : 480
+                        )
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { main.sidebarWidth = $0 }
                     DetailPanel()
-                        .frame(minWidth: 480)
+                        .frame(minWidth: 420)
                 }
             }
         }

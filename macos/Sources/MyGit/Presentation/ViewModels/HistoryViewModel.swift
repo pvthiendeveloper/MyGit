@@ -5,6 +5,8 @@ import AppKit
 @MainActor
 final class HistoryViewModel: ObservableObject {
     @Published var commits: [GitCommit] = []
+    @Published private(set) var graphRows: [GraphRow] = []
+    @Published var filter = HistoryFilter()
     @Published var selectedCommit: GitCommit?
     @Published var diff: FileDiff?
     @Published var changedFiles: [ChangedFileEntry] = []
@@ -12,6 +14,9 @@ final class HistoryViewModel: ObservableObject {
     /// True when the last fetch hit the limit — more commits may exist.
     @Published private(set) var hasMore = false
     @Published private(set) var isLoadingMore = false
+
+    /// Widest lane span across all rows — drives the graph column width.
+    var graphColumns: Int { graphRows.map { $0.maxColumns }.max() ?? 1 }
 
     private let pageSize = 100
     private var limit = 100
@@ -33,6 +38,18 @@ final class HistoryViewModel: ObservableObject {
                 Task { await self.loadChangedFiles(for: commit) }
             }
             .store(in: &cancellables)
+
+        // Re-query whenever the filter changes (debounced). Reset to first page.
+        $filter
+            .dropFirst()
+            .removeDuplicates()
+            .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.limit = self.pageSize
+                Task { await self.refreshLog() }
+            }
+            .store(in: &cancellables)
     }
 
     func repositoryDidChange() {
@@ -40,19 +57,29 @@ final class HistoryViewModel: ObservableObject {
         diff = nil
         changedFiles = []
         commits = []
+        graphRows = []
         limit = pageSize
         hasMore = false
     }
 
     func refreshLog() async {
-        guard let repo = repoSource() else { commits = []; hasMore = false; return }
+        guard let repo = repoSource() else {
+            commits = []; graphRows = []; hasMore = false; return
+        }
         do {
-            let loaded = try await git.log(at: repo.url, limit: limit)
+            let loaded = try await git.graphLog(at: repo.url, limit: limit, filter: filter)
             commits = loaded
+            graphRows = CommitGraph.layout(loaded)
             hasMore = loaded.count >= limit
-            if selectedCommit == nil { selectedCommit = commits.first }
+            // Keep selection if still present; otherwise default to the top commit.
+            if let sel = selectedCommit, !loaded.contains(where: { $0.id == sel.id }) {
+                selectedCommit = loaded.first
+            } else if selectedCommit == nil {
+                selectedCommit = loaded.first
+            }
         } catch {
             commits = []
+            graphRows = []
             hasMore = false
             main.errorMessage = error.localizedDescription
         }

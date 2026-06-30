@@ -5,6 +5,7 @@ import AppKit
 final class BranchesViewModel: ObservableObject {
     @Published var branches: [GitBranch] = []
     @Published var recentBranches: [GitBranch] = []
+    @Published var tags: [String] = []
     @Published var diffResult: String? = nil
     @Published var showNewBranchSheet: Bool = false
 
@@ -31,17 +32,20 @@ final class BranchesViewModel: ObservableObject {
     func repositoryDidChange() {
         branches = []
         recentBranches = []
+        tags = []
     }
 
     func refresh() async {
         guard let repo = repoSource() else {
             branches = []
             recentBranches = []
+            tags = []
             return
         }
         do {
             let all = try await git.branches(at: repo.url, currentBranch: currentBranch())
             let recentNames = try await git.recentBranches(at: repo.url)
+            tags = (try? await git.tags(at: repo.url)) ?? []
             branches = all
             let localByName = Dictionary(
                 uniqueKeysWithValues: all.filter { !$0.isRemote }.map { ($0.name, $0) }

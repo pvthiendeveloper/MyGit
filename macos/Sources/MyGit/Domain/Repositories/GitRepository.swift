@@ -4,6 +4,8 @@ protocol GitRepository: Sendable {
     // Inspect
     func status(at repo: URL) async throws -> GitStatusSummary
     func log(at repo: URL, limit: Int) async throws -> [GitCommit]
+    func graphLog(at repo: URL, limit: Int, filter: HistoryFilter) async throws -> [GitCommit]
+    func tags(at repo: URL) async throws -> [String]
     func diff(at repo: URL, change: FileChange) async throws -> FileDiff
     func diff(at repo: URL, commit: GitCommit) async throws -> FileDiff
     func lsTree(at repo: URL, path: String?) async throws -> [FileTreeNode]

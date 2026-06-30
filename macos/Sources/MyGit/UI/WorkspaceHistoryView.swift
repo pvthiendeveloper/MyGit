@@ -8,7 +8,7 @@ struct WorkspaceHistoryView: View {
 
     var body: some View {
         if coordinator.bundles.count <= 1 {
-            HistoryListView()
+            HistoryGraphPane()
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -19,6 +19,27 @@ struct WorkspaceHistoryView: View {
                 }
             }
         }
+    }
+}
+
+/// Single-repo history: 3-pane graph — refs sidebar | filter bar + commit
+/// graph. The changed-files detail stays in the main DetailPanel.
+struct HistoryGraphPane: View {
+    @EnvironmentObject var history: HistoryViewModel
+    @EnvironmentObject var branches: BranchesViewModel
+
+    var body: some View {
+        HSplitView {
+            RefsSidebarView()
+                .frame(minWidth: 170, idealWidth: 220, maxWidth: 320)
+            VStack(spacing: 0) {
+                HistoryFilterBar()
+                Divider()
+                CommitGraphList()
+            }
+            .frame(minWidth: 320)
+        }
+        .task { await branches.refresh() }
     }
 }
 

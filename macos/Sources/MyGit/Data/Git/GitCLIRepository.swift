@@ -20,6 +20,43 @@ struct GitCLIRepository: GitRepository {
         return GitLogParser.parse(out)
     }
 
+    func graphLog(at repo: URL, limit: Int, filter: HistoryFilter) async throws -> [GitCommit] {
+        var args = ["log", "--decorate=full", "-n", String(limit),
+                    "--pretty=format:\(GitLogParser.format)"]
+        args.append(filter.sort == .date ? "--date-order" : "--topo-order")
+
+        switch filter.branchScope {
+        case .all: args.append("--all")
+        case .ref(let r): args.append(r)
+        }
+
+        if let author = filter.author, !author.isEmpty { args.append("--author=\(author)") }
+        if let since = filter.since, !since.isEmpty { args.append("--since=\(since)") }
+        if let until = filter.until, !until.isEmpty { args.append("--until=\(until)") }
+
+        let text = filter.searchText.trimmingCharacters(in: .whitespaces)
+        if !text.isEmpty {
+            args.append("--grep=\(text)")
+            if !filter.caseSensitive { args.append("-i") }
+            args.append(filter.useRegex ? "--extended-regexp" : "--fixed-strings")
+        }
+
+        if !filter.paths.isEmpty {
+            args.append("--")
+            args.append(contentsOf: filter.paths)
+        }
+
+        let out = try await GitRunner.runOrThrow(args, cwd: repo)
+        return GitLogParser.parse(out)
+    }
+
+    func tags(at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(["tag", "--sort=-creatordate"], cwd: repo)
+        return out.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     func diff(at repo: URL, change: FileChange) async throws -> FileDiff {
         let args: [String]
         if change.isUntracked {
