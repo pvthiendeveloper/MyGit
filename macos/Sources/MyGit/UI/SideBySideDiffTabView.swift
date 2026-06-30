@@ -35,6 +35,13 @@ struct SideBySideDiffTabView: View {
     // Editable pane's text view + undo manager, so applies join the native undo stack.
     @StateObject private var editor = DiffEditorHandle()
 
+    // Aligned rows + per-hunk anchor rows, rebuilt with the hunks. Prev/Next resolve
+    // against these relative to where the user is (caret when editable, else scroll).
+    @State private var rows: [AlignedDiffRow] = []
+    @State private var hunkAnchors: [HunkAnchor] = []
+
+    struct HunkAnchor { let rowId: Int; let hunkIndex: Int }
+
     // Side-by-side vertical-scroll sync. The column under the pointer drives;
     // the others follow its Y offset. Horizontal scroll stays per-pane.
     @State private var syncY: CGFloat = 0
@@ -357,9 +364,7 @@ struct SideBySideDiffTabView: View {
     // MARK: - Aligned side-by-side rows (shared scroll)
 
     private var alignedContent: some View {
-        let srcLines = Self.splitLines(sourceText)
-        let wrkLines = Self.splitLines(workingText)
-        let rows = AlignedRowBuilder.build(source: srcLines, working: wrkLines, hunks: hunks)
+        let rows = self.rows
         let charW = fontSize * 0.62
         let leftMax = rows.compactMap { $0.leftText?.count }.max() ?? 0
         let rightMax = rows.compactMap { $0.rightText?.count }.max() ?? 0
@@ -830,22 +835,84 @@ struct SideBySideDiffTabView: View {
             currentHunkIndex = hunks.count - 1
         }
         excludedHunks = excludedHunks.intersection(Set(hunks.map(\.id)))
+        rows = AlignedRowBuilder.build(source: src, working: wrk, hunks: hunks)
+        hunkAnchors = rows.compactMap { r in
+            guard r.isHunkStart, let hid = r.hunkId,
+                  let hi = hunks.firstIndex(where: { $0.id == hid }) else { return nil }
+            return HunkAnchor(rowId: r.id, hunkIndex: hi)
+        }
     }
 
-    // Nav is live only while there's somewhere to go. -1 (no hunk focused yet) can step
-    // either way; once focused, the end stops disable their direction.
-    private var canPrevHunk: Bool { !hunks.isEmpty && currentHunkIndex != 0 }
-    private var canNextHunk: Bool { !hunks.isEmpty && currentHunkIndex != hunks.count - 1 }
+    // The row the user is currently at: the caret's line when the right pane is editable,
+    // otherwise the top visible row derived from the shared scroll offset. Prev/Next and
+    // their enabled state resolve relative to this, not a standalone step counter.
+    private var referenceRowId: Int {
+        if isRightEditable, let line = editor.caretLine,
+           let r = rows.first(where: { $0.rightLineNum == line }) {
+            return r.id
+        }
+        return max(0, Int((syncY / max(rowHeight, 1)).rounded(.down)))
+    }
+
+    // Unified viewer isn't wired to the row/scroll reference, so it keeps stepping by index.
+    private var canPrevHunk: Bool {
+        guard !hunks.isEmpty else { return false }
+        if viewerMode == .unified { return currentHunkIndex != 0 }
+        let ref = referenceRowId
+        return hunkAnchors.contains { $0.rowId < ref }
+    }
+    private var canNextHunk: Bool {
+        guard !hunks.isEmpty else { return false }
+        if viewerMode == .unified { return currentHunkIndex != hunks.count - 1 }
+        let ref = referenceRowId
+        return hunkAnchors.contains { $0.rowId > ref }
+    }
 
     private func jumpHunk(delta: Int) {
         guard !hunks.isEmpty else { return }
-        let next: Int
-        if currentHunkIndex < 0 {
-            next = delta > 0 ? 0 : hunks.count - 1
-        } else {
-            next = max(0, min(hunks.count - 1, currentHunkIndex + delta))
+        if viewerMode == .unified {
+            if currentHunkIndex < 0 {
+                currentHunkIndex = delta > 0 ? 0 : hunks.count - 1
+            } else {
+                currentHunkIndex = max(0, min(hunks.count - 1, currentHunkIndex + delta))
+            }
+            return
         }
-        currentHunkIndex = next
+        let ref = referenceRowId
+        let target = delta > 0
+            ? hunkAnchors.first(where: { $0.rowId > ref })
+            : hunkAnchors.last(where: { $0.rowId < ref })
+        guard let t = target else { return }
+        currentHunkIndex = t.hunkIndex   // existing onChange centers it into view
+        advanceReference(toHunk: t.hunkIndex)
+    }
+
+    // Move the reference onto the landed hunk so a repeated press steps on instead of
+    // re-resolving to the same one: place the caret (editable) or nudge the scroll offset.
+    private func advanceReference(toHunk index: Int) {
+        let wline = hunks[index].workingStart + 1
+        if isRightEditable, let tv = editor.textView {
+            let off = workingLineStartOffset(wline)
+            tv.setSelectedRange(NSRange(location: off, length: 0))
+            tv.scrollRangeToVisible(NSRange(location: off, length: 0))
+            editor.caretLine = wline
+        } else if let row = rows.first(where: { $0.hunkId == hunks[index].id }) {
+            syncY = CGFloat(row.id) * rowHeight
+        }
+    }
+
+    // UTF-16 offset of the start of a 1-based line in workingText (for caret placement).
+    private func workingLineStartOffset(_ line1: Int) -> Int {
+        let ns = workingText as NSString
+        var idx = 0
+        var remaining = line1 - 1
+        while remaining > 0, idx < ns.length {
+            let r = ns.range(of: "\n", range: NSRange(location: idx, length: ns.length - idx))
+            if r.location == NSNotFound { break }
+            idx = r.location + 1
+            remaining -= 1
+        }
+        return idx
     }
 
     private func editSource() {
@@ -1122,6 +1189,8 @@ final class DiffEditorHandle: ObservableObject {
     weak var textView: NSTextView?
     @Published var canUndo = false
     @Published var canRedo = false
+    /// 1-based line of the insertion point, or nil before the pane is touched.
+    @Published var caretLine: Int? = nil
     private var observers: [NSObjectProtocol] = []
 
     func attach(_ tv: NSTextView) {
@@ -1241,6 +1310,14 @@ private struct SyncedTextEditor: NSViewRepresentable {
         private var highlightWork: DispatchWorkItem?
 
         init(_ p: SyncedTextEditor) { parent = p }
+
+        // Track the caret line so the parent's Prev/Next resolve from where the user is.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = textView else { return }
+            let ns = tv.string as NSString
+            let loc = min(tv.selectedRange().location, ns.length)
+            parent.handle.caretLine = ns.substring(to: loc).components(separatedBy: "\n").count
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
