@@ -32,6 +32,9 @@ struct SideBySideDiffTabView: View {
     @State private var rightSyntax: [AttributedString] = []
     private var fileExt: String { (tab.path as NSString).pathExtension }
 
+    // Editable pane's text view + undo manager, so applies join the native undo stack.
+    @StateObject private var editor = DiffEditorHandle()
+
     // Side-by-side vertical-scroll sync. The column under the pointer drives;
     // the others follow its Y offset. Horizontal scroll stays per-pane.
     @State private var syncY: CGFloat = 0
@@ -154,6 +157,17 @@ struct SideBySideDiffTabView: View {
             }
             toolbarButton(systemName: "arrowshape.turn.up.forward", help: "Forward tab", enabled: main.canNavigateForwardTab) {
                 main.navigateForwardTab()
+            }
+            if isRightEditable {
+                Divider().frame(height: 14)
+                toolbarButton(systemName: "arrow.uturn.backward", help: "Undo (⌘Z)", enabled: editor.canUndo) {
+                    editor.undo()
+                }
+                .keyboardShortcut("z", modifiers: [.command])
+                toolbarButton(systemName: "arrow.uturn.forward", help: "Redo (⇧⌘Z)", enabled: editor.canRedo) {
+                    editor.redo()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             Divider().frame(height: 14)
             viewerModeMenu
@@ -459,6 +473,7 @@ struct SideBySideDiffTabView: View {
             fontSize: fontSize,
             topInset: 4,
             syntaxExt: syntaxOn ? fileExt : nil,
+            handle: editor,
             external: activeCol == 2 ? nil : CGPoint(x: syncX, y: syncY),
             onScroll: { p in
                 activeCol = 2
@@ -759,14 +774,33 @@ struct SideBySideDiffTabView: View {
     }
 
     private func applyHunk(_ hunk: LineHunk) {
-        applyingHunk = true
-        defer { applyingHunk = false }
         var lines = workingText.components(separatedBy: "\n")
         let start = min(hunk.workingStart, lines.count)
         let end = min(hunk.workingEnd, lines.count)
         lines.replaceSubrange(start..<end, with: hunk.sourceLines)
-        workingText = lines.joined(separator: "\n")
-        recomputeHunks()
+        let newText = lines.joined(separator: "\n")
+
+        // Route the edit through the NSTextView's text system so it registers on the
+        // native undo stack — Cmd+Z (or the toolbar Undo) then rolls this apply back as a
+        // single step. didChangeText fires textDidChange -> workingText -> recomputeHunks.
+        if let tv = editor.textView {
+            let full = NSRange(location: 0, length: (tv.string as NSString).length)
+            guard tv.shouldChangeText(in: full, replacementString: newText) else { return }
+            tv.textStorage?.replaceCharacters(in: full, with: newText)
+            // Keep the monospaced face until the debounced re-highlight recolors, so the
+            // freshly-replaced text doesn't flash in the system default font.
+            tv.textStorage?.addAttribute(
+                .font, value: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+                range: NSRange(location: 0, length: (newText as NSString).length)
+            )
+            tv.didChangeText()
+            editor.refresh()
+        } else {
+            applyingHunk = true
+            defer { applyingHunk = false }
+            workingText = newText
+            recomputeHunks()
+        }
     }
 
     // Rebuild the per-line color slices from the current texts. Cheap after the first
@@ -1080,12 +1114,49 @@ enum UnifiedRowBuilder {
 // No line wrapping so each line is exactly one row -> 1:1 height with the left code
 // column and gutter, anchored to the top. SwiftUI's TextEditor exposes no scroll hook,
 // hence the AppKit bridge.
+// Bridges the editable pane's NSTextView to the SwiftUI view so applies route through
+// the text system's native undo stack (Cmd+Z rolls an apply back as one step) and the
+// toolbar Undo/Redo buttons can drive it with live enabled-state.
+@MainActor
+final class DiffEditorHandle: ObservableObject {
+    weak var textView: NSTextView?
+    @Published var canUndo = false
+    @Published var canRedo = false
+    private var observers: [NSObjectProtocol] = []
+
+    func attach(_ tv: NSTextView) {
+        textView = tv
+        guard observers.isEmpty, let um = tv.undoManager else { refresh(); return }
+        for name in [Notification.Name.NSUndoManagerCheckpoint,
+                     .NSUndoManagerDidUndoChange,
+                     .NSUndoManagerDidRedoChange,
+                     .NSUndoManagerDidCloseUndoGroup] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: um, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refresh() }
+            })
+        }
+        refresh()
+    }
+
+    func refresh() {
+        canUndo = textView?.undoManager?.canUndo ?? false
+        canRedo = textView?.undoManager?.canRedo ?? false
+    }
+
+    func undo() { textView?.undoManager?.undo(); refresh() }
+    func redo() { textView?.undoManager?.redo(); refresh() }
+
+    deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
+}
+
 private struct SyncedTextEditor: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat
     var topInset: CGFloat
     /// File extension for syntax highlighting; nil disables it (plain monospaced).
     var syntaxExt: String?
+    /// Exposes this pane's NSTextView (and its undo manager) to the parent view.
+    var handle: DiffEditorHandle
     /// Offset to follow; nil while this pane is the active driver (don't fight the user).
     var external: CGPoint?
     var onScroll: (CGPoint) -> Void
@@ -1130,6 +1201,7 @@ private struct SyncedTextEditor: NSViewRepresentable {
         )
         context.coordinator.lastExt = syntaxExt
         context.coordinator.applyHighlight(tv)
+        handle.attach(tv)
         return scroll
     }
 
