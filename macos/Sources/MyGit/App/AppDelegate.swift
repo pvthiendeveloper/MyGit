@@ -6,8 +6,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let coordinator = AppCoordinator(container: .live())
 
+    // Double-Shift ("Search Everywhere") detection.
+    private var lastShiftTap: TimeInterval = 0
+    private var flagsMonitor: Any?
+    private var keyMonitor: Any?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
+        installSearchEverywhereShortcut()
 
         let root = RootView()
             .environmentObject(coordinator)
@@ -94,6 +100,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         main.addItem(editItem)
 
         NSApp.mainMenu = main
+    }
+
+    // MARK: - Search Everywhere (double-Shift)
+
+    private func installSearchEverywhereShortcut() {
+        // A second Shift press within this window (with nothing typed between)
+        // opens the overlay. Any other keystroke resets the sequence so it never
+        // fires while shift-typing capitals.
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleFlagsChanged(event)
+            return event
+        }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            // Esc closes the overlay when it's open.
+            if self.coordinator.search.isPresented, event.keyCode == 53 {
+                self.coordinator.search.dismiss()
+                return nil
+            }
+            self.lastShiftTap = 0
+            return event
+        }
+    }
+
+    private func handleFlagsChanged(_ event: NSEvent) {
+        guard event.keyCode == 56 || event.keyCode == 60 else { return }  // L/R Shift
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Ignore if any non-shift modifier is held (⇧⌘ etc).
+        guard flags.subtracting(.shift).isEmpty else { lastShiftTap = 0; return }
+        // flagsChanged fires on both press and release; act only on press.
+        guard flags.contains(.shift) else { return }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastShiftTap < 0.4 {
+            lastShiftTap = 0
+            coordinator.openSearchEverywhere()
+        } else {
+            lastShiftTap = now
+        }
     }
 
     @objc private func openSettings() { SettingsWindow.open(settings: coordinator.settings) }

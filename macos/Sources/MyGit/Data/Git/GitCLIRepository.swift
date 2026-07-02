@@ -12,6 +12,11 @@ struct GitCLIRepository: GitRepository {
         return GitStatusParser.parse(out)
     }
 
+    func listFiles(at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(["ls-files", "-z"], cwd: repo)
+        return out.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+    }
+
     func log(at repo: URL, limit: Int) async throws -> [GitCommit] {
         let out = try await GitRunner.runOrThrow(
             ["log", "-n", String(limit), "--pretty=format:\(GitLogParser.format)"],

@@ -62,6 +62,8 @@ protocol GitRepository: Sendable {
     func formatPatch(commit: String, at repo: URL) async throws -> String
     func createTag(_ name: String, at commit: String, message: String?, at repo: URL) async throws
     func lsTreeAtRevision(_ rev: String, at repo: URL) async throws -> [String]
+    /// All tracked file paths (repo-relative), recursive. Drives Search Everywhere.
+    func listFiles(at repo: URL) async throws -> [String]
     func pushedHashes(at repo: URL) async throws -> Set<String>
     func amendMessage(_ message: String, at repo: URL) async throws
     func interactiveRebase(todo: [RebaseStep], onto base: String, at repo: URL) async throws

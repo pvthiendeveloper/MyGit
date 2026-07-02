@@ -8,6 +8,7 @@ final class AppCoordinator: ObservableObject {
     let main: MainViewModel
     let repos: RepositoryListViewModel
     let settings: SettingsViewModel
+    let search: SearchEverywhereViewModel
 
     /// One bundle per repo in the selected workspace.
     @Published private(set) var bundles: [RepoBundle] = []
@@ -34,6 +35,8 @@ final class AppCoordinator: ObservableObject {
         let settings = SettingsViewModel(credentials: container.credentials)
         self.settings = settings
 
+        self.search = SearchEverywhereViewModel(git: container.git)
+
         let placeholder = Repository(url: URL(fileURLWithPath: "/"))
         self.emptyBundle = RepoBundle(repo: placeholder, container: container, main: main, settings: settings)
         self.activeBundle = emptyBundle
@@ -54,6 +57,24 @@ final class AppCoordinator: ObservableObject {
 
     func setActive(_ bundle: RepoBundle) {
         activeBundle = bundle
+    }
+
+    /// Open the Search Everywhere overlay and (re)index the workspace's files.
+    func openSearchEverywhere() {
+        guard !bundles.isEmpty else { return }
+        search.present()
+        let repos = bundles.map { (id: $0.id, name: $0.name, url: $0.repo.url) }
+        Task { await search.buildIndex(repos) }
+    }
+
+    /// Activate the hit's repo, switch to Files, and open the file.
+    func openSearchHit(_ hit: SearchHit) {
+        if let bundle = bundles.first(where: { $0.id == hit.bundleID }) {
+            setActive(bundle)
+            main.tab = .files
+            bundle.editor.openFile(path: hit.path)
+        }
+        search.dismiss()
     }
 
     private func rebuildBundles(for workspace: Workspace?) {
