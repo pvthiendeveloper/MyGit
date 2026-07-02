@@ -68,7 +68,60 @@ struct DiffTab: Identifiable, Hashable {
     let path: String
     let mode: Mode
 
+    /// When set, the two sides are supplied directly (reconstructed from a patch)
+    /// instead of being read from local git. Used for remote PR files, which have
+    /// no local working copy. The tab is read-only in this case.
+    var embedded: Embedded? = nil
+
     var title: String { (path as NSString).lastPathComponent }
+
+    /// Pre-built diff content + side labels for an `embedded` (patch-backed) tab.
+    struct Embedded: Hashable {
+        let dedupKey: String
+        let leftText: String
+        let rightText: String
+        let leftLabel: String
+        let rightLabel: String
+    }
+
+    /// Reconstruct old/new file text from a parsed unified patch and wrap it in an
+    /// embedded, read-only diff tab. Only the patched regions are present (a remote
+    /// patch omits unchanged context), which is exactly what a review shows.
+    static func patchBacked(
+        dedupKey: String,
+        path: String,
+        leftLabel: String,
+        rightLabel: String,
+        diff: FileDiff
+    ) -> DiffTab {
+        var left: [String] = []
+        var right: [String] = []
+        for line in diff.lines {
+            switch line.kind {
+            case .context:
+                left.append(line.text); right.append(line.text)
+            case .deletion:
+                left.append(line.text)
+            case .addition:
+                right.append(line.text)
+            case .header, .hunkHeader:
+                break
+            }
+        }
+        return DiffTab(
+            commitHash: "",
+            commitShortHash: "",
+            path: path,
+            mode: .commitVsParent,
+            embedded: Embedded(
+                dedupKey: dedupKey,
+                leftText: left.joined(separator: "\n"),
+                rightText: right.joined(separator: "\n"),
+                leftLabel: leftLabel,
+                rightLabel: rightLabel
+            )
+        )
+    }
 
     enum Mode: Hashable {
         case commitVsParent

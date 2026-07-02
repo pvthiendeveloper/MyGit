@@ -38,6 +38,12 @@ protocol PullRequestRepository: Sendable {
         host: String, owner: String, repo: String,
         number: Int, token: String
     ) async throws -> [PRCommit]
+
+    /// Files changed by a single commit (for the Commits tab's commit detail).
+    func commitFiles(
+        host: String, owner: String, repo: String,
+        sha: String, token: String
+    ) async throws -> [PRFileChange]
 }
 
 struct PullRequestInfo: Equatable {

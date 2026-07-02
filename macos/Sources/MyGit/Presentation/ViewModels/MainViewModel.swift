@@ -81,6 +81,21 @@ final class MainViewModel: ObservableObject {
         pushHistory(tab.id)
     }
 
+    /// Open (or focus) a patch-backed side-by-side diff tab — same viewer as
+    /// commit diffs, but sourced from a supplied patch (remote PR files).
+    func openPatchDiffTab(_ tab: DiffTab, forceNew: Bool) {
+        if !forceNew,
+           let key = tab.embedded?.dedupKey,
+           let existing = diffTabs.first(where: { $0.embedded?.dedupKey == key }) {
+            detailTab = .diff(existing.id)
+            pushHistory(existing.id)
+            return
+        }
+        diffTabs.append(tab)
+        detailTab = .diff(tab.id)
+        pushHistory(tab.id)
+    }
+
     func selectDiffTab(_ id: UUID) {
         detailTab = .diff(id)
         pushHistory(id)

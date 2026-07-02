@@ -142,24 +142,42 @@ struct GitHubPullRequestRepository: PullRequestRepository {
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             throw PullRequestError.badResponse(Self.snippet(data))
         }
-        return arr.compactMap { f in
-            guard let path = f["filename"] as? String else { return nil }
-            let status: PRFileChange.Status
-            switch f["status"] as? String {
-            case "added": status = .added
-            case "removed": status = .removed
-            case "renamed": status = .renamed
-            default: status = .modified
-            }
-            return PRFileChange(
-                path: path,
-                oldPath: f["previous_filename"] as? String,
-                status: status,
-                additions: (f["additions"] as? Int) ?? 0,
-                deletions: (f["deletions"] as? Int) ?? 0,
-                patch: f["patch"] as? String
-            )
+        return arr.compactMap(Self.parseFile)
+    }
+
+    func commitFiles(
+        host: String, owner: String, repo: String,
+        sha: String, token: String
+    ) async throws -> [PRFileChange] {
+        guard let url = URL(string: "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/commits/\(sha)")
+        else { throw PullRequestError.badResponse("bad commit URL") }
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = json["files"] as? [[String: Any]] else {
+            throw PullRequestError.badResponse(Self.snippet(data))
         }
+        return arr.compactMap(Self.parseFile)
+    }
+
+    /// Map a GitHub file object (from PR-files or commit endpoints) to a change.
+    private static func parseFile(_ f: [String: Any]) -> PRFileChange? {
+        guard let path = f["filename"] as? String else { return nil }
+        let status: PRFileChange.Status
+        switch f["status"] as? String {
+        case "added": status = .added
+        case "removed": status = .removed
+        case "renamed": status = .renamed
+        default: status = .modified
+        }
+        return PRFileChange(
+            path: path,
+            oldPath: f["previous_filename"] as? String,
+            status: status,
+            additions: (f["additions"] as? Int) ?? 0,
+            deletions: (f["deletions"] as? Int) ?? 0,
+            patch: f["patch"] as? String
+        )
     }
 
     func commits(

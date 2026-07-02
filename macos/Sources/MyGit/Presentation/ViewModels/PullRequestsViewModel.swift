@@ -50,6 +50,11 @@ final class PullRequestsViewModel: ObservableObject {
     @Published private(set) var commitsLoading = false
     @Published private(set) var commitsLoaded = false
 
+    /// Commit drilled into within the Commits tab (nil → show the commit list).
+    @Published var selectedCommit: PRCommit?
+    @Published private(set) var commitFiles: [PRFileChange] = []
+    @Published private(set) var commitFilesLoading = false
+
     private let pullRequests: PullRequestRepository
     private let account: AccountViewModel
     private let main: MainViewModel
@@ -140,6 +145,7 @@ final class PullRequestsViewModel: ObservableObject {
         detailTab = .overview
         files = []; filesLoaded = false
         commits = []; commitsLoaded = false
+        selectedCommit = nil; commitFiles = []
         guard let pr, let c = coordinates() else { return }
         detailLoading = true
         defer { detailLoading = false }
@@ -162,6 +168,29 @@ final class PullRequestsViewModel: ObservableObject {
                 host: c.host, owner: c.owner, repo: c.repo, number: pr.number, token: c.token
             )
             filesLoaded = true
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Drill into a commit and load its changed files.
+    func selectCommit(_ c: PRCommit?) {
+        selectedCommit = c
+        commitFiles = []
+        guard let c else { return }
+        Task { await loadCommitFiles(c) }
+    }
+
+    private func loadCommitFiles(_ c: PRCommit) async {
+        guard let coords = coordinates() else { return }
+        commitFilesLoading = true
+        defer { commitFilesLoading = false }
+        do {
+            let loaded = try await pullRequests.commitFiles(
+                host: coords.host, owner: coords.owner, repo: coords.repo, sha: c.id, token: coords.token
+            )
+            // Guard against a stale response if the user changed selection.
+            if selectedCommit?.id == c.id { commitFiles = loaded }
         } catch {
             main.errorMessage = error.localizedDescription
         }

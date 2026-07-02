@@ -156,33 +156,44 @@ struct PullRequestDetailView: View {
                     nodes: ChangedFileTreeBuilder.build(from: vm.files.map(Self.toEntry)),
                     onAction: { entry, action in
                         switch action {
-                        case .showDiff, .showDiffInNewTab: openDiff(for: entry.path)
+                        case .showDiff: openFileDiff(for: entry.path, forceNew: false)
+                        case .showDiffInNewTab: openFileDiff(for: entry.path, forceNew: true)
                         default: break   // local-repo actions don't apply to a remote PR
                         }
                     },
-                    menuActions: [.showDiff]
+                    menuActions: [.showDiff, .showDiffInNewTab]
                 )
             }
         }
         .task(id: vm.selected) { await vm.loadFiles() }
     }
 
-    /// Open the file's PR patch as a read-only diff tab (or the PR page in the
-    /// browser when no textual diff is available, e.g. a binary file).
-    private func openDiff(for path: String) {
+    private func openFileDiff(for path: String, forceNew: Bool) {
         guard let pr = vm.selected,
               let file = vm.files.first(where: { $0.path == path }) else { return }
+        openDiff(file: file, dedupKey: "pr:\(pr.number):\(file.path)",
+                 leftLabel: pr.destBranch, rightLabel: pr.sourceBranch, forceNew: forceNew)
+    }
+
+    /// Open a file's patch in the side-by-side diff viewer (same as commit
+    /// diffs), reconstructing both sides from the patch. Falls back to the PR
+    /// page in the browser when no textual diff is available (e.g. a binary file).
+    private func openDiff(file: PRFileChange, dedupKey: String,
+                          leftLabel: String, rightLabel: String, forceNew: Bool) {
         let patch = file.patch ?? ""
         if patch.isEmpty {
-            vm.openInBrowser(pr)
+            if let pr = vm.selected { vm.openInBrowser(pr) }
             return
         }
         let diff = GitDiffParser.parse(patch, path: file.path)
-        main.openPatchTab(
-            key: "pr:\(pr.number):\(file.path)",
-            title: URL(fileURLWithPath: file.path).lastPathComponent,
+        let tab = DiffTab.patchBacked(
+            dedupKey: dedupKey,
+            path: file.path,
+            leftLabel: leftLabel,
+            rightLabel: rightLabel,
             diff: diff
         )
+        main.openPatchDiffTab(tab, forceNew: forceNew)
     }
 
     /// Map a PR file change into the presentational tree's entry model.
@@ -210,29 +221,99 @@ struct PullRequestDetailView: View {
             } else if vm.commits.isEmpty {
                 Text("No commits.").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(vm.commits) { c in
-                            HStack(alignment: .top, spacing: 10) {
-                                Text(c.shortHash)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(c.subject).font(.system(size: 12)).lineLimit(2)
-                                    Text("\(c.author) · \(PRDate.relativeLabel(c.date))")
-                                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 16).padding(.vertical, 6)
-                            Divider()
-                        }
-                    }
+            } else if vm.selectedCommit != nil {
+                HStack(spacing: 0) {
+                    commitsList.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Divider()
+                    commitDetailPane.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            } else {
+                commitsList.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .task(id: vm.selected) { await vm.loadCommits() }
+    }
+
+    private var commitsList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(vm.commits) { c in
+                    let selected = vm.selectedCommit?.id == c.id
+                    HStack(alignment: .top, spacing: 10) {
+                        Text(c.shortHash)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(c.subject)
+                                .font(.system(size: 12))
+                                .lineLimit(1).truncationMode(.tail)
+                            Text("\(c.author) · \(PRDate.relativeLabel(c.date))")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.tail)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(selected ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture { vm.selectCommit(c) }
+                    Divider()
+                }
+            }
+        }
+    }
+
+    /// Right pane: the selected commit's header + changed-files tree (same view
+    /// a commit shows in Compare). Clicking a file opens its diff.
+    @ViewBuilder
+    private var commitDetailPane: some View {
+        if let c = vm.selectedCommit {
+            VStack(alignment: .leading, spacing: 0) {
+                CommitDetailHeader(commit: Self.gitCommit(from: c))
+                Divider()
+                if vm.commitFilesLoading && vm.commitFiles.isEmpty {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if vm.commitFiles.isEmpty {
+                    Text("No file changes.").font(.system(size: 12)).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    CompareChangedFilesTree(
+                        nodes: ChangedFileTreeBuilder.build(from: vm.commitFiles.map(Self.toEntry)),
+                        onAction: { entry, action in
+                            switch action {
+                            case .showDiff: openCommitFileDiff(for: entry.path, forceNew: false)
+                            case .showDiffInNewTab: openCommitFileDiff(for: entry.path, forceNew: true)
+                            default: break
+                            }
+                        },
+                        menuActions: [.showDiff, .showDiffInNewTab]
+                    )
+                }
+            }
+        } else {
+            Text("Select a commit to see its changes.")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func openCommitFileDiff(for path: String, forceNew: Bool) {
+        guard let pr = vm.selected, let c = vm.selectedCommit,
+              let file = vm.commitFiles.first(where: { $0.path == path }) else { return }
+        openDiff(file: file, dedupKey: "pr:\(pr.number):commit:\(c.id):\(file.path)",
+                 leftLabel: "\(c.shortHash)^", rightLabel: c.shortHash, forceNew: forceNew)
+    }
+
+    /// Bridge a PR commit into the `GitCommit` the shared header expects.
+    private static func gitCommit(from c: PRCommit) -> GitCommit {
+        GitCommit(
+            id: c.id, author: c.author, email: "", date: c.date ?? Date(),
+            parents: [], subject: c.subject,
+            body: c.message.contains("\n")
+                ? String(c.message.drop(while: { $0 != "\n" }).dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                : "",
+            refs: []
+        )
     }
 
     // MARK: - Shared bits

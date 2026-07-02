@@ -148,8 +148,30 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         number: Int, token: String
     ) async throws -> [PRFileChange] {
         let prBase = "\(Self.apiBase)/repositories/\(owner)/\(repo)/pullrequests/\(number)"
-        guard let url = URL(string: "\(prBase)/diffstat?pagelen=100")
-        else { throw PullRequestError.badResponse("bad diffstat URL") }
+        return try await filesFrom(
+            diffstatURL: "\(prBase)/diffstat?pagelen=100",
+            diffURL: "\(prBase)/diff",
+            token: token
+        )
+    }
+
+    func commitFiles(
+        host: String, owner: String, repo: String,
+        sha: String, token: String
+    ) async throws -> [PRFileChange] {
+        // Commit diff/diffstat live at repo level, keyed by the commit spec.
+        let repoBase = "\(Self.apiBase)/repositories/\(owner)/\(repo)"
+        return try await filesFrom(
+            diffstatURL: "\(repoBase)/diffstat/\(sha)?pagelen=100",
+            diffURL: "\(repoBase)/diff/\(sha)",
+            token: token
+        )
+    }
+
+    /// Shared: read a diffstat (file list + counts) and split the raw diff into
+    /// per-file patches, joining them by path.
+    private func filesFrom(diffstatURL: String, diffURL: String, token: String) async throws -> [PRFileChange] {
+        guard let url = URL(string: diffstatURL) else { throw PullRequestError.badResponse("bad diffstat URL") }
         let (data, resp) = try await send(url, token: token)
         try Self.checkStatus(resp, data)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -158,7 +180,7 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         }
         // diffstat has no per-file patch — fetch the raw unified diff and split
         // it per file so each row can show its diff. Best-effort (nil on failure).
-        let patches = (try? await diffPatches(base: prBase, token: token)) ?? [:]
+        let patches = (try? await diffPatches(diffURL: diffURL, token: token)) ?? [:]
         return values.compactMap { v in
             let newPath = (v["new"] as? [String: Any])?["path"] as? String
             let oldPath = (v["old"] as? [String: Any])?["path"] as? String
@@ -181,10 +203,10 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         }
     }
 
-    /// Fetch the PR's raw unified diff and split it into per-file patches keyed
-    /// by the file's (new) path.
-    private func diffPatches(base: String, token: String) async throws -> [String: String] {
-        guard let url = URL(string: base + "/diff") else { return [:] }
+    /// Fetch a raw unified diff and split it into per-file patches keyed by the
+    /// file's (new) path.
+    private func diffPatches(diffURL: String, token: String) async throws -> [String: String] {
+        guard let url = URL(string: diffURL) else { return [:] }
         let (data, resp) = try await send(url, token: token)
         try Self.checkStatus(resp, data)
         let text = String(data: data, encoding: .utf8) ?? ""

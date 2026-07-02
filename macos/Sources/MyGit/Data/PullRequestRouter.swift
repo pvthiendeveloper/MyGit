@@ -70,4 +70,11 @@ struct PullRequestRouter: PullRequestRepository {
     ) async throws -> [PRCommit] {
         try await impl(for: host).commits(host: host, owner: owner, repo: repo, number: number, token: token)
     }
+
+    func commitFiles(
+        host: String, owner: String, repo: String,
+        sha: String, token: String
+    ) async throws -> [PRFileChange] {
+        try await impl(for: host).commitFiles(host: host, owner: owner, repo: repo, sha: sha, token: token)
+    }
 }

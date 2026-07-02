@@ -1,12 +1,32 @@
 import SwiftUI
 
 struct SidebarPanel: View {
+    @EnvironmentObject var coordinator: AppCoordinator
+
+    var body: some View {
+        // Re-create (observing the new active bundle's account) whenever the
+        // active repo changes, so the PR icon reflects that repo's host.
+        SidebarPanelContent(bundle: coordinator.activeBundle)
+            .id(coordinator.activeBundle.id)
+    }
+}
+
+private struct SidebarPanelContent: View {
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var coordinator: AppCoordinator
+    let bundle: RepoBundle
+    /// Observed so the PR icon appears the moment the account/host resolves
+    /// (host loads async after the bundle is built).
+    @ObservedObject private var account: AccountViewModel
+
+    init(bundle: RepoBundle) {
+        self.bundle = bundle
+        self._account = ObservedObject(wrappedValue: bundle.account)
+    }
 
     /// PR tab only shows for GitHub/Bitbucket repos.
     private var showsPullRequests: Bool {
-        PullRequestRouter.supports(host: coordinator.activeBundle.account.account?.host)
+        PullRequestRouter.supports(host: account.account?.host)
     }
 
     /// Ordered tabs shown in the rail. PR tab is appended only when supported.
@@ -60,8 +80,9 @@ struct SidebarPanel: View {
         }
         .background(Color(NSColor.controlBackgroundColor))
         // If the active repo can't do PRs but the PR tab is selected (e.g. after
-        // switching repos), fall back to Changes so the rail/content stay valid.
-        .onChange(of: coordinator.activeBundle.id) {
+        // switching repos or once its host resolves), fall back to Changes so the
+        // rail/content stay valid.
+        .onChange(of: showsPullRequests) {
             if main.tab == .pullRequests, !showsPullRequests {
                 main.tab = .changes
             }

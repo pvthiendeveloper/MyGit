@@ -60,7 +60,8 @@ struct SideBySideDiffTabView: View {
     // working modes, or commitVsParent once "Current version" swaps the right side
     // to the on-disk file.
     private var isRightEditable: Bool {
-        tab.mode.rightIsEditable || (tab.mode == .commitVsParent && useCurrentVersion)
+        guard tab.embedded == nil else { return false }   // patch-backed tabs are read-only
+        return tab.mode.rightIsEditable || (tab.mode == .commitVsParent && useCurrentVersion)
     }
     private var isDirty: Bool { isRightEditable && workingText != diskText }
 
@@ -106,7 +107,7 @@ struct SideBySideDiffTabView: View {
             Spacer().frame(width: Self.gutterColWidth)
             sideLabel(rightSideLabel, editable: isRightEditable)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if tab.mode == .commitVsParent {
+            if tab.mode == .commitVsParent, tab.embedded == nil {
                 Toggle(isOn: $useCurrentVersion) {
                     Text("Current version").font(.system(size: 11))
                 }
@@ -121,6 +122,7 @@ struct SideBySideDiffTabView: View {
     // Left pane = source, right pane = working. The working side is "Current"
     // whenever it reflects the live file on disk (or the Current-version toggle).
     private var leftSideLabel: String {
+        if let e = tab.embedded { return e.leftLabel }
         switch tab.mode {
         case .commitVsWorking: return tab.commitShortHash
         case .commitVsParent, .parentVsWorking: return "\(tab.commitShortHash)^"
@@ -128,6 +130,7 @@ struct SideBySideDiffTabView: View {
     }
 
     private var rightSideLabel: String {
+        if let e = tab.embedded { return e.rightLabel }
         switch tab.mode {
         case .commitVsWorking, .parentVsWorking: return "Current"
         case .commitVsParent: return useCurrentVersion ? "Current" : tab.commitShortHash
@@ -978,6 +981,15 @@ struct SideBySideDiffTabView: View {
         loading = true
         loadError = nil
         defer { loading = false }
+        // Patch-backed tab: sides are already reconstructed, nothing to read from git.
+        if let e = tab.embedded {
+            sourceText = e.leftText
+            workingText = e.rightText
+            diskText = e.rightText
+            recomputeHunks()
+            recomputeSyntax()
+            return
+        }
         let repoURL = coordinator.activeBundle.repo.url
         do {
             async let src = readSource(repoURL: repoURL)
