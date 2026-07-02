@@ -20,6 +20,19 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 ensure_keychain_and_cert() {
+  # Self-heal: if a keychain file already exists but its password isn't our
+  # known CERT_PW (e.g. a stale one left by another setup, or a fresh checkout
+  # on a second machine), unlocking it non-interactively fails and macOS pops a
+  # GUI password prompt you can't answer. Detect that and recreate it fresh.
+  # The dev keychain only holds the signing cert — the app's PAT/API keys live
+  # in the default login keychain — so recreating it loses nothing important.
+  if [[ -f "$KEYCHAIN_PATH" ]] \
+     && ! security unlock-keychain -p "$CERT_PW" "$KEYCHAIN_PATH" >/dev/null 2>&1; then
+    echo "▶︎ Existing $KEYCHAIN_NAME has an unknown password — recreating it…"
+    security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+    rm -f "$KEYCHAIN_PATH"
+  fi
+
   if [[ ! -f "$KEYCHAIN_PATH" ]]; then
     echo "▶︎ Creating dedicated keychain ($KEYCHAIN_NAME)…"
     security create-keychain -p "$CERT_PW" "$KEYCHAIN_NAME" >/dev/null

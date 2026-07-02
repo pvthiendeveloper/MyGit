@@ -6,6 +6,21 @@ struct MainView: View {
     @EnvironmentObject var remote: RemoteViewModel
     @State private var remoteURLInput: String = ""
 
+    private var sidebarMinWidth: CGFloat {
+        switch main.tab {
+        case .history: return 520
+        case .pullRequests: return 440
+        default: return 280
+        }
+    }
+    private var sidebarIdealWidth: CGFloat {
+        switch main.tab {
+        case .history: return 760
+        case .pullRequests: return 640
+        default: return 280
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ToolbarBar()
@@ -19,9 +34,9 @@ struct MainView: View {
                 HSplitView {
                     SidebarPanel()
                         .frame(
-                            minWidth: main.tab == .history ? 520 : 280,
-                            idealWidth: main.tab == .history ? 760 : 280,
-                            maxWidth: main.tab == .history ? 1200 : 480
+                            minWidth: sidebarMinWidth,
+                            idealWidth: sidebarIdealWidth,
+                            maxWidth: main.tab == .history ? 1200 : (main.tab == .pullRequests ? 900 : 480)
                         )
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { main.sidebarWidth = $0 }
                     DetailPanel()

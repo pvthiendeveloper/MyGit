@@ -4,6 +4,9 @@ import AppKit
 struct CompareChangedFilesTree: View {
     let nodes: [ChangedFileNode]
     let onAction: (ChangedFileEntry, CompareFileAction) -> Void
+    /// When set, the right-click menu shows only these actions (in order).
+    /// nil → the full default git menu (Changes/History usage).
+    var menuActions: [CompareFileAction]? = nil
 
     @State private var expanded: Set<String> = []
 
@@ -29,7 +32,8 @@ struct CompareChangedFilesTree: View {
                                 node: node,
                                 depth: 0,
                                 expanded: $expanded,
-                                onAction: onAction
+                                onAction: onAction,
+                                menuActions: menuActions
                             )
                         }
                     }
@@ -112,6 +116,7 @@ private struct CompareFileTreeRow: View {
     let depth: Int
     @Binding var expanded: Set<String>
     let onAction: (ChangedFileEntry, CompareFileAction) -> Void
+    var menuActions: [CompareFileAction]? = nil
 
     private var isDir: Bool { node.children != nil }
     private var isExpanded: Bool { expanded.contains(node.id) }
@@ -125,7 +130,8 @@ private struct CompareFileTreeRow: View {
                         node: child,
                         depth: depth + 1,
                         expanded: $expanded,
-                        onAction: onAction
+                        onAction: onAction,
+                        menuActions: menuActions
                     )
                 }
             }
@@ -201,20 +207,27 @@ private struct CompareFileTreeRow: View {
 
     @ViewBuilder
     private func fileContextMenu(for entry: ChangedFileEntry) -> some View {
-        Button("Show Diff") { onAction(entry, .showDiff) }
-        Button("Show Diff in a New Tab") { onAction(entry, .showDiffInNewTab) }
-        Button("Compare with Local") { onAction(entry, .compareWithLocal) }
-        Button("Compare Before with Local") { onAction(entry, .compareBeforeWithLocal) }
-        Divider()
-        Button("Edit Source") { onAction(entry, .editSource) }
-        Button("Open Repository Version") { onAction(entry, .openRepositoryVersion) }
-        Divider()
-        Button("Revert Selected Changes") { onAction(entry, .revertChanges) }
-        Button("Cherry-Pick Selected Changes") { onAction(entry, .cherryPickChanges) }
-        Button("Drop Selected Changes") { onAction(entry, .dropChanges) }
-        Divider()
-        Button("Create Patch...") { onAction(entry, .createPatch) }
-        Button("History Up to Here") { onAction(entry, .historyUpToHere) }
+        if let actions = menuActions {
+            // Restricted menu (e.g. Pull Requests): only the given actions.
+            ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                Button(action.menuLabel) { onAction(entry, action) }
+            }
+        } else {
+            Button("Show Diff") { onAction(entry, .showDiff) }
+            Button("Show Diff in a New Tab") { onAction(entry, .showDiffInNewTab) }
+            Button("Compare with Local") { onAction(entry, .compareWithLocal) }
+            Button("Compare Before with Local") { onAction(entry, .compareBeforeWithLocal) }
+            Divider()
+            Button("Edit Source") { onAction(entry, .editSource) }
+            Button("Open Repository Version") { onAction(entry, .openRepositoryVersion) }
+            Divider()
+            Button("Revert Selected Changes") { onAction(entry, .revertChanges) }
+            Button("Cherry-Pick Selected Changes") { onAction(entry, .cherryPickChanges) }
+            Button("Drop Selected Changes") { onAction(entry, .dropChanges) }
+            Divider()
+            Button("Create Patch...") { onAction(entry, .createPatch) }
+            Button("History Up to Here") { onAction(entry, .historyUpToHere) }
+        }
     }
 
     private var fileNameText: Text {

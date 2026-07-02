@@ -83,6 +83,22 @@ enum CompareFileAction {
     case dropChanges
     case createPatch
     case historyUpToHere
+
+    var menuLabel: String {
+        switch self {
+        case .showDiff: return "Show Diff"
+        case .showDiffInNewTab: return "Show Diff in a New Tab"
+        case .compareWithLocal: return "Compare with Local"
+        case .compareBeforeWithLocal: return "Compare Before with Local"
+        case .editSource: return "Edit Source"
+        case .openRepositoryVersion: return "Open Repository Version"
+        case .revertChanges: return "Revert Selected Changes"
+        case .cherryPickChanges: return "Cherry-Pick Selected Changes"
+        case .dropChanges: return "Drop Selected Changes"
+        case .createPatch: return "Create Patch..."
+        case .historyUpToHere: return "History Up to Here"
+        }
+    }
 }
 
 // Build a hierarchical tree from a flat list of file paths

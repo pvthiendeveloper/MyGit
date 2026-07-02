@@ -32,6 +32,19 @@ final class FileEditorViewModel: ObservableObject {
         openFileTabs.removeAll()
         activeFileTabId = nil
         closedPaths.removeAll()
+        syncDetailTab()
+    }
+
+    /// Keeps `main.detailTab` valid after editor tabs change: if it points at an
+    /// editor tab that no longer exists, retarget the active tab or fall back.
+    private func syncDetailTab() {
+        guard case let .editor(id) = main.detailTab else { return }
+        if openFileTabs.contains(where: { $0.id == id }) { return }
+        if let active = activeFileTabId {
+            main.detailTab = .editor(active)
+        } else {
+            main.fallbackDetailTab()
+        }
     }
 
     func openFile(_ node: FileTreeNode) {
@@ -41,13 +54,21 @@ final class FileEditorViewModel: ObservableObject {
 
     func openFile(path: String) {
         if let existing = openFileTabs.first(where: { $0.path == path }) {
-            activeFileTabId = existing.id
+            selectFileTab(id: existing.id)
             return
         }
         let tab = OpenFileTab(path: path)
         openFileTabs.append(tab)
         activeFileTabId = tab.id
+        main.detailTab = .editor(tab.id)
         Task { await loadFileTab(tab) }
+    }
+
+    /// Makes the given editor tab both the active file tab and the visible
+    /// detail tab, so selecting a chip in the unified tab bar switches content.
+    func selectFileTab(id: UUID) {
+        activeFileTabId = id
+        main.detailTab = .editor(id)
     }
 
     private func loadFileTab(_ tab: OpenFileTab) async {
@@ -88,6 +109,7 @@ final class FileEditorViewModel: ObservableObject {
                 activeFileTabId = openFileTabs[newIdx].id
             }
         }
+        syncDetailTab()
     }
 
     func closeOtherFileTabs(keep id: UUID) {
@@ -96,6 +118,7 @@ final class FileEditorViewModel: ObservableObject {
         }
         openFileTabs.removeAll { $0.id != id }
         activeFileTabId = id
+        syncDetailTab()
     }
 
     func closeAllFileTabs() {
@@ -104,6 +127,7 @@ final class FileEditorViewModel: ObservableObject {
         }
         openFileTabs.removeAll()
         activeFileTabId = nil
+        syncDetailTab()
     }
 
     /// Closes every non-dirty tab; keeps tabs with unsaved edits.
@@ -115,6 +139,7 @@ final class FileEditorViewModel: ObservableObject {
         if let active = activeFileTabId, !openFileTabs.contains(where: { $0.id == active }) {
             activeFileTabId = openFileTabs.first?.id
         }
+        syncDetailTab()
     }
 
     func reopenClosedTab() {

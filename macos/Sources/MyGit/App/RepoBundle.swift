@@ -20,6 +20,7 @@ final class RepoBundle: Identifiable {
     let branches: BranchesViewModel
     let account: AccountViewModel
     let remote: RemoteViewModel
+    let pullRequests: PullRequestsViewModel
     let compareVM: CompareBranchesViewModel
 
     init(repo: Repository, container: AppContainer, main: MainViewModel, settings: SettingsViewModel) {
@@ -75,12 +76,19 @@ final class RepoBundle: Identifiable {
         let remote = RemoteViewModel(
             git: container.git,
             account: account,
+            pullRequests: container.pullRequests,
             main: main,
             repoSource: repoSource,
             currentBranch: currentBranch,
             onFinished: refreshAll
         )
         self.remote = remote
+
+        self.pullRequests = PullRequestsViewModel(
+            pullRequests: container.pullRequests,
+            account: account,
+            main: main
+        )
 
         self.compareVM = CompareBranchesViewModel()
 
@@ -130,6 +138,7 @@ final class RepoBundle: Identifiable {
         editor.repositoryDidChange()
         branches.repositoryDidChange()
         account.repositoryDidChange()
+        pullRequests.repositoryDidChange()
     }
 }
 

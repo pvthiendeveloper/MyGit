@@ -70,9 +70,7 @@ private struct FileNodeView: View {
                     if !node.isLoaded {
                         Task { await vm.loadChildren(of: node) }
                     }
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        node.isExpanded.toggle()
-                    }
+                    node.isExpanded.toggle()
                 } else {
                     editor.openFile(node)
                 }
@@ -94,7 +92,6 @@ private struct FileRowView: View {
     @State private var isHovered = false
 
     private var icon: String {
-        if node.isLoading { return "arrow.triangle.2.circlepath" }
         if node.isDirectory {
             return node.isExpanded ? "folder.fill" : "folder"
         }
@@ -123,7 +120,6 @@ private struct FileRowView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(iconColor)
                 .frame(width: 16)
-                .symbolEffect(.rotate, isActive: node.isLoading)
 
             Text(node.name)
                 .font(.system(size: 12))

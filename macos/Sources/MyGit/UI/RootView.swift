@@ -20,6 +20,7 @@ struct RootView: View {
             .environmentObject(bundle.branches)
             .environmentObject(bundle.account)
             .environmentObject(bundle.remote)
+            .environmentObject(bundle.pullRequests)
             .environmentObject(bundle.compareVM)
     }
 }

@@ -146,6 +146,7 @@ struct ToolbarBar: View {
             BranchPopover()
                 .environmentObject(main)
                 .environmentObject(repos)
+                .environmentObject(coordinator)
                 .environmentObject(changes)
                 .environmentObject(branches)
                 .environmentObject(remote)

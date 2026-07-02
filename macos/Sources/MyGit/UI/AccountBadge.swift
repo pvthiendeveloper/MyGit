@@ -73,18 +73,52 @@ private struct AccountPopover: View {
     @ViewBuilder
     private var authSection: some View {
         if let acc = account.account, let host = acc.host {
-            HStack {
-                Image(systemName: iconName(acc))
-                    .foregroundStyle(iconColor(acc))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title(acc, host: host))
-                        .font(.system(size: 12, weight: .medium))
-                    Text(subtitle(acc))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: iconName(acc))
+                        .foregroundStyle(iconColor(acc))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title(acc, host: host))
+                            .font(.system(size: 12, weight: .medium))
+                        Text(subtitle(acc))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    trailing(acc)
                 }
-                Spacer()
-                trailing(acc)
+                // SSH remotes authenticate git via keys, but opening a pull
+                // request goes through the host's REST API and needs a stored
+                // token. HTTPS remotes reuse their sign-in token, so only show
+                // this extra affordance for SSH on PR-capable hosts.
+                if acc.isSSH, PullRequestRouter.supports(host: host) {
+                    pullRequestTokenRow(host)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pullRequestTokenRow(_ host: String) -> some View {
+        HStack {
+            Image(systemName: account.hasStoredToken ? "checkmark.seal.fill" : "arrow.triangle.pull")
+                .foregroundStyle(account.hasStoredToken ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Pull request access")
+                    .font(.system(size: 12, weight: .medium))
+                Text(account.hasStoredToken
+                     ? "Token stored for \(host)"
+                     : "Add a token to open pull requests")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if account.hasStoredToken {
+                Button("Remove") { account.signOut() }
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Add token…") { showTokenSheet = true }
+                    .buttonStyle(.borderedProminent)
             }
         }
     }

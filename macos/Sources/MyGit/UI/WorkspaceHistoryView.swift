@@ -10,11 +10,15 @@ struct WorkspaceHistoryView: View {
         if coordinator.bundles.count <= 1 {
             HistoryGraphPane()
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(coordinator.bundles) { bundle in
-                        RepoHistorySection(bundle: bundle)
-                        Divider()
+            VStack(spacing: 0) {
+                SectionActionBar(namespace: "history", ids: coordinator.bundles.map { $0.id.absoluteString })
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(coordinator.bundles) { bundle in
+                            RepoHistorySection(bundle: bundle)
+                            Divider()
+                        }
                     }
                 }
             }
@@ -47,7 +51,7 @@ private struct RepoHistorySection: View {
     @EnvironmentObject var coordinator: AppCoordinator
     let bundle: RepoBundle
     @ObservedObject private var historyVM: HistoryViewModel
-    @State private var expanded = true
+    @ObservedObject private var store = SectionCollapseStore.shared
 
     init(bundle: RepoBundle) {
         self.bundle = bundle
@@ -55,6 +59,7 @@ private struct RepoHistorySection: View {
     }
 
     private var isActive: Bool { coordinator.activeBundle.id == bundle.id }
+    private var expanded: Bool { store.isExpanded("history", bundle.id.absoluteString) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -62,7 +67,7 @@ private struct RepoHistorySection: View {
                 name: bundle.name,
                 branch: historyVM.selectedCommit?.shortHash,
                 count: historyVM.commits.count,
-                expanded: $expanded
+                expanded: store.binding("history", bundle.id.absoluteString)
             )
             if expanded {
                 if historyVM.commits.isEmpty {
@@ -133,32 +138,30 @@ struct RepoSectionHeader: View {
     @Binding var expanded: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
-            } label: {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary).frame(width: 14)
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 0 : -90))
+
+                Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.1)))
+
+                Spacer(minLength: 0)
+
+                if let branch { Text(branch).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
             }
-            .buttonStyle(.plain)
-
-            Image(systemName: "folder.fill").font(.system(size: 11)).foregroundStyle(.secondary)
-            Text(name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-
-            Text("\(count)")
-                .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(Color.secondary.opacity(0.15)))
-
-            Spacer()
-
-            if let branch { Text(branch).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            withAnimation(.easeInOut(duration: 0.12)) { expanded.toggle() }
-        }
+        .buttonStyle(.plain)
     }
 }

@@ -14,6 +14,7 @@ struct GitAccount: Hashable {
     var transport: RemoteTransport = .unknown
 
     var isGitHub: Bool { host?.lowercased() == "github.com" }
+    var isBitbucket: Bool { host?.lowercased() == "bitbucket.org" }
     var isSSH: Bool { transport == .ssh }
     var isHTTPS: Bool { transport == .https || transport == .http }
 

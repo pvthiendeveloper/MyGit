@@ -3,11 +3,23 @@ import Combine
 
 @MainActor
 final class MainViewModel: ObservableObject {
-    enum Tab: Hashable { case changes, stash, history, files }
+    enum Tab: Hashable { case changes, stash, history, files, pullRequests }
     enum DetailTab: Hashable {
         case content
         case compare
         case diff(UUID)
+        case editor(UUID)
+        case patch(UUID)
+    }
+
+    /// A read-only diff tab backed by a pre-parsed patch (e.g. a remote PR
+    /// file), rendered with `DiffView`. Unlike `DiffTab` it carries its content
+    /// and never touches local git.
+    struct PatchTab: Identifiable {
+        let id = UUID()
+        let key: String      // dedup key (e.g. "pr:<num>:<path>")
+        let title: String
+        let diff: FileDiff
     }
 
     @Published var tab: Tab = .changes
@@ -19,6 +31,7 @@ final class MainViewModel: ObservableObject {
     @Published var isBusy: Bool = false
     @Published var sidebarWidth: CGFloat = 280
     @Published var diffTabs: [DiffTab] = []
+    @Published var patchTabs: [PatchTab] = []
     @Published private(set) var tabHistory: [UUID] = []
     @Published private(set) var tabHistoryIndex: Int = -1
     @Published private(set) var hasClosedDiffTabs: Bool = false
@@ -34,6 +47,14 @@ final class MainViewModel: ObservableObject {
 
     var canNavigateBackTab: Bool { tabHistoryIndex > 0 }
     var canNavigateForwardTab: Bool { tabHistoryIndex + 1 < tabHistory.count }
+
+    /// Picks a sensible detail tab when the current one (usually an editor tab)
+    /// goes away: prefer the last diff tab, then compare, then plain content.
+    func fallbackDetailTab() {
+        if let last = diffTabs.last { detailTab = .diff(last.id) }
+        else if comparePair != nil { detailTab = .compare }
+        else { detailTab = .content }
+    }
 
     func openCompare(_ pair: ComparePair) {
         comparePair = pair
@@ -63,6 +84,29 @@ final class MainViewModel: ObservableObject {
     func selectDiffTab(_ id: UUID) {
         detailTab = .diff(id)
         pushHistory(id)
+    }
+
+    /// Open (or focus, if already open) a read-only patch tab.
+    func openPatchTab(key: String, title: String, diff: FileDiff) {
+        if let existing = patchTabs.first(where: { $0.key == key }) {
+            detailTab = .patch(existing.id)
+            return
+        }
+        let tab = PatchTab(key: key, title: title, diff: diff)
+        patchTabs.append(tab)
+        detailTab = .patch(tab.id)
+    }
+
+    func closePatchTab(_ id: UUID) {
+        let wasActive: Bool = {
+            if case let .patch(active) = detailTab { return active == id }
+            return false
+        }()
+        patchTabs.removeAll { $0.id == id }
+        if wasActive {
+            if let last = patchTabs.last { detailTab = .patch(last.id) }
+            else { fallbackDetailTab() }
+        }
     }
 
     func closeDiffTab(_ id: UUID) {

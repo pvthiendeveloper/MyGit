@@ -5,11 +5,18 @@ struct DetailPanel: View {
     @EnvironmentObject var changes: ChangesViewModel
     @EnvironmentObject var history: HistoryViewModel
     @EnvironmentObject var compareVM: CompareBranchesViewModel
+    @EnvironmentObject var editor: FileEditorViewModel
+    @EnvironmentObject var pullRequests: PullRequestsViewModel
     @EnvironmentObject var coordinator: AppCoordinator
+
+    private var hasDetailTabs: Bool {
+        main.comparePair != nil || !main.diffTabs.isEmpty
+            || !editor.openFileTabs.isEmpty || !main.patchTabs.isEmpty
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if main.comparePair != nil || !main.diffTabs.isEmpty {
+            if hasDetailTabs {
                 detailTabBar
                 Divider()
             }
@@ -33,6 +40,16 @@ struct DetailPanel: View {
                 ForEach(main.diffTabs) { tab in
                     Divider().frame(height: 16).padding(.horizontal, 4)
                     diffTabChip(tab)
+                }
+
+                ForEach(editor.openFileTabs) { tab in
+                    Divider().frame(height: 16).padding(.horizontal, 4)
+                    EditorTabChip(tab: tab)
+                }
+
+                ForEach(main.patchTabs) { tab in
+                    Divider().frame(height: 16).padding(.horizontal, 4)
+                    patchTabChip(tab)
                 }
 
                 Spacer(minLength: 0)
@@ -69,6 +86,42 @@ struct DetailPanel: View {
         .contextMenu {
             Button("Close") { main.closeCompare() }
         }
+    }
+
+    private func patchTabChip(_ tab: MainViewModel.PatchTab) -> some View {
+        let isActive: Bool = {
+            if case let .patch(id) = main.detailTab { return id == tab.id }
+            return false
+        }()
+        return HStack(spacing: 0) {
+            Button { main.detailTab = .patch(tab.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.pull")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    Text(tab.title)
+                        .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+                        .lineLimit(1)
+                }
+                .padding(.leading, 10)
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .help(tab.key)
+
+            Button { main.closePatchTab(tab.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu { Button("Close") { main.closePatchTab(tab.id) } }
     }
 
     private func diffTabChip(_ tab: DiffTab) -> some View {
@@ -158,6 +211,7 @@ struct DetailPanel: View {
         case .stash:   return "Diff"
         case .history: return "Commit"
         case .files:   return "Editor"
+        case .pullRequests: return "Pull Request"
         }
     }
 
@@ -169,6 +223,18 @@ struct DetailPanel: View {
         case .diff(let id):
             if let tab = main.diffTabs.first(where: { $0.id == id }) {
                 SideBySideDiffTabView(tab: tab)
+            } else {
+                normalContent
+            }
+        case .editor(let id):
+            if let tab = editor.openFileTabs.first(where: { $0.id == id }) {
+                FileEditorContent(tab: tab)
+            } else {
+                normalContent
+            }
+        case .patch(let id):
+            if let tab = main.patchTabs.first(where: { $0.id == id }) {
+                DiffView(diff: tab.diff)
             } else {
                 normalContent
             }
@@ -209,6 +275,12 @@ struct DetailPanel: View {
             }
         case .files:
             FileEditorView()
+        case .pullRequests:
+            if pullRequests.selected != nil {
+                PullRequestDetailView(vm: pullRequests)
+            } else {
+                placeholder("Select a pull request to see its details.")
+            }
         }
     }
 
@@ -305,6 +377,93 @@ struct DetailPanel: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// A chip in the unified detail tab bar representing an open editor file tab.
+/// Kept as its own view so `@ObservedObject` tracks the tab's dirty/name state.
+private struct EditorTabChip: View {
+    @ObservedObject var tab: OpenFileTab
+    @EnvironmentObject var main: MainViewModel
+    @EnvironmentObject var editor: FileEditorViewModel
+
+    private var isActive: Bool {
+        if case let .editor(id) = main.detailTab { return id == tab.id }
+        return false
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button { editor.selectFileTab(id: tab.id) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc")
+                        .font(.system(size: 10))
+                        .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    Text(tab.name)
+                        .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+                        .lineLimit(1)
+                    if tab.isDirty {
+                        Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                    }
+                }
+                .padding(.leading, 10)
+                .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .help(tab.path)
+
+            Button { editor.closeFileTab(id: tab.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .background(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contextMenu { contextMenu }
+    }
+
+    @ViewBuilder
+    private var contextMenu: some View {
+        Button("Close") { editor.closeFileTab(id: tab.id) }
+        Button("Close Others") { editor.closeOtherFileTabs(keep: tab.id) }
+            .disabled(editor.openFileTabs.count < 2)
+        Button("Close All") { editor.closeAllFileTabs() }
+        Button("Close Saved") { editor.closeSavedFileTabs() }
+            .disabled(!editor.openFileTabs.contains { !$0.isDirty })
+
+        Divider()
+
+        Button("Copy Full Path") {
+            if let abs = editor.absolutePath(for: tab) { FileActions.copyToPasteboard(abs) }
+        }
+        Button("Copy Relative Path") { FileActions.copyToPasteboard(tab.path) }
+        Button("Reveal in Finder") {
+            if let abs = editor.absolutePath(for: tab) { FileActions.reveal(absPath: abs) }
+        }
+        Button("Open in Default App") {
+            if let abs = editor.absolutePath(for: tab) { FileActions.openDefault(absPath: abs) }
+        }
+        Button("Open in Terminal") {
+            if let abs = editor.absolutePath(for: tab) {
+                FileActions.openTerminal(dir: (abs as NSString).deletingLastPathComponent)
+            }
+        }
+
+        Divider()
+
+        Button("Reopen Closed Tab") { editor.reopenClosedTab() }
+            .disabled(editor.closedPaths.isEmpty)
+
+        Divider()
+
+        Menu("Git") {
+            Button("Show Diff in New Tab") { editor.showDiffInNewTab(for: tab) }
+        }
     }
 }
 

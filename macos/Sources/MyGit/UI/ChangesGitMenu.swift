@@ -15,6 +15,9 @@ struct ChangesGitMenu: View {
         Button("Commit…") { main.tab = .changes }
         Button("Push…") { Task { await remote.push() } }
         Button("Pull…") { Task { await remote.pull() } }
+        if PullRequestRouter.supports(host: bundle.account.account?.host) {
+            Button("Create Pull Request…") { changes.pendingPullRequest = true }
+        }
         Button("Update Project…") {
             Task { await remote.fetchOrigin(); await remote.pull() }
         }
@@ -104,6 +107,40 @@ struct ChangesGitActionHost: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Restores tracked files and deletes untracked ones. This cannot be undone.")
+            }
+            // Per-file rollback/delete alerts — hosted here (not just in
+            // ChangesListView) so they also present in the multi-repo section view.
+            .alert(
+                "Rollback changes?",
+                isPresented: Binding(
+                    get: { vm.pendingRollback != nil },
+                    set: { if !$0 { vm.pendingRollback = nil } }
+                ),
+                presenting: vm.pendingRollback
+            ) { change in
+                Button("Rollback", role: .destructive) {
+                    Task { await vm.confirmRollback(change) }
+                }
+                Button("Cancel", role: .cancel) { vm.pendingRollback = nil }
+            } message: { change in
+                Text(change.isUntracked
+                     ? "Delete untracked file \(change.path)? This cannot be undone."
+                     : "Discard all local changes to \(change.path)?")
+            }
+            .alert(
+                "Delete file?",
+                isPresented: Binding(
+                    get: { vm.pendingDelete != nil },
+                    set: { if !$0 { vm.pendingDelete = nil } }
+                ),
+                presenting: vm.pendingDelete
+            ) { change in
+                Button("Delete", role: .destructive) {
+                    Task { await vm.confirmDelete(change) }
+                }
+                Button("Cancel", role: .cancel) { vm.pendingDelete = nil }
+            } message: { change in
+                Text("Remove \(change.path) from the working tree? This cannot be undone.")
             }
     }
 }

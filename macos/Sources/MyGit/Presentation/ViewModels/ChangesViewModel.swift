@@ -30,6 +30,7 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingResetHead = false
     @Published var pendingDiscardAll = false
     @Published var pendingStash = false
+    @Published var pendingPullRequest = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false

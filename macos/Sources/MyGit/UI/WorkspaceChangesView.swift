@@ -72,6 +72,7 @@ private struct RepoChangesSection: View {
             coordinator.setActive(bundle)
         }
         .changesGitActionHost(bundle.changes)
+        .pullRequestActionHost(bundle)
     }
 
     private var header: some View {

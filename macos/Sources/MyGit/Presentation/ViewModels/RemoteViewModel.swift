@@ -5,9 +5,12 @@ final class RemoteViewModel: ObservableObject {
     @Published var lastFetchedAt: Date?
     @Published var noUpstreamBranch: String?
     @Published var missingRemoteForBranch: String?
+    /// URL of the most recently opened pull request (drives a "View PR" affordance).
+    @Published var lastPullRequestURL: URL?
 
     private let git: GitRepository
     private let account: AccountViewModel
+    private let pullRequests: PullRequestRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
     private let onFinished: () async -> Void
@@ -16,6 +19,7 @@ final class RemoteViewModel: ObservableObject {
     init(
         git: GitRepository,
         account: AccountViewModel,
+        pullRequests: PullRequestRepository,
         main: MainViewModel,
         repoSource: @escaping () -> Repository?,
         currentBranch: @escaping () -> String?,
@@ -23,6 +27,7 @@ final class RemoteViewModel: ObservableObject {
     ) {
         self.git = git
         self.account = account
+        self.pullRequests = pullRequests
         self.main = main
         self.repoSource = repoSource
         self.currentBranch = currentBranch
@@ -92,6 +97,67 @@ final class RemoteViewModel: ObservableObject {
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Pull requests
+
+    /// The current branch name — the head for a new pull request.
+    var pullRequestHead: String? { currentBranch() }
+
+    /// The GitHub account (host/owner/repo) for the current repo, if any.
+    var pullRequestAccount: GitAccount? { account.account }
+
+    /// Fetch the repo's default branch to prefill the PR base. Nil on any error
+    /// (no token, non-GitHub, network) — the composer falls back to a text field.
+    func defaultBaseBranch() async -> String? {
+        guard let acc = account.account,
+              let host = acc.host, let owner = acc.owner, let name = acc.repo,
+              let token = account.storedToken() else { return nil }
+        return try? await pullRequests.defaultBranch(host: host, owner: owner, repo: name, token: token)
+    }
+
+    /// Push the current branch (publishing/updating origin), then open a pull
+    /// request from it into `base`. Returns the PR URL on success (also stored
+    /// in `lastPullRequestURL`); nil on failure with `main.errorMessage` set.
+    @discardableResult
+    func createPullRequest(title: String, body: String, base: String) async -> URL? {
+        guard let repo = repoSource() else { return nil }
+        guard let acc = account.account,
+              let host = acc.host, let owner = acc.owner, let name = acc.repo else {
+            main.errorMessage = PullRequestError.noRepository.localizedDescription
+            return nil
+        }
+        guard let head = currentBranch() else {
+            main.errorMessage = PullRequestError.noBranch.localizedDescription
+            return nil
+        }
+        guard let token = account.storedToken() else {
+            main.errorMessage = PullRequestError.missingToken(host).localizedDescription
+            return nil
+        }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        await Task.yield()
+        do {
+            // Ensure the head branch exists on origin and is up to date. A no-op
+            // when already published + pushed; publishes/pushes otherwise.
+            try await git.push(
+                at: repo.url,
+                args: ["push", "--set-upstream", "origin", head],
+                auth: account.currentAuth()
+            )
+            let info = try await pullRequests.create(
+                host: host, owner: owner, repo: name,
+                head: head, base: base, title: title, body: body,
+                token: token
+            )
+            lastPullRequestURL = info.url
+            await onFinished()
+            return info.url
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return nil
         }
     }
 

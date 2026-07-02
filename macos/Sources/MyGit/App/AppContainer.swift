@@ -7,6 +7,7 @@ struct AppContainer {
     let credentials: CredentialRepository
     let fileEditor: FileEditorRepository
     let commitMessage: CommitMessageRepository
+    let pullRequests: PullRequestRepository
 
     @MainActor
     static func live() -> AppContainer {
@@ -15,7 +16,8 @@ struct AppContainer {
             repos: UserDefaultsRepoListRepository(),
             credentials: KeychainCredentialRepository(),
             fileEditor: FileSystemFileEditorRepository(),
-            commitMessage: AICommitMessageRepository()
+            commitMessage: AICommitMessageRepository(),
+            pullRequests: PullRequestRouter()
         )
     }
 }

@@ -54,6 +54,12 @@ struct RepoPopover: View {
                             repos.pickRepository()
                         }
                     }
+                    Button("Add by Path…") {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            repos.promptAddByPath()
+                        }
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Text("Add").font(.system(size: 12, weight: .medium))

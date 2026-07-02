@@ -72,6 +72,14 @@ final class AccountViewModel: ObservableObject {
         }
     }
 
+    /// The raw stored PAT for this repo's host, regardless of transport.
+    /// Used for REST calls (e.g. opening a pull request) where the token is
+    /// needed even on SSH remotes — unlike `currentAuth()`, which is HTTPS-only.
+    func storedToken() -> String? {
+        guard let host = account?.host else { return nil }
+        return credentials.token(host: host)
+    }
+
     /// Returns an auth override only when remote is HTTPS and a PAT is stored.
     func currentAuth() -> AuthOverride? {
         guard let host = account?.host,

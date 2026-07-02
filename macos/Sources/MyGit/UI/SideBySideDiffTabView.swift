@@ -160,7 +160,7 @@ struct SideBySideDiffTabView: View {
             toolbarButton(systemName: "arrow.down", help: "Next change", enabled: canNextHunk) {
                 jumpHunk(delta: 1)
             }
-            toolbarButton(systemName: "pencil", help: "Edit file here", enabled: true) {
+            toolbarButton(systemName: "pencil", help: "Edit file in editor", enabled: true) {
                 editSource()
             }
             Divider().frame(height: 14)
@@ -953,15 +953,10 @@ struct SideBySideDiffTabView: View {
     // app. If the right side is already editable, just focus it; for a commit-vs-parent
     // diff, flip to the on-disk "Current version" (which makes the right pane editable),
     // then focus once it's swapped in.
+    /// Opens the file's current working-tree version in a MyGit internal editor
+    /// tab (added to the unified detail tab bar, alongside diff tabs).
     private func editSource() {
-        if isRightEditable {
-            focusEditor()
-        } else if tab.mode == .commitVsParent {
-            useCurrentVersion = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { focusEditor() }
-        } else {
-            loadError = "This diff has no editable working-tree side."
-        }
+        coordinator.activeBundle.editor.openFile(path: tab.path)
     }
 
     private func focusEditor() {

@@ -5,6 +5,7 @@ struct BranchPopover: View {
     @EnvironmentObject var changes: ChangesViewModel
     @EnvironmentObject var branchesVM: BranchesViewModel
     @EnvironmentObject var remote: RemoteViewModel
+    @EnvironmentObject var coordinator: AppCoordinator
     @Environment(\.dismiss) private var dismiss
 
     @State private var searchText = ""
@@ -13,6 +14,9 @@ struct BranchPopover: View {
     @State private var collapsed: Set<String> = []
 
     private var current: String { changes.status?.branch ?? "—" }
+    private var showsPullRequests: Bool {
+        PullRequestRouter.supports(host: coordinator.activeBundle.account.account?.host)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -62,6 +66,13 @@ struct BranchPopover: View {
                 topActionRow(icon: "arrow.up", label: "Push…", shortcut: "⇧⌘K") {
                     Task { await remote.push() }
                     dismiss()
+                }
+                if showsPullRequests {
+                    topActionRow(icon: "arrow.triangle.pull", label: "Create Pull Request…", shortcut: "") {
+                        main.tab = .changes
+                        changes.pendingPullRequest = true
+                        dismiss()
+                    }
                 }
             }
             .padding(.vertical, 4)
