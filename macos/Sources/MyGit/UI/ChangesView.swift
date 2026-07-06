@@ -61,6 +61,15 @@ struct ChangesListView: View {
                     .controlSize(.small)
                     .buttonStyle(.borderedProminent)
             }
+            Button("Resolve") {
+                Task {
+                    let names = await vm.mergeBranchNames()
+                    ConflictsWindow.open(bundle: coordinator.activeBundle,
+                                         ours: names.ours, theirs: names.theirs)
+                }
+            }
+            .controlSize(.small)
+            .help("Open the conflicts overview")
             Button("Abort") { vm.pendingAbortMerge = true }
                 .controlSize(.small)
         }
@@ -203,6 +212,18 @@ struct ChangeRow: View {
         }
         Button("Jump to Source") {
             vm.jumpToSource(change)
+        }
+
+        Divider()
+
+        Button("Reveal in Finder") { vm.revealInFinder(change) }
+        Button("Open in Default App") { vm.openInDefaultApp(change) }
+        Menu("Copy Path/Reference…") {
+            Button("Copy Absolute Path") { vm.copyAbsolutePath(change) }
+            Button("Copy Relative Path") { vm.copyRelativePath(change) }
+            Button("Copy File Name") { vm.copyFileName(change) }
+            Divider()
+            Button("Copy File Contents") { vm.copyFileContents(change) }
         }
 
         Divider()

@@ -408,6 +408,67 @@ final class ChangesViewModel: ObservableObject {
         jumpToSourcePath = change.path
     }
 
+    // MARK: - File utilities (right-click)
+
+    /// Absolute URL of a change's working-tree file.
+    func absoluteURL(for change: FileChange) -> URL? {
+        guard let repo = repoSource() else { return nil }
+        return repo.url.appendingPathComponent(change.path)
+    }
+
+    /// File name only (last path component).
+    func fileName(of change: FileChange) -> String {
+        change.path.split(separator: "/").last.map(String.init) ?? change.path
+    }
+
+    #if canImport(AppKit)
+    private func setClipboard(_ string: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(string, forType: .string)
+    }
+
+    /// Copy the absolute path.
+    func copyAbsolutePath(_ change: FileChange) {
+        guard let url = absoluteURL(for: change) else { return }
+        setClipboard(url.path)
+    }
+
+    /// Copy the repo-relative path.
+    func copyRelativePath(_ change: FileChange) {
+        setClipboard(change.path)
+    }
+
+    /// Copy just the file name.
+    func copyFileName(_ change: FileChange) {
+        setClipboard(fileName(of: change))
+    }
+
+    /// Reveal the file in Finder (or its parent dir if the file is gone).
+    func revealInFinder(_ change: FileChange) {
+        guard let url = absoluteURL(for: change) else { return }
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([url.deletingLastPathComponent()])
+        }
+    }
+
+    /// Open the file with the default app.
+    func openInDefaultApp(_ change: FileChange) {
+        guard let url = absoluteURL(for: change),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Copy the current on-disk file contents to the clipboard.
+    func copyFileContents(_ change: FileChange) {
+        guard let url = absoluteURL(for: change),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        setClipboard(text)
+    }
+    #endif
+
     func refresh() async {
         await refreshStatus()
     }

@@ -3,6 +3,7 @@ import SwiftUI
 struct FilesView: View {
     @EnvironmentObject var vm: FilesViewModel
     @State private var searchText = ""
+    @State private var rootExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,14 +32,59 @@ struct FilesView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(vm.fileTreeNodes) { node in
-                            FileNodeView(node: node, depth: 0, query: searchText)
+                        rootRow
+                        if rootExpanded || !searchText.isEmpty {
+                            ForEach(vm.fileTreeNodes) { node in
+                                FileNodeView(node: node, depth: 1, query: searchText)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var rootRow: some View {
+        HStack(spacing: 4) {
+            Image(systemName: (rootExpanded || !searchText.isEmpty) ? "chevron.down" : "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+            Image(systemName: "folder.badge.gearshape")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 16)
+            Text(vm.repoName ?? "Repository")
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+            if let path = vm.repoDisplayPath {
+                Text(path)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { rootExpanded.toggle() }
+        .contextMenu {
+            Button("New File…") { vm.newFile(in: nil) }
+            Button("New Folder…") { vm.newFolder(in: nil) }
+            Divider()
+            Button("Reveal in Finder") { vm.revealRoot() }
+            Button("Open in Terminal") { vm.openRootInTerminal() }
+            Divider()
+            Button("Copy Path") { vm.copyRootPath() }
+            Divider()
+            Button("Refresh") { Task { await vm.refreshFileTree() } }
+        }
+        .padding(.horizontal, 4)
     }
 }
 
@@ -90,6 +136,8 @@ private struct FileRowView: View {
     let depth: Int
     let onTap: () -> Void
     @State private var isHovered = false
+    @EnvironmentObject var vm: FilesViewModel
+    @EnvironmentObject var editor: FileEditorViewModel
 
     private var icon: String {
         if node.isDirectory {
@@ -135,7 +183,42 @@ private struct FileRowView: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onTap)
+        .contextMenu { contextMenu }
         .padding(.horizontal, 4)
+    }
+
+    @ViewBuilder
+    private var contextMenu: some View {
+        if node.isDirectory {
+            Button("New File…") { vm.newFile(in: node) }
+            Button("New Folder…") { vm.newFolder(in: node) }
+            Divider()
+            Button(node.isExpanded ? "Collapse" : "Expand") {
+                if !node.isLoaded { Task { await vm.loadChildren(of: node) } }
+                node.isExpanded.toggle()
+            }
+            Divider()
+        } else {
+            Button("Open") { editor.openFile(node) }
+            Divider()
+        }
+        Button("Reveal in Finder") { vm.revealInFinder(node) }
+        if !node.isDirectory {
+            Button("Open in Default App") { vm.openInDefaultApp(node) }
+        }
+        Button("Open in Terminal") { vm.openInTerminal(node) }
+
+        Divider()
+
+        Menu("Copy Path/Reference…") {
+            Button("Copy Absolute Path") { vm.copyAbsolutePath(node) }
+            Button("Copy Relative Path") { vm.copyRelativePath(node) }
+            Button("Copy File Name") { vm.copyFileName(node) }
+            if !node.isDirectory {
+                Divider()
+                Button("Copy File Contents") { vm.copyFileContents(node) }
+            }
+        }
     }
 
     private func fileIcon(name: String) -> String {
