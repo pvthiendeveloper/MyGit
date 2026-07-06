@@ -1,5 +1,11 @@
 import Foundation
 
+/// Which side of a merge to keep when resolving a conflict.
+/// `ours` = the branch being merged into (current HEAD); `theirs` = the incoming branch.
+enum ConflictSide {
+    case ours, theirs
+}
+
 protocol GitRepository: Sendable {
     // Inspect
     func status(at repo: URL) async throws -> GitStatusSummary
@@ -48,6 +54,24 @@ protocol GitRepository: Sendable {
     func diffWithWorkingTree(branch: String, at repo: URL) async throws -> String
     func rebase(base: String, onto: String, at repo: URL) async throws
     func merge(source: String, into target: String, at repo: URL) async throws
+    func abortMerge(at repo: URL) async throws
+    /// Resolve one conflicted path by taking a whole side, then stage it.
+    func resolveConflict(path: String, using side: ConflictSide, at repo: URL) async throws
+    /// Stage manually-resolved paths (marks them resolved in the index).
+    func markResolved(paths: [String], at repo: URL) async throws
+    /// Finish an in-progress merge by committing the staged result (uses MERGE_MSG).
+    func commitMerge(at repo: URL) async throws
+    /// Name of the incoming branch of an in-progress merge (from MERGE_HEAD), if any.
+    func mergeSourceName(at repo: URL) async -> String?
+    /// Read one of the three conflict stages of a path from the index:
+    /// 1 = base (merge base), 2 = ours (HEAD), 3 = theirs (MERGE_HEAD).
+    /// Returns "" when the stage is absent (side added/deleted the file).
+    func readMergeStage(_ stage: Int, path: String, at repo: URL) async throws -> String
+    /// All three conflict stages at once (base, ours, theirs).
+    func readMergeConflict(path: String, at repo: URL) async throws -> (base: String, ours: String, theirs: String)
+    /// True when a conflicted path is a mergeable text file (not a gitlink/binary),
+    /// so the 3-way merge editor can be offered.
+    func isTextConflict(path: String, at repo: URL) async -> Bool
     func updateBranch(_ name: String, isCurrent: Bool, at repo: URL) async throws
     func setUpstream(branch: String, upstream: String, at repo: URL) async throws
     func renameBranch(old: String, new: String, at repo: URL) async throws

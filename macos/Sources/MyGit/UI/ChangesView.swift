@@ -13,6 +13,10 @@ struct ChangesListView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if vm.status?.mergeInProgress == true {
+                mergeBanner
+                Divider()
+            }
             if changes.isEmpty {
                 ScrollView { Text("No local changes")
                     .foregroundStyle(.secondary)
@@ -37,6 +41,33 @@ struct ChangesListView: View {
         }
         .changesGitActionHost(vm)
         .pullRequestActionHost(coordinator.activeBundle)
+    }
+
+    private var mergeBanner: some View {
+        let conflicted = vm.status?.hasConflicts == true
+        return HStack(spacing: 8) {
+            Image(systemName: conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(conflicted ? .orange : .green)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(conflicted ? "Merge conflicts" : "Conflicts resolved")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(conflicted
+                     ? "Pick a side per file with Resolve, or edit + Mark Resolved."
+                     : "Commit to finish the merge.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !conflicted {
+                Button("Commit Merge") { Task { await vm.commitMerge() } }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+            }
+            Button("Abort") { vm.pendingAbortMerge = true }
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background((conflicted ? Color.orange : Color.green).opacity(0.12))
     }
 
     private var header: some View {
@@ -98,6 +129,10 @@ struct ChangeRow: View {
 
             Spacer(minLength: 4)
 
+            if change.isConflicted {
+                resolveMenu
+            }
+
             Text(change.glyph)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(isSelected ? Color.white : colorForKind(change.kind))
@@ -116,8 +151,36 @@ struct ChangeRow: View {
         .contextMenu { contextMenu }
     }
 
+    private var resolveMenu: some View {
+        Menu {
+            resolveButtons
+        } label: {
+            Text("Resolve").font(.system(size: 11, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .tint(.orange)
+    }
+
+    @ViewBuilder
+    private var resolveButtons: some View {
+        Button("Use Ours (current branch)") {
+            Task { await vm.resolveConflict(change, using: .ours) }
+        }
+        Button("Use Theirs (incoming)") {
+            Task { await vm.resolveConflict(change, using: .theirs) }
+        }
+        Divider()
+        Button("Open to Edit…") { vm.jumpToSource(change) }
+        Button("Mark Resolved") { Task { await vm.markResolved(change) } }
+    }
+
     @ViewBuilder
     private var contextMenu: some View {
+        if change.isConflicted {
+            Menu("Resolve Conflict") { resolveButtons }
+            Divider()
+        }
         Button("Commit File…") {
             Task { await vm.commitFile(change) }
         }

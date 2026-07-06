@@ -47,6 +47,9 @@ struct GitStatusSummary {
     let ahead: Int
     let behind: Int
     let changes: [FileChange]
+    var mergeInProgress: Bool = false
+
+    var hasConflicts: Bool { changes.contains { $0.isConflicted } }
 }
 
 enum GitStatusParser {

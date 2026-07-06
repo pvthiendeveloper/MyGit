@@ -94,6 +94,10 @@ final class RepoBundle: Identifiable {
 
         refreshAllBox.body = { [weak self] in await self?.refreshAll() }
         changes.setOnFinished(refreshAll)
+        branches.setOnMergeConflict { [weak self] ours, theirs in
+            guard let self else { return }
+            ConflictsWindow.open(bundle: self, ours: ours, theirs: theirs)
+        }
         changes.setPushAfterCommit { [weak remote] force in
             if force { await remote?.forcePush() } else { await remote?.push() }
         }

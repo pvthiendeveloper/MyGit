@@ -1284,7 +1284,7 @@ final class DiffEditorHandle: ObservableObject {
     deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
 }
 
-private struct SyncedTextEditor: NSViewRepresentable {
+struct SyncedTextEditor: NSViewRepresentable {
     @Binding var text: String
     var fontSize: CGFloat
     var topInset: CGFloat

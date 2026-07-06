@@ -9,7 +9,11 @@ struct GitCLIRepository: GitRepository {
             ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],
             cwd: repo
         )
-        return GitStatusParser.parse(out)
+        var summary = GitStatusParser.parse(out)
+        // Robust across worktrees/submodules where `.git` is a file: ask git directly.
+        let merge = try? await GitRunner.run(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd: repo)
+        summary.mergeInProgress = (merge?.exitCode == 0)
+        return summary
     }
 
     func listFiles(at repo: URL) async throws -> [String] {
@@ -319,6 +323,60 @@ struct GitCLIRepository: GitRepository {
     func merge(source: String, into target: String, at repo: URL) async throws {
         _ = try await GitRunner.runOrThrow(["checkout", target], cwd: repo)
         _ = try await GitRunner.runOrThrow(["merge", source], cwd: repo)
+    }
+
+    func abortMerge(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["merge", "--abort"], cwd: repo)
+    }
+
+    func resolveConflict(path: String, using side: ConflictSide, at repo: URL) async throws {
+        let flag = side == .ours ? "--ours" : "--theirs"
+        // Take that side's whole version (works for files and submodule gitlinks)…
+        _ = try await GitRunner.runOrThrow(["checkout", flag, "--", path], cwd: repo)
+        // …then stage it to clear the unmerged index entry.
+        _ = try await GitRunner.runOrThrow(["add", "--", path], cwd: repo)
+    }
+
+    func markResolved(paths: [String], at repo: URL) async throws {
+        guard !paths.isEmpty else { return }
+        _ = try await GitRunner.runOrThrow(["add", "--"] + paths, cwd: repo)
+    }
+
+    func commitMerge(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["commit", "--no-edit"], cwd: repo)
+    }
+
+    func readMergeStage(_ stage: Int, path: String, at repo: URL) async throws -> String {
+        let r = try await GitRunner.run(["show", ":\(stage):\(path)"], cwd: repo)
+        return r.exitCode == 0 ? r.stdout : ""
+    }
+
+    func readMergeConflict(path: String, at repo: URL) async throws -> (base: String, ours: String, theirs: String) {
+        async let base = readMergeStage(1, path: path, at: repo)
+        async let ours = readMergeStage(2, path: path, at: repo)
+        async let theirs = readMergeStage(3, path: path, at: repo)
+        return try await (base, ours, theirs)
+    }
+
+    func isTextConflict(path: String, at repo: URL) async -> Bool {
+        // Gitlink (submodule) conflicts have no blob to `git show` as text and both
+        // stages come back empty; binary blobs contain a NUL byte. Either -> not mergeable.
+        let ours = (try? await readMergeStage(2, path: path, at: repo)) ?? ""
+        let theirs = (try? await readMergeStage(3, path: path, at: repo)) ?? ""
+        if ours.isEmpty && theirs.isEmpty { return false }
+        if ours.contains("\0") || theirs.contains("\0") { return false }
+        return true
+    }
+
+    func mergeSourceName(at repo: URL) async -> String? {
+        guard let r = try? await GitRunner.run(["name-rev", "--name-only", "MERGE_HEAD"], cwd: repo),
+              r.exitCode == 0 else { return nil }
+        var name = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != "undefined" else { return nil }
+        // "master~2" / "tags/x^0" -> drop the relative suffix; keep the leaf.
+        if let cut = name.firstIndex(where: { $0 == "~" || $0 == "^" }) { name = String(name[..<cut]) }
+        name = name.replacingOccurrences(of: "remotes/", with: "")
+        return name.split(separator: "/").last.map(String.init) ?? name
     }
 
     func updateBranch(_ name: String, isCurrent: Bool, at repo: URL) async throws {

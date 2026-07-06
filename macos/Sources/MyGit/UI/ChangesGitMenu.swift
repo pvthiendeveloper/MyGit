@@ -30,6 +30,10 @@ struct ChangesGitMenu: View {
         Button("Rebase…") { main.showBranchPopover = true }
         Button("Branches…") { main.showBranchPopover = true }
 
+        if changes.status?.mergeInProgress == true {
+            Button("Abort Merge", role: .destructive) { changes.pendingAbortMerge = true }
+        }
+
         Divider()
 
         // Create
@@ -83,6 +87,17 @@ struct ChangesGitActionHost: ViewModifier {
                                  placeholder: "WIP", seed: "", allowEmpty: true) { msg in
                     Task { await vm.stashAll(message: msg) }
                 }
+            }
+            .confirmationDialog(
+                "Abort the in-progress merge?",
+                isPresented: $vm.pendingAbortMerge
+            ) {
+                Button("Abort Merge", role: .destructive) {
+                    Task { await vm.abortMerge() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Discards the merge and restores the working tree to before it started.")
             }
             .confirmationDialog(
                 "Reset current branch to HEAD?",

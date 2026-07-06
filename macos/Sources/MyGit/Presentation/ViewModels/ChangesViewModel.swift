@@ -30,6 +30,7 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingResetHead = false
     @Published var pendingDiscardAll = false
     @Published var pendingStash = false
+    @Published var pendingAbortMerge = false
     @Published var pendingPullRequest = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
@@ -433,6 +434,97 @@ final class ChangesViewModel: ObservableObject {
         defer { main.isBusy = false }
         do {
             try await git.resetTo(commit: "HEAD", mode: mode, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Abort an in-progress merge, restoring the pre-merge HEAD/working tree.
+    func abortMerge() async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.abortMerge(at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Merge conflict resolution
+
+    /// Resolve one conflicted file by taking a whole side (ours/theirs), then stage it.
+    func resolveConflict(_ change: FileChange, using side: ConflictSide) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.resolveConflict(path: change.path, using: side, at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Mark a conflicted file resolved after the user edited it by hand (stages it).
+    func markResolved(_ change: FileChange) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.markResolved(paths: [change.path], at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Branch labels for the Conflicts window: ours = current branch, theirs = MERGE_HEAD.
+    func mergeBranchNames() async -> (ours: String, theirs: String) {
+        let ours = status?.branch ?? "HEAD"
+        guard let repo = repoSource() else { return (ours, "incoming") }
+        let theirs = await git.mergeSourceName(at: repo.url) ?? "incoming"
+        return (ours, theirs)
+    }
+
+    /// Is this conflict a mergeable text file (not a gitlink/binary)? Gates the Merge editor.
+    func isMergeableText(_ change: FileChange) async -> Bool {
+        guard let repo = repoSource() else { return false }
+        return await git.isTextConflict(path: change.path, at: repo.url)
+    }
+
+    /// The three conflict stages (base/ours/theirs) for the 3-way merge editor, or nil.
+    func mergeStages(_ change: FileChange) async -> (base: String, ours: String, theirs: String)? {
+        guard let repo = repoSource() else { return nil }
+        return try? await git.readMergeConflict(path: change.path, at: repo.url)
+    }
+
+    /// Write the resolved merge output to the working file and stage it (git add).
+    func applyMergeResult(_ change: FileChange, content: String) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            let url = repo.url.appendingPathComponent(change.path)
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            try await git.markResolved(paths: [change.path], at: repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Finish the in-progress merge once conflicts are resolved.
+    func commitMerge() async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.commitMerge(at: repo.url)
+            commitSummary = ""
+            commitDescription = ""
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription

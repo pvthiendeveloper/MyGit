@@ -14,6 +14,13 @@ final class BranchesViewModel: ObservableObject {
     private let repoSource: () -> Repository?
     private let currentBranch: () -> String?
     private let onFinished: () async -> Void
+    /// Invoked when a merge leaves the repo mid-merge with conflicts, so the UI can
+    /// present the Conflicts resolver instead of a raw error dialog. (ours, theirs).
+    private var onMergeConflict: (_ ours: String, _ theirs: String) -> Void = { _, _ in }
+
+    func setOnMergeConflict(_ block: @escaping (_ ours: String, _ theirs: String) -> Void) {
+        self.onMergeConflict = block
+    }
 
     init(
         git: GitRepository,
@@ -98,7 +105,22 @@ final class BranchesViewModel: ObservableObject {
     }
 
     func merge(_ branch: GitBranch, into target: String) async {
-        await runOp { try await self.git.merge(source: branch.name, into: target, at: $0) }
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.merge(source: branch.name, into: target, at: repo.url)
+            await onFinished()
+        } catch {
+            await onFinished()   // refresh so the conflicted state is visible
+            // If the merge is now mid-flight with conflicts, open the resolver
+            // instead of dumping git's raw hint into an error dialog.
+            if let s = try? await git.status(at: repo.url), s.mergeInProgress, s.hasConflicts {
+                onMergeConflict(target, branch.leaf)
+            } else {
+                main.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func updateBranch(_ branch: GitBranch) async {
@@ -154,6 +176,10 @@ final class BranchesViewModel: ObservableObject {
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription
+            // A failed merge/rebase can still leave the repo mid-operation with
+            // conflicts (e.g. submodule merge). Refresh so that state is visible
+            // instead of the UI staying stale behind the error dialog.
+            await onFinished()
         }
     }
 }

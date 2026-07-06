@@ -115,6 +115,22 @@ private struct RepoChangesSection: View {
 
             Spacer()
 
+            if changesVM.status?.mergeInProgress == true {
+                Button {
+                    Task {
+                        let (ours, theirs) = await changesVM.mergeBranchNames()
+                        ConflictsWindow.open(bundle: bundle, ours: ours, theirs: theirs)
+                    }
+                } label: {
+                    Label("Resolve", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .controlSize(.small)
+                .help("Resolve merge conflicts")
+            }
+
             if let branch = changesVM.status?.branch {
                 Text(branch)
                     .font(.system(size: 11))
