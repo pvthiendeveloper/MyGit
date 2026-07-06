@@ -37,16 +37,49 @@ struct AICommitMessageRepository: CommitMessageRepository {
         guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
 
         let userPrompt = "Write a commit message for this diff:\n\n" + diff
-
-        let raw: String
-        if config.provider.isOpenAICompatible {
-            raw = try await callOpenAI(config: config, user: userPrompt)
-        } else if config.provider == .anthropic {
-            raw = try await callAnthropic(config: config, user: userPrompt)
-        } else {
-            raw = try await callGemini(config: config, user: userPrompt)
-        }
+        let raw = try await complete(config: config,
+                                     system: Self.systemPrompt(includeBody: config.includeBody),
+                                     user: userPrompt)
         return Self.parse(raw, includeBody: config.includeBody)
+    }
+
+    // MARK: - Pull request title + description
+
+    private static let pullRequestRules = """
+    You are a tool that writes GitHub/Bitbucket pull request descriptions.
+    Given the commit subjects and unified diff of a branch, output a title and a description.
+    Format your answer EXACTLY as:
+    - Line 1: a concise, imperative PR title, <= 72 characters, no trailing period, no prefix like "Title:".
+    - Line 2: blank.
+    - From line 3: a Markdown description — a one-sentence summary, then a "## Changes" section \
+    with bullet points of the notable changes. Keep it tight; do not invent things not in the diff.
+    Do not wrap the output in code fences.
+    """
+
+    func generatePullRequest(diff: String, config: AIRequestConfig) async throws -> CommitSuggestion {
+        let trimmed = diff.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw CommitMessageError.emptyDiff }
+        guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
+
+        let userPrompt = "Write a pull request title and description for this change set:\n\n" + diff
+        let raw = try await complete(config: config, system: Self.pullRequestRules, user: userPrompt)
+        var suggestion = Self.parse(raw, includeBody: true)
+        // Strip a stray leading Markdown heading on the title (e.g. "# Foo").
+        var title = suggestion.summary
+        while title.hasPrefix("#") { title.removeFirst() }
+        suggestion = CommitSuggestion(summary: title.trimmingCharacters(in: .whitespaces), body: suggestion.body)
+        return suggestion
+    }
+
+    /// Dispatch a system+user completion to the configured provider.
+    private func complete(config: AIRequestConfig, system: String, user: String) async throws -> String {
+        if config.provider.isOpenAICompatible {
+            return try await callOpenAI(config: config, system: system, user: user)
+        } else if config.provider == .anthropic {
+            return try await callAnthropic(config: config, system: system, user: user)
+        } else {
+            return try await callGemini(config: config, system: system, user: user)
+        }
     }
 
     // MARK: - Connection test
@@ -105,7 +138,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
 
     // MARK: - OpenAI chat completions
 
-    private func callOpenAI(config: AIRequestConfig, user: String) async throws -> String {
+    private func callOpenAI(config: AIRequestConfig, system: String, user: String) async throws -> String {
         let base = config.baseURL.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/chat/completions") else {
@@ -116,7 +149,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
             "temperature": 0.2,
             "stream": false,
             "messages": [
-                ["role": "system", "content": Self.systemPrompt(includeBody: config.includeBody)],
+                ["role": "system", "content": system],
                 ["role": "user", "content": user]
             ]
         ]
@@ -174,7 +207,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
 
     // MARK: - Gemini generateContent
 
-    private func callGemini(config: AIRequestConfig, user: String) async throws -> String {
+    private func callGemini(config: AIRequestConfig, system: String, user: String) async throws -> String {
         let base = config.baseURL.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let path = "\(base)/models/\(config.model):generateContent?key=\(config.apiKey)"
@@ -182,7 +215,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
             throw CommitMessageError.badResponse("bad base URL")
         }
         let body: [String: Any] = [
-            "system_instruction": ["parts": [["text": Self.systemPrompt(includeBody: config.includeBody)]]],
+            "system_instruction": ["parts": [["text": system]]],
             "contents": [["role": "user", "parts": [["text": user]]]],
             "generationConfig": ["temperature": 0.2]
         ]
@@ -229,7 +262,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
         return ids.sorted()
     }
 
-    private func callAnthropic(config: AIRequestConfig, user: String) async throws -> String {
+    private func callAnthropic(config: AIRequestConfig, system: String, user: String) async throws -> String {
         let base = config.baseURL.trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/messages") else {
@@ -239,7 +272,7 @@ struct AICommitMessageRepository: CommitMessageRepository {
         let body: [String: Any] = [
             "model": config.model,
             "max_tokens": 1024,
-            "system": Self.systemPrompt(includeBody: config.includeBody),
+            "system": system,
             "messages": [
                 ["role": "user", "content": user]
             ]

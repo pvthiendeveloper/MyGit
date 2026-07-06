@@ -121,7 +121,7 @@ final class RemoteViewModel: ObservableObject {
     /// request from it into `base`. Returns the PR URL on success (also stored
     /// in `lastPullRequestURL`); nil on failure with `main.errorMessage` set.
     @discardableResult
-    func createPullRequest(title: String, body: String, base: String) async -> URL? {
+    func createPullRequest(title: String, body: String, base: String, reviewers: [String] = []) async -> URL? {
         guard let repo = repoSource() else { return nil }
         guard let acc = account.account,
               let host = acc.host, let owner = acc.owner, let name = acc.repo else {
@@ -150,7 +150,7 @@ final class RemoteViewModel: ObservableObject {
             let info = try await pullRequests.create(
                 host: host, owner: owner, repo: name,
                 head: head, base: base, title: title, body: body,
-                token: token
+                reviewers: reviewers, token: token
             )
             lastPullRequestURL = info.url
             await onFinished()

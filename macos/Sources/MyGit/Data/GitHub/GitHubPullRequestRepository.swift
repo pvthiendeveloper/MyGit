@@ -41,6 +41,7 @@ struct GitHubPullRequestRepository: PullRequestRepository {
     func create(
         host: String, owner: String, repo: String,
         head: String, base: String, title: String, body: String,
+        reviewers: [String],
         token: String
     ) async throws -> PullRequestInfo {
         guard let url = URL(string: "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/pulls") else {
@@ -64,6 +65,20 @@ struct GitHubPullRequestRepository: PullRequestRepository {
               let htmlURL = (json["html_url"] as? String).flatMap(URL.init(string:)) else {
             throw PullRequestError.badResponse(Self.snippet(data))
         }
+
+        // Request reviewers on the created PR. Best-effort: an invalid username
+        // (400/422) must not undo an already-created PR, so swallow failures.
+        let names = reviewers.map { $0.hasPrefix("@") ? String($0.dropFirst()) : $0 }
+                             .filter { !$0.isEmpty }
+        if !names.isEmpty,
+           let rurl = URL(string: "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/pulls/\(number)/requested_reviewers") {
+            var rreq = request(rurl, token: token)
+            rreq.httpMethod = "POST"
+            rreq.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            rreq.httpBody = try? JSONSerialization.data(withJSONObject: ["reviewers": names])
+            _ = try? await session.data(for: rreq)
+        }
+
         return PullRequestInfo(number: number, url: htmlURL)
     }
 
@@ -243,20 +258,103 @@ struct GitHubPullRequestRepository: PullRequestRepository {
         let (data, resp) = try await URLSession.shared.data(for: request(url, token))
         try checkStatus(resp, data)
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
-        // Keep the latest review state per reviewer.
-        var byName: [String: PRParticipant] = [:]
+        // Reviews are chronological; the last standing-changing review per login
+        // (APPROVED / CHANGES_REQUESTED / DISMISSED) determines their state.
+        var byLogin: [String: PRParticipant] = [:]
         for r in arr {
             guard let user = r["user"] as? [String: Any],
-                  let login = user["login"] as? String else { continue }
-            let approved = (r["state"] as? String) == "APPROVED"
-            byName[login] = PRParticipant(
+                  let login = user["login"] as? String,
+                  let state = r["state"] as? String,
+                  ["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].contains(state) else { continue }
+            byLogin[login] = PRParticipant(
                 name: login,
                 avatarURL: (user["avatar_url"] as? String).flatMap(URL.init(string:)),
                 isReviewer: true,
-                approved: approved || (byName[login]?.approved ?? false)
+                approved: state == "APPROVED",
+                id: login,
+                requestedChanges: state == "CHANGES_REQUESTED"
             )
         }
-        return Array(byName.values).sorted { $0.name < $1.name }
+        return Array(byLogin.values).sorted { $0.name < $1.name }
+    }
+
+    func currentUser(host: String, token: String) async throws -> PRUser {
+        guard let url = URL(string: "\(Self.apiBase(host: host))/user") else {
+            throw PullRequestError.badResponse("bad user URL")
+        }
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let login = json["login"] as? String else {
+            throw PullRequestError.badResponse(Self.snippet(data))
+        }
+        // Match `PRParticipant.id`, which is the reviewer's login.
+        return PRUser(id: login, name: (json["name"] as? String) ?? login)
+    }
+
+    func review(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRReviewAction, token: String
+    ) async throws {
+        let base = "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/pulls/\(number)"
+        switch action {
+        case .approve:
+            try await submitReview(base: base, event: "APPROVE", token: token)
+        case .requestChanges:
+            // GitHub rejects REQUEST_CHANGES without a body.
+            try await submitReview(base: base, event: "REQUEST_CHANGES",
+                                   body: "Requested changes.", token: token)
+        case .unapprove:
+            try await dismissOwnReview(base: base, host: host, matching: "APPROVED", token: token)
+        case .unrequestChanges:
+            try await dismissOwnReview(base: base, host: host, matching: "CHANGES_REQUESTED", token: token)
+        }
+    }
+
+    private func submitReview(base: String, event: String, body: String = "", token: String) async throws {
+        guard let url = URL(string: base + "/reviews") else {
+            throw PullRequestError.badResponse("bad reviews URL")
+        }
+        var req = request(url, token: token)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var payload: [String: Any] = ["event": event]
+        if !body.isEmpty { payload["body"] = body }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
+    }
+
+    /// Dismiss the current user's most recent review in `state`. GitHub has no
+    /// "withdraw" endpoint; dismissing the own review is the equivalent.
+    private func dismissOwnReview(base: String, host: String, matching state: String, token: String) async throws {
+        guard let listURL = URL(string: base + "/reviews?per_page=100") else {
+            throw PullRequestError.badResponse("bad reviews URL")
+        }
+        let me = try await currentUser(host: host, token: token)
+
+        let (data, resp) = try await session.data(for: request(listURL, token: token))
+        try Self.checkStatus(resp, data)
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw PullRequestError.badResponse(Self.snippet(data))
+        }
+        // Last matching review by the current user (reviews are chronological).
+        let reviewID = arr.last(where: {
+            (($0["user"] as? [String: Any])?["login"] as? String) == me.id
+                && ($0["state"] as? String) == state
+        })?["id"] as? Int
+        guard let reviewID, let url = URL(string: base + "/reviews/\(reviewID)/dismissals") else {
+            // Nothing to dismiss (already withdrawn) — treat as success.
+            return
+        }
+        var req = request(url, token: token)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "message": "Dismissed via MyGit", "event": "DISMISS"
+        ])
+        let (ddata, dresp) = try await session.data(for: req)
+        try Self.checkStatus(dresp, ddata)
     }
 
     private static func checkRuns(

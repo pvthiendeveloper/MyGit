@@ -43,9 +43,42 @@ struct PullRequestDetailView: View {
             Text(pr.title).font(.title3).bold()
             Text("#\(pr.number) · \(pr.authorName) · updated \(PRDate.relativeLabel(pr.updatedAt))")
                 .font(.caption).foregroundStyle(.secondary)
+            if vm.canReview { reviewActions }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Reviewer toggle: Approve / Request changes. Each button reflects the
+    /// current user's own standing and withdraws it on a second click.
+    private var reviewActions: some View {
+        let state = vm.myReviewState
+        let approved = state == .approved
+        let changesRequested = state == .changesRequested
+        return HStack(spacing: 8) {
+            Button {
+                Task { await vm.toggleApprove() }
+            } label: {
+                Label(approved ? "Approved" : "Approve",
+                      systemImage: approved ? "checkmark.circle.fill" : "checkmark.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+
+            Button {
+                Task { await vm.toggleRequestChanges() }
+            } label: {
+                Label(changesRequested ? "Changes requested" : "Request changes",
+                      systemImage: changesRequested ? "exclamationmark.bubble.fill" : "exclamationmark.bubble")
+            }
+            .buttonStyle(.bordered)
+            .tint(.orange)
+
+            if vm.reviewSubmitting { ProgressView().controlSize(.small) }
+            Spacer(minLength: 0)
+        }
+        .disabled(vm.reviewSubmitting)
+        .padding(.top, 4)
     }
 
     private var subTabBar: some View {

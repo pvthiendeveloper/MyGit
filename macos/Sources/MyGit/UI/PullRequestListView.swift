@@ -5,10 +5,13 @@ struct PullRequestListView: View {
     @ObservedObject var vm: PullRequestsViewModel
     /// Called when a row is picked (multi-repo uses it to activate the repo).
     var onSelect: () -> Void = {}
+    /// Called when the "New Pull Request" button is tapped. Nil hides the button
+    /// (e.g. host doesn't support PR creation).
+    var onCreate: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            PullRequestFilterBar(vm: vm)
+            PullRequestFilterBar(vm: vm, onCreate: onCreate)
             Divider()
             content
         }
@@ -59,6 +62,7 @@ struct PullRequestListView: View {
 /// Search field + state menu + author menu.
 struct PullRequestFilterBar: View {
     @ObservedObject var vm: PullRequestsViewModel
+    var onCreate: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -76,6 +80,15 @@ struct PullRequestFilterBar: View {
             stateMenu
             authorMenu
             Spacer()
+            if let onCreate {
+                Button(action: onCreate) {
+                    Label("New Pull Request", systemImage: "plus")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("Create a pull request from the current branch")
+            }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
     }

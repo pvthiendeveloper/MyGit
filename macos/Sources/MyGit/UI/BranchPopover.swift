@@ -69,8 +69,8 @@ struct BranchPopover: View {
                 }
                 if showsPullRequests {
                     topActionRow(icon: "arrow.triangle.pull", label: "Create Pull Request…", shortcut: "") {
-                        main.tab = .changes
-                        changes.pendingPullRequest = true
+                        coordinator.activeBundle.pullRequests.startCompose()
+                        main.tab = .pullRequests
                         dismiss()
                     }
                 }

@@ -56,6 +56,7 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
     func create(
         host: String, owner: String, repo: String,
         head: String, base: String, title: String, body: String,
+        reviewers: [String],
         token: String
     ) async throws -> PullRequestInfo {
         guard let url = URL(string: "\(Self.apiBase)/repositories/\(owner)/\(repo)/pullrequests") else {
@@ -64,12 +65,20 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         var req = request(url, token: token)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
+        var payload: [String: Any] = [
             "title": title,
             "description": body,
             "source": ["branch": ["name": head]],
             "destination": ["branch": ["name": base]]
-        ])
+        ]
+        // Bitbucket wants account objects. A `{uuid}` token maps to `uuid`,
+        // anything else is treated as an `account_id`. Empty → omit the key.
+        let reviewerObjs: [[String: String]] = reviewers
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .map { $0.hasPrefix("{") ? ["uuid": $0] : ["account_id": $0] }
+        if !reviewerObjs.isEmpty { payload["reviewers"] = reviewerObjs }
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (data, resp) = try await session.data(for: req)
         try Self.checkStatus(resp, data)
@@ -279,12 +288,13 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         let source = ((json["source"] as? [String: Any])?["branch"] as? [String: Any])?["name"] as? String
         let dest = ((json["destination"] as? [String: Any])?["branch"] as? [String: Any])?["name"] as? String
         let stateStr = (json["state"] as? String) ?? "OPEN"
+        let isDraft = (json["draft"] as? Bool) ?? false
         let state: PullRequestState
         switch stateStr {
         case "MERGED":     state = .merged
         case "DECLINED":   state = .declined
         case "SUPERSEDED": state = .superseded
-        default:           state = .open
+        default:           state = isDraft ? .draft : .open
         }
         let html = ((json["links"] as? [String: Any])?["html"] as? [String: Any])?["href"] as? String
         return PullRequestSummary(
@@ -295,7 +305,7 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
             sourceBranch: source ?? "?",
             destBranch: dest ?? "?",
             state: state,
-            isDraft: (json["draft"] as? Bool) ?? false,
+            isDraft: isDraft,
             commentCount: (json["comment_count"] as? Int) ?? 0,
             updatedAt: PRDate.parse(json["updated_on"] as? String),
             url: html.flatMap(URL.init(string:)) ?? URL(string: "https://bitbucket.org")!
@@ -310,7 +320,9 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
             name: name,
             avatarURL: avatarURL(user),
             isReviewer: role == "REVIEWER",
-            approved: (json["approved"] as? Bool) ?? false
+            approved: (json["approved"] as? Bool) ?? false,
+            id: user?["uuid"] as? String,
+            requestedChanges: (json["state"] as? String) == "changes_requested"
         )
     }
 
@@ -329,6 +341,43 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         let passed = values.filter { ($0["state"] as? String) == "SUCCESSFUL" }.count
         guard total > 0 else { return nil }
         return PRChecksSummary(passed: passed, total: total, buildsPassed: passed, buildsTotal: total)
+    }
+
+    func currentUser(host: String, token: String) async throws -> PRUser {
+        guard let url = URL(string: "\(Self.apiBase)/user") else {
+            throw PullRequestError.badResponse("bad user URL")
+        }
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let uuid = json["uuid"] as? String else {
+            throw PullRequestError.badResponse(Self.snippet(data))
+        }
+        // Match `PRParticipant.id`, which is the participant's account UUID.
+        return PRUser(id: uuid, name: (json["display_name"] as? String) ?? uuid)
+    }
+
+    func review(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRReviewAction, token: String
+    ) async throws {
+        let base = "\(Self.apiBase)/repositories/\(owner)/\(repo)/pullrequests/\(number)"
+        // Bitbucket has dedicated reviewer endpoints: POST to set, DELETE to withdraw.
+        let (path, method): (String, String) = {
+            switch action {
+            case .approve:          return ("/approve", "POST")
+            case .unapprove:        return ("/approve", "DELETE")
+            case .requestChanges:   return ("/request-changes", "POST")
+            case .unrequestChanges: return ("/request-changes", "DELETE")
+            }
+        }()
+        guard let url = URL(string: base + path) else {
+            throw PullRequestError.badResponse("bad review URL")
+        }
+        var req = request(url, token: token)
+        req.httpMethod = method
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
     }
 
     // MARK: - Helpers

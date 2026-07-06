@@ -25,7 +25,7 @@ No tests. `Tests/` and `Sources/MyGit/DesignSystem/` are empty placeholders. Add
 ## Big picture
 
 - AppKit shell + SwiftUI content. `App/main.swift` boots `NSApplication` manually (no `@main`); `AppDelegate` installs the menu and hosts `MainView` in an `NSHostingController`.
-- Clean Architecture layers under `Sources/MyGit/`: `Domain/` (protocols + entities), `Data/` (implementations: `GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`), `Presentation/ViewModels/` (one VM per feature).
+- Clean Architecture layers under `Sources/MyGit/`: `Domain/` (six repository protocols + entities), `Data/` (implementations: `GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`, `PullRequestRouter` — which dispatches to `GitHubPullRequestRepository`/`BitbucketPullRequestRepository` by host), `Presentation/ViewModels/` (one VM per feature).
 - `AppContainer` is the live DI container. Per-repo VMs are grouped into a `RepoBundle` (closures for `repoSource`, `currentBranch`, `onFinished`, `pushAfterCommit`); `AppCoordinator` holds one bundle per repo in the selected `Workspace` plus an `activeBundle`, with `MainViewModel`/`SettingsViewModel` shared. `AppDelegate` injects the coordinator + shared VMs as `@EnvironmentObject`.
 - All git work shells out to `/usr/bin/git` via `GitRunner` (`Data/Git/`) with `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C`. App is **unsandboxed** so it can spawn `git` against user-selected directories.
 - HTTPS auth bypasses `git-credential-osxkeychain` entirely: PATs stored in MyGit's own keychain (`KeychainCredentialRepository`, service `com.thienpham.MyGit`). `AccountViewModel.currentAuth() -> AuthOverride?` resolves a bearer token for the current repo's host; remote methods on `GitRepository` take an `AuthOverride?` and inject `-c credential.helper= -c http.extraheader=AUTHORIZATION: bearer <PAT>` per command. See `macos/CLAUDE.md` for why.
@@ -36,5 +36,5 @@ No tests. `Tests/` and `Sources/MyGit/DesignSystem/` are empty placeholders. Add
 
 - swift-tools-version 6.0 but `.swiftLanguageMode(.v5)` is pinned in `Package.swift` — keep new code Swift-5 compatible (no strict concurrency).
 - UI state on `@MainActor`; `GitRunner.run` hops to `DispatchQueue.global(qos: .userInitiated)` and bridges via `withCheckedThrowingContinuation`.
-- Frameworks linked via `linkerSettings`: AppKit, SwiftUI, UniformTypeIdentifiers. No third-party deps.
+- Frameworks linked via `linkerSettings`: AppKit, SwiftUI, UniformTypeIdentifiers. One third-party dep: `Highlightr` (syntax highlighting in the diff viewer; ships a resource bundle that `run.sh` copies into the `.app`).
 - Bundle ID `com.thienpham.MyGit`, min macOS 15.

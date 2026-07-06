@@ -527,6 +527,47 @@ struct GitCLIRepository: GitRepository {
         return result
     }
 
+    func changedFiles(range: String, at repo: URL) async throws -> [ChangedFileEntry] {
+        let r = try await GitRunner.run(
+            ["diff", "--no-color", "--name-status", "-M", "-z", range],
+            cwd: repo
+        )
+        let out = r.stdout
+        guard !out.isEmpty else { return [] }
+        var result: [ChangedFileEntry] = []
+        let records = out.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+        var i = 0
+        while i < records.count {
+            let statusField = records[i]
+            let statusChar = String(statusField.prefix(1))
+            let status = ChangedFileStatus(rawValue: statusChar) ?? .unknown
+            i += 1
+            if status == .renamed || status == .copied {
+                let oldPath = i < records.count ? records[i] : ""
+                i += 1
+                let newPath = i < records.count ? records[i] : ""
+                i += 1
+                result.append(ChangedFileEntry(path: newPath, oldPath: oldPath.isEmpty ? nil : oldPath, status: status))
+            } else {
+                let path = i < records.count ? records[i] : ""
+                i += 1
+                guard !path.isEmpty else { continue }
+                result.append(ChangedFileEntry(path: path, oldPath: nil, status: status))
+            }
+        }
+        return result
+    }
+
+    func rangeFilePatch(range: String, path: String, at repo: URL) async throws -> String {
+        let r = try await GitRunner.run(["diff", "--no-color", range, "--", path], cwd: repo)
+        return r.stdout
+    }
+
+    func rangeDiff(range: String, at repo: URL) async throws -> String {
+        let r = try await GitRunner.run(["diff", "--no-color", range], cwd: repo)
+        return r.stdout
+    }
+
     func showFileAtCommit(commit: String, path: String, at repo: URL) async throws -> FileDiff {
         let r = try await GitRunner.run(
             ["show", "--no-color", "--format=", commit, "--", path],

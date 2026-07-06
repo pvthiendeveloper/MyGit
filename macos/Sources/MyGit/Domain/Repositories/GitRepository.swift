@@ -95,6 +95,13 @@ protocol GitRepository: Sendable {
     // Compare
     func commitsInRange(_ range: String, at repo: URL) async throws -> [GitCommit]
     func changedFiles(commit: String, at repo: URL) async throws -> [ChangedFileEntry]
+    /// Files changed across a ref range, e.g. `base...head` for a pull request.
+    func changedFiles(range: String, at repo: URL) async throws -> [ChangedFileEntry]
+    /// Unified patch for a single file across a ref range (e.g. `base...head`).
+    func rangeFilePatch(range: String, path: String, at repo: URL) async throws -> String
+    /// Full unified diff across a ref range (e.g. `base...head`) — used to feed
+    /// an AI a pull request's whole change set.
+    func rangeDiff(range: String, at repo: URL) async throws -> String
     func showFileAtCommit(commit: String, path: String, at repo: URL) async throws -> FileDiff
     func touchedHashes(range: String, paths: [String], at repo: URL) async throws -> Set<String>
     func diffFileVsWorking(commit: String, path: String, at repo: URL) async throws -> FileDiff

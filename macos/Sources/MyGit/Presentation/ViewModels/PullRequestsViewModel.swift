@@ -38,9 +38,18 @@ final class PullRequestsViewModel: ObservableObject {
 
     enum DetailTab: Hashable { case overview, files, commits }
 
+    /// True while the right panel shows the "Create Pull Request" composer
+    /// instead of a selected PR's detail.
+    @Published var isComposing = false
+
     @Published var selected: PullRequestSummary?
     @Published private(set) var detail: PullRequestDetail?
     @Published private(set) var detailLoading = false
+
+    /// True while a review (approve / request-changes / withdraw) is in flight.
+    @Published private(set) var reviewSubmitting = false
+    /// The token's own user, resolved once per repo; drives `myReviewState`.
+    private var currentUser: PRUser?
 
     @Published var detailTab: DetailTab = .overview
     @Published private(set) var files: [PRFileChange] = []
@@ -70,6 +79,8 @@ final class PullRequestsViewModel: ObservableObject {
             .removeDuplicates()
             .sink { [weak self] pr in
                 guard let self else { return }
+                // Picking a PR leaves compose mode so the detail shows.
+                if pr != nil { self.isComposing = false }
                 Task { await self.loadDetail(pr) }
             }
             .store(in: &cancellables)
@@ -77,6 +88,23 @@ final class PullRequestsViewModel: ObservableObject {
 
     var isSupportedHost: Bool { PullRequestRouter.supports(host: account.account?.host) }
     var hasToken: Bool { account.storedToken() != nil }
+
+    /// The signed-in user's standing on the selected PR (matched by host id).
+    var myReviewState: PRReviewState {
+        guard let me = currentUser, let d = detail,
+              let mine = d.participants.first(where: { $0.id != nil && $0.id == me.id }) else {
+            return .none
+        }
+        if mine.approved { return .approved }
+        if mine.requestedChanges { return .changesRequested }
+        return .none
+    }
+
+    /// Reviewer actions apply only while the PR is still open.
+    var canReview: Bool {
+        guard hasToken, let s = selected?.state else { return false }
+        return s == .open || s == .draft
+    }
 
     /// Distinct author names present in the loaded set (for the author menu).
     var authors: [String] {
@@ -153,6 +181,49 @@ final class PullRequestsViewModel: ObservableObject {
             detail = try await pullRequests.detail(
                 host: c.host, owner: c.owner, repo: c.repo, number: pr.number, token: c.token
             )
+            // Resolve the token's user once (best-effort) so the review toggle
+            // knows whether the current user already approved/requested changes.
+            if currentUser == nil {
+                currentUser = try? await pullRequests.currentUser(host: c.host, token: c.token)
+            }
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Re-fetch just the selected PR's detail (after a review) without resetting
+    /// the open sub-tab / files / commits state.
+    private func reloadDetail() async {
+        guard let pr = selected, let c = coordinates() else { return }
+        do {
+            detail = try await pullRequests.detail(
+                host: c.host, owner: c.owner, repo: c.repo, number: pr.number, token: c.token
+            )
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Approve the PR, or withdraw an existing approval (toggle).
+    func toggleApprove() async {
+        await submitReview(myReviewState == .approved ? .unapprove : .approve)
+    }
+
+    /// Request changes on the PR, or withdraw an existing request (toggle).
+    func toggleRequestChanges() async {
+        await submitReview(myReviewState == .changesRequested ? .unrequestChanges : .requestChanges)
+    }
+
+    private func submitReview(_ action: PRReviewAction) async {
+        guard !reviewSubmitting, let pr = selected, let c = coordinates() else { return }
+        reviewSubmitting = true
+        defer { reviewSubmitting = false }
+        do {
+            try await pullRequests.review(
+                host: c.host, owner: c.owner, repo: c.repo,
+                number: pr.number, action: action, token: c.token
+            )
+            await reloadDetail()
         } catch {
             main.errorMessage = error.localizedDescription
         }
@@ -215,7 +286,15 @@ final class PullRequestsViewModel: ObservableObject {
         NSWorkspace.shared.open(pr.url)
     }
 
+    /// Enter compose mode: clear any selected PR and show the composer panel.
+    func startCompose() {
+        selected = nil
+        isComposing = true
+    }
+
     func repositoryDidChange() {
+        isComposing = false
+        currentUser = nil
         loaded = []
         hasMore = false
         selected = nil

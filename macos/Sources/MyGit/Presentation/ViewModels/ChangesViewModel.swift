@@ -31,7 +31,6 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingDiscardAll = false
     @Published var pendingStash = false
     @Published var pendingAbortMerge = false
-    @Published var pendingPullRequest = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
@@ -271,6 +270,35 @@ final class ChangesViewModel: ObservableObject {
             }
         } catch {
             main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Generate a pull request title + description from the local `base...head`
+    /// change set via the configured AI provider. Returns nil (and sets
+    /// `main.errorMessage`) on missing config, no changes, or provider error.
+    func generatePullRequestText(base: String, head: String) async -> CommitSuggestion? {
+        guard let repo = repoSource() else { return nil }
+        guard let config = aiConfigSource() else {
+            main.errorMessage = CommitMessageError.missingAPIKey.localizedDescription
+            return nil
+        }
+        do {
+            let subjects = try await git.commitsInRange("\(base)..\(head)", at: repo.url)
+                .map { "- \($0.subject)" }
+                .joined(separator: "\n")
+            var diff = try await git.rangeDiff(range: "\(base)...\(head)", at: repo.url)
+            let maxChars = 24_000
+            if diff.count > maxChars {
+                diff = String(diff.prefix(maxChars)) + "\n…(diff truncated)…"
+            }
+            let context = "Commits:\n\(subjects.isEmpty ? "(none)" : subjects)\n\nDiff:\n\(diff)"
+            // PR generation always wants a body regardless of the commit toggle.
+            var cfg = config
+            cfg.includeBody = true
+            return try await commitMessageRepo.generatePullRequest(diff: context, config: cfg)
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return nil
         }
     }
 

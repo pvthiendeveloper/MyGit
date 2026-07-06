@@ -4,6 +4,11 @@ import Foundation
 protocol CommitMessageRepository: Sendable {
     func generate(diff: String, config: AIRequestConfig) async throws -> CommitSuggestion
 
+    /// Generate a pull request title + markdown description from a change set
+    /// (commit subjects + unified diff). `summary` is the title, `body` the
+    /// description.
+    func generatePullRequest(diff: String, config: AIRequestConfig) async throws -> CommitSuggestion
+
     /// Validate that the provider is reachable with this config (key + base
     /// URL). Returns a short human-readable detail on success; throws on
     /// failure. Does not consume generation tokens.

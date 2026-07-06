@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Run
 
-SwiftPM executable, macOS 15+, swift-tools-version 6.0 but compiled in Swift 5 language mode.
+SwiftPM executable, macOS 15+, swift-tools-version 6.0 but compiled in Swift 5 language mode. One third-party dependency: `Highlightr` (highlight.js via JavaScriptCore) for diff-viewer syntax highlighting. It ships a resource `.bundle` — `run.sh` copies `*.bundle` from the build dir into `MyGit.app`, so raw `swift build` runs won't have highlighting assets in the bundle.
 
 ```bash
 swift build              # debug
@@ -28,17 +28,17 @@ AppKit shell + SwiftUI content. `Sources/MyGit/App/main.swift` boots `NSApplicat
 Source layout follows Clean Architecture:
 
 - `Domain/Entities/` — value types (`Repository`, `Workspace`, `AuthOverride`, `OpenFileTab`, `AICommitConfig`, `CachedCommit`).
-- `Domain/Repositories/` — protocols only: `GitRepository`, `CredentialRepository`, `RepoListRepository`, `FileEditorRepository`, `CommitMessageRepository`.
-- `Data/{Git,Keychain,Persistence,FileSystem,AI}/` — concrete implementations (`GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`), plus `WorkspaceScanner` and the FSEvents `RepoWatcher`.
+- `Domain/Repositories/` — protocols only: `GitRepository`, `CredentialRepository`, `RepoListRepository`, `FileEditorRepository`, `CommitMessageRepository`, `PullRequestRepository`.
+- `Data/{Git,Keychain,Persistence,FileSystem,AI,GitHub,Bitbucket}/` — concrete implementations (`GitCLIRepository`, `KeychainCredentialRepository`, `UserDefaultsRepoListRepository`, `FileSystemFileEditorRepository`, `AICommitMessageRepository`, `GitHubPullRequestRepository`, `BitbucketPullRequestRepository`), plus `PullRequestRouter`, `WorkspaceScanner`, `SecretFileStore`, and the FSEvents `RepoWatcher`.
 - `Presentation/ViewModels/` — per-feature `@MainActor ObservableObject` VMs (`MainViewModel`, `ChangesViewModel`, `HistoryViewModel`, `FilesViewModel`, `BranchesViewModel`, `AccountViewModel`, `RemoteViewModel`, `RepositoryListViewModel`, `FileEditorViewModel`, `CompareBranchesViewModel`, `SettingsViewModel`).
 - `UI/` — SwiftUI views, each reading the VMs it needs as `@EnvironmentObject`. `Workspace*View` are the multi-repo variants; `SettingsView`/`SettingsWindow` host AI config.
 - `Git/` — shared models + helpers used by both Data and Presentation (`GitStatus`, `GitLog`, `GitDiff`, `GitBranch`, `GitAccount`, `GitFileTree`, `CompareModels`, `DiffTab`, `LineDiffer`).
 
 ### Wiring
 
-`AppContainer` (`App/AppContainer.swift`) is the DI seam — `.live()` returns the five repository protocols (`git`, `repos`, `credentials`, `fileEditor`, `commitMessage`) backed by their concrete implementations.
+`AppContainer` (`App/AppContainer.swift`) is the DI seam — `.live()` returns the six repository protocols (`git`, `repos`, `credentials`, `fileEditor`, `commitMessage`, `pullRequests`) backed by their concrete implementations.
 
-The per-repo ViewModels are grouped into a `RepoBundle` (`App/RepoBundle.swift`) — one bundle per git repo, holding that repo's `changes`/`history`/`files`/`editor`/`branches`/`account`/`remote`/`compare` VMs wired together with a constant `repoSource = { repo }`. `MainViewModel` and `SettingsViewModel` are **shared** (global) across all bundles. `RepoBundle` reproduces the cross-reference wiring that used to live inline in `AppCoordinator.init`:
+The per-repo ViewModels are grouped into a `RepoBundle` (`App/RepoBundle.swift`) — one bundle per git repo, holding that repo's `changes`/`stash`/`history`/`files`/`editor`/`branches`/`account`/`remote`/`pullRequests`/`compareVM` VMs wired together with a constant `repoSource = { repo }`. `MainViewModel` and `SettingsViewModel` are **shared** (global) across all bundles. `RepoBundle` reproduces the cross-reference wiring that used to live inline in `AppCoordinator.init`:
 
 - `repoSource: () -> Repository?` — constant `{ repo }` for the bundle.
 - `currentBranch: () -> String?` — pulled from `ChangesViewModel.status?.branch`.
@@ -107,9 +107,37 @@ A picked folder becomes a `Workspace` via `WorkspaceScanner.scan`: the whole tre
 
 `UserDefaultsRepoListRepository` persists added workspace folders and the selection; on load it drops paths whose `.git` no longer exists. `workspacesPublisher` / `selectedPublisher` are the Combine seams the rest of the app reacts to. Two small UserDefaults caches in `CachedCommit.swift` improve perceived launch speed and avoid data loss: `LastCommitStore` (keyed `MyGit.lastCommit.<repoPath>`) shows each repo's last commit instantly before the log loads; `CommitDraftStore` persists the in-progress commit summary/description per repo. `HistoryViewModel` paginates the log — `pageSize = 100`, `hasMore` true while a fetch fills the limit, raising `limit` to load more.
 
+### Pull requests
+
+Not a git-CLI operation — a REST subsystem mirroring the AI-commit one. `PullRequestRepository` (domain protocol) is implemented per-host: `GitHubPullRequestRepository` (github.com + GHE) and `BitbucketPullRequestRepository` (Bitbucket Cloud). `PullRequestRouter` is the `.live()` implementation — it dispatches each call to the right backend by hostname and throws `PullRequestError.unsupportedHost` otherwise. `PullRequestRouter.supports(host:)` gates the "Create Pull Request" menu. `PullRequestsViewModel` drives creation (`PullRequestComposerView`) and the list/detail browse UI (`PullRequestListView`/`PullRequestDetailView`, plus `Workspace*` variants), including per-commit file drill-down into the side-by-side diff viewer. Tokens come from the same `AccountViewModel` PAT store as git auth.
+
+### Merge & conflict resolution
+
+`ThreeWayMerger` (`Git/ThreeWayMerger.swift`) classifies a merge into `MergeChunk`s (context / oursOnly / theirsOnly / bothSame / conflict) against the merge base and tracks live `ConflictRegion`s as line ranges into the result text so the editor can navigate/accept/remap as the user edits. `MergeEditorWindow` hosts the 3-way editor; `ConflictsWindow` lists conflicted files; `MergeRevisionsView` picks the two sides. Pure-Swift merge — does not shell out to `git merge-file`.
+
+### Stash
+
+`GitStash` model + `StashViewModel` back `StashPanelView` / `WorkspaceStashView`. Standard git stash push/pop/apply/drop through `GitRepository` methods.
+
+### Interactive rebase & commit actions
+
+`CommitActions` + `InteractiveRebaseSheet` drive reordering/squashing/editing commits. `CommitContextMenu` exposes per-commit ops (revert, cherry-pick, reset, etc.) from the history list.
+
+### Commit graph
+
+`CommitGraph` (`Git/CommitGraph.swift`) computes lane assignments for the DAG; `CommitGraphList` + `GraphStyle` render the colored graph rail alongside `HistoryView`.
+
+### Search Everywhere
+
+Double-shift opens `SearchEverywhereView` (backed by `SearchEverywhereViewModel`) — a fuzzy file finder across the active repo, IntelliJ-style.
+
+### Secret storage fallback
+
+`SecretFileStore` (`Data/Persistence/`) is a plaintext fallback for PAT/AI keys when the keychain is unavailable (locked, denied ACL, missing signing identity). Stores a flat `{account: secret}` JSON at `~/Library/Application Support/MyGit/secrets.json`, 0600 perms, written **only** when a keychain save actually fails — never mirrored alongside a working keychain entry. Less secure than the keychain (unencrypted on disk).
+
 ## Conventions
 
 - Concurrency: all UI state on `@MainActor`. `GitRunner.run` hops to `DispatchQueue.global(qos: .userInitiated)` and bridges via `withCheckedThrowingContinuation`.
 - `Package.swift` pins `.swiftLanguageMode(.v5)` despite swift-tools-version 6.0 — keep new code Swift-5-compatible (no strict concurrency by default).
-- Links AppKit + SwiftUI + UniformTypeIdentifiers via `linkerSettings`, no other deps.
+- Links AppKit + SwiftUI + UniformTypeIdentifiers via `linkerSettings`; one SwiftPM dep, `Highlightr` (diff-viewer highlighting, ships a resource bundle — see Build & Run).
 - Bundle ID `com.thienpham.MyGit`, min macOS 15.

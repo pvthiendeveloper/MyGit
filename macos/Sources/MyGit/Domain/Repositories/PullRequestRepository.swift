@@ -8,9 +8,13 @@ protocol PullRequestRepository: Sendable {
     func defaultBranch(host: String, owner: String, repo: String, token: String) async throws -> String
 
     /// Open a pull request from `head` into `base`. Returns the created PR.
+    /// `reviewers` are host-specific identifiers (GitHub: usernames; Bitbucket:
+    /// account UUIDs `{...}` or account ids) — best-effort, a bad reviewer must
+    /// not fail the PR itself.
     func create(
         host: String, owner: String, repo: String,
         head: String, base: String, title: String, body: String,
+        reviewers: [String],
         token: String
     ) async throws -> PullRequestInfo
 
@@ -44,6 +48,31 @@ protocol PullRequestRepository: Sendable {
         host: String, owner: String, repo: String,
         sha: String, token: String
     ) async throws -> [PRFileChange]
+
+    /// The user the stored token authenticates as — used to match the current
+    /// user against a PR's reviewers so the Approve/Request-changes toggle knows
+    /// its own state.
+    func currentUser(host: String, token: String) async throws -> PRUser
+
+    /// Submit (or withdraw) a reviewer decision on a PR. Does not change the PR's
+    /// open/closed lifecycle — only the current user's review standing.
+    func review(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRReviewAction, token: String
+    ) async throws
+}
+
+/// The authenticated user, with the host-stable identity used to match reviews.
+struct PRUser: Sendable, Hashable {
+    /// GitHub login / Bitbucket account UUID — matches `PRParticipant.id`.
+    let id: String
+    let name: String
+}
+
+/// A reviewer decision the current user can apply to a PR (all reversible).
+enum PRReviewAction: Sendable {
+    case approve, unapprove
+    case requestChanges, unrequestChanges
 }
 
 struct PullRequestInfo: Equatable {

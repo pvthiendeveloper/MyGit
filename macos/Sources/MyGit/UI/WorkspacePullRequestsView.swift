@@ -43,7 +43,7 @@ private struct SingleRepoPRList: View {
     }
 
     var body: some View {
-        PullRequestListView(vm: vm)
+        PullRequestListView(vm: vm, onCreate: createAction(bundle: bundle, account: account))
             .task(id: prTaskID(bundle: bundle, account: account)) { await vm.refresh() }
     }
 }
@@ -102,12 +102,27 @@ private struct RepoPRSection: View {
             .buttonStyle(.plain)
 
             if expanded {
-                PullRequestListView(vm: vm, onSelect: onSelect)
-                    .frame(height: 360)
+                // In multi-repo, activate this repo first so the right panel's
+                // composer targets it, then enter compose mode.
+                PullRequestListView(
+                    vm: vm, onSelect: onSelect,
+                    onCreate: createAction(bundle: bundle, account: account).map { action in
+                        { onSelect(); action() }
+                    }
+                )
+                .frame(height: 360)
             }
         }
         .task(id: taskID) { await vm.refresh() }
     }
+}
+
+/// The "New Pull Request" action for a bundle, or nil when the host doesn't
+/// support PR creation (hides the button). Opens the right-panel composer.
+@MainActor
+private func createAction(bundle: RepoBundle, account: AccountViewModel) -> (() -> Void)? {
+    guard PullRequestRouter.supports(host: account.account?.host) else { return nil }
+    return { bundle.pullRequests.startCompose() }
 }
 
 /// Stable-until-account-resolves identity for a PR refresh task. Includes the

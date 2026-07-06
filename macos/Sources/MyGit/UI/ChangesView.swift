@@ -40,7 +40,6 @@ struct ChangesListView: View {
             DispatchQueue.main.async { vm.jumpToSourcePath = nil }
         }
         .changesGitActionHost(vm)
-        .pullRequestActionHost(coordinator.activeBundle)
     }
 
     private var mergeBanner: some View {

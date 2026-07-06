@@ -276,7 +276,10 @@ struct DetailPanel: View {
         case .files:
             FileEditorView()
         case .pullRequests:
-            if pullRequests.selected != nil {
+            if pullRequests.isComposing {
+                PullRequestComposeView(bundle: coordinator.activeBundle)
+                    .id(coordinator.activeBundle.id)
+            } else if pullRequests.selected != nil {
                 PullRequestDetailView(vm: pullRequests)
             } else {
                 placeholder("Select a pull request to see its details.")

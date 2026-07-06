@@ -35,11 +35,13 @@ struct PullRequestRouter: PullRequestRepository {
     func create(
         host: String, owner: String, repo: String,
         head: String, base: String, title: String, body: String,
+        reviewers: [String],
         token: String
     ) async throws -> PullRequestInfo {
         try await impl(for: host).create(
             host: host, owner: owner, repo: repo,
-            head: head, base: base, title: title, body: body, token: token
+            head: head, base: base, title: title, body: body,
+            reviewers: reviewers, token: token
         )
     }
 
@@ -76,5 +78,18 @@ struct PullRequestRouter: PullRequestRepository {
         sha: String, token: String
     ) async throws -> [PRFileChange] {
         try await impl(for: host).commitFiles(host: host, owner: owner, repo: repo, sha: sha, token: token)
+    }
+
+    func currentUser(host: String, token: String) async throws -> PRUser {
+        try await impl(for: host).currentUser(host: host, token: token)
+    }
+
+    func review(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRReviewAction, token: String
+    ) async throws {
+        try await impl(for: host).review(
+            host: host, owner: owner, repo: repo, number: number, action: action, token: token
+        )
     }
 }

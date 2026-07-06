@@ -34,7 +34,16 @@ struct PRParticipant: Hashable {
     let avatarURL: URL?
     let isReviewer: Bool
     let approved: Bool
+    /// Host-stable identity (GitHub login / Bitbucket account UUID) used to match
+    /// the current user against their own review. nil when the host didn't supply one.
+    var id: String? = nil
+    /// True when this participant's latest review requested changes.
+    var requestedChanges: Bool = false
 }
+
+/// The signed-in user's own standing on a PR, derived by matching the current
+/// user against the PR's participants. Drives the Approve / Request-changes toggle.
+enum PRReviewState: Hashable { case none, approved, changesRequested }
 
 /// One row in the pull-request list.
 struct PullRequestSummary: Identifiable, Hashable {

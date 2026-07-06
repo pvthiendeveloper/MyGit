@@ -6,6 +6,7 @@ import SwiftUI
 struct ChangesGitMenu: View {
     let bundle: RepoBundle
     @EnvironmentObject var main: MainViewModel
+    @EnvironmentObject var coordinator: AppCoordinator
 
     private var remote: RemoteViewModel { bundle.remote }
     private var changes: ChangesViewModel { bundle.changes }
@@ -16,7 +17,11 @@ struct ChangesGitMenu: View {
         Button("Push…") { Task { await remote.push() } }
         Button("Pull…") { Task { await remote.pull() } }
         if PullRequestRouter.supports(host: bundle.account.account?.host) {
-            Button("Create Pull Request…") { changes.pendingPullRequest = true }
+            Button("Create Pull Request…") {
+                coordinator.setActive(bundle)
+                bundle.pullRequests.startCompose()
+                main.tab = .pullRequests
+            }
         }
         Button("Update Project…") {
             Task { await remote.fetchOrigin(); await remote.pull() }
