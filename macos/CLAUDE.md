@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Run
 
-SwiftPM executable, macOS 15+, swift-tools-version 6.0 but compiled in Swift 5 language mode. One third-party dependency: `Highlightr` (highlight.js via JavaScriptCore) for diff-viewer syntax highlighting. It ships a resource `.bundle` — `run.sh` copies `*.bundle` from the build dir into `MyGit.app`, so raw `swift build` runs won't have highlighting assets in the bundle.
+SwiftPM executable, macOS 15+, swift-tools-version 6.0 but compiled in Swift 5 language mode. Two third-party dependencies: `Highlightr` (highlight.js via JavaScriptCore) for diff-viewer syntax highlighting, and `SwiftTerm` (Miguel de Icaza's xterm emulator + PTY) for the built-in terminal panel. `Highlightr` ships a resource `.bundle` — `run.sh` copies `*.bundle` from the build dir into `MyGit.app`, so raw `swift build` runs won't have highlighting assets in the bundle.
 
 ```bash
 swift build              # debug
@@ -38,7 +38,7 @@ Source layout follows Clean Architecture:
 
 `AppContainer` (`App/AppContainer.swift`) is the DI seam — `.live()` returns the six repository protocols (`git`, `repos`, `credentials`, `fileEditor`, `commitMessage`, `pullRequests`) backed by their concrete implementations.
 
-The per-repo ViewModels are grouped into a `RepoBundle` (`App/RepoBundle.swift`) — one bundle per git repo, holding that repo's `changes`/`stash`/`history`/`files`/`editor`/`branches`/`account`/`remote`/`pullRequests`/`compareVM` VMs wired together with a constant `repoSource = { repo }`. `MainViewModel` and `SettingsViewModel` are **shared** (global) across all bundles. `RepoBundle` reproduces the cross-reference wiring that used to live inline in `AppCoordinator.init`:
+The per-repo ViewModels are grouped into a `RepoBundle` (`App/RepoBundle.swift`) — one bundle per git repo, holding that repo's `changes`/`stash`/`history`/`files`/`editor`/`branches`/`account`/`remote`/`pullRequests`/`compareVM` VMs wired together with a constant `repoSource = { repo }`. `MainViewModel`, `SettingsViewModel`, and `TerminalViewModel` (`terminal`, the bottom terminal panel) are **shared** (global) across all bundles. `RepoBundle` reproduces the cross-reference wiring that used to live inline in `AppCoordinator.init`:
 
 - `repoSource: () -> Repository?` — constant `{ repo }` for the bundle.
 - `currentBranch: () -> String?` — pulled from `ChangesViewModel.status?.branch`.
@@ -131,6 +131,10 @@ Not a git-CLI operation — a REST subsystem mirroring the AI-commit one. `PullR
 
 Double-shift opens `SearchEverywhereView` (backed by `SearchEverywhereViewModel`) — a fuzzy file finder across the active repo, IntelliJ-style.
 
+### Terminal panel
+
+Bottom panel of live shell sessions, backed by `SwiftTerm`. `TerminalViewModel` (coordinator-shared, workspace-global) owns visibility + the `[TerminalSession]` tab list and active tab; `TerminalPanelView` renders it. Each `TerminalSession` wraps a `LocalProcessTerminalView` (its own PTY + xterm emulator), retained in the VM so a background tab keeps running — dropping the session closes the PTY master, SIGHUPing the child shell. Sessions launch `$SHELL` (default `/bin/zsh`) as a **login shell** (`execName = "-<shell>"`) so the user's profile/PATH/aliases load, cwd = the active repo (`AppCoordinator.terminalCWD`, home when no workspace). Tab title follows the folder name, overridden live by the shell's window-title escape sequences. Menu (`View`): `Terminal` toggles (`⌃\``), `New Terminal` (`⌃⇧\``); `AppDelegate.validateMenuItem` checkmarks the toggle when visible.
+
 ### Secret storage fallback
 
 `SecretFileStore` (`Data/Persistence/`) is a plaintext fallback for PAT/AI keys when the keychain is unavailable (locked, denied ACL, missing signing identity). Stores a flat `{account: secret}` JSON at `~/Library/Application Support/MyGit/secrets.json`, 0600 perms, written **only** when a keychain save actually fails — never mirrored alongside a working keychain entry. Less secure than the keychain (unencrypted on disk).
@@ -139,5 +143,5 @@ Double-shift opens `SearchEverywhereView` (backed by `SearchEverywhereViewModel`
 
 - Concurrency: all UI state on `@MainActor`. `GitRunner.run` hops to `DispatchQueue.global(qos: .userInitiated)` and bridges via `withCheckedThrowingContinuation`.
 - `Package.swift` pins `.swiftLanguageMode(.v5)` despite swift-tools-version 6.0 — keep new code Swift-5-compatible (no strict concurrency by default).
-- Links AppKit + SwiftUI + UniformTypeIdentifiers via `linkerSettings`; one SwiftPM dep, `Highlightr` (diff-viewer highlighting, ships a resource bundle — see Build & Run).
+- Links AppKit + SwiftUI + UniformTypeIdentifiers via `linkerSettings`; two SwiftPM deps, `Highlightr` (diff-viewer highlighting, ships a resource bundle — see Build & Run) and `SwiftTerm` (terminal panel PTY/emulator).
 - Bundle ID `com.thienpham.MyGit`, min macOS 15.

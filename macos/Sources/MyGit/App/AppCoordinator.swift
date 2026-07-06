@@ -9,6 +9,7 @@ final class AppCoordinator: ObservableObject {
     let repos: RepositoryListViewModel
     let settings: SettingsViewModel
     let search: SearchEverywhereViewModel
+    let terminal = TerminalViewModel()
 
     /// One bundle per repo in the selected workspace.
     @Published private(set) var bundles: [RepoBundle] = []
@@ -54,6 +55,15 @@ final class AppCoordinator: ObservableObject {
     // Convenience forwarders for menu/toolbar code that acts on the active repo.
     var changes: ChangesViewModel { activeBundle.changes }
     var remote: RemoteViewModel { activeBundle.remote }
+
+    /// Working directory for new terminals: the active repo, or home when no
+    /// workspace is selected.
+    var terminalCWD: URL {
+        bundles.isEmpty ? FileManager.default.homeDirectoryForCurrentUser : activeBundle.repo.url
+    }
+
+    func toggleTerminal() { terminal.toggle(cwd: terminalCWD) }
+    func newTerminal() { terminal.newSession(cwd: terminalCWD) }
 
     func setActive(_ bundle: RepoBundle) {
         activeBundle = bundle

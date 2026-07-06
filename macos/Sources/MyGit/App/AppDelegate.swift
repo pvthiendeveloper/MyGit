@@ -99,7 +99,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         main.addItem(editItem)
 
+        let viewItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        let terminalToggle = NSMenuItem(title: "Terminal", action: #selector(toggleTerminal), keyEquivalent: "`")
+        terminalToggle.keyEquivalentModifierMask = [.control]
+        terminalToggle.target = self
+        viewMenu.addItem(terminalToggle)
+        let newTerminal = NSMenuItem(title: "New Terminal", action: #selector(newTerminal), keyEquivalent: "`")
+        newTerminal.keyEquivalentModifierMask = [.control, .shift]
+        newTerminal.target = self
+        viewMenu.addItem(newTerminal)
+        viewItem.submenu = viewMenu
+        main.addItem(viewItem)
+
         NSApp.mainMenu = main
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleTerminal) {
+            item.state = coordinator.terminal.isVisible ? .on : .off
+        }
+        return true
     }
 
     // MARK: - Search Everywhere (double-Shift)
@@ -146,4 +166,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func fetchOrigin() { Task { await coordinator.remote.fetchOrigin() } }
     @objc private func pullRemote() { Task { await coordinator.remote.pull() } }
     @objc private func pushRemote() { Task { await coordinator.remote.push() } }
+    @objc private func toggleTerminal() { coordinator.toggleTerminal() }
+    @objc private func newTerminal() { coordinator.newTerminal() }
 }

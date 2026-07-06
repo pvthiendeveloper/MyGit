@@ -4,6 +4,7 @@ struct MainView: View {
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var repos: RepositoryListViewModel
     @EnvironmentObject var remote: RemoteViewModel
+    @EnvironmentObject var terminal: TerminalViewModel
     @State private var remoteURLInput: String = ""
 
     private var sidebarMinWidth: CGFloat {
@@ -21,6 +22,20 @@ struct MainView: View {
         }
     }
 
+    @ViewBuilder private var repoSplit: some View {
+        HSplitView {
+            SidebarPanel()
+                .frame(
+                    minWidth: sidebarMinWidth,
+                    idealWidth: sidebarIdealWidth,
+                    maxWidth: main.tab == .history ? 1200 : (main.tab == .pullRequests ? 900 : 480)
+                )
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { main.sidebarWidth = $0 }
+            DetailPanel()
+                .frame(minWidth: 420)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ToolbarBar()
@@ -30,18 +45,15 @@ struct MainView: View {
 
             if repos.selected == nil {
                 EmptyStateView()
-            } else {
-                HSplitView {
-                    SidebarPanel()
-                        .frame(
-                            minWidth: sidebarMinWidth,
-                            idealWidth: sidebarIdealWidth,
-                            maxWidth: main.tab == .history ? 1200 : (main.tab == .pullRequests ? 900 : 480)
-                        )
-                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { main.sidebarWidth = $0 }
-                    DetailPanel()
-                        .frame(minWidth: 420)
+            } else if terminal.isVisible {
+                VSplitView {
+                    repoSplit
+                        .frame(minHeight: 200)
+                    TerminalPanelView()
+                        .frame(minHeight: 120, idealHeight: 260, maxHeight: .infinity)
                 }
+            } else {
+                repoSplit
             }
         }
         .alert(

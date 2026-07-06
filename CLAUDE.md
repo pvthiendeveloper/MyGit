@@ -36,5 +36,5 @@ No tests. `Tests/` and `Sources/MyGit/DesignSystem/` are empty placeholders. Add
 
 - swift-tools-version 6.0 but `.swiftLanguageMode(.v5)` is pinned in `Package.swift` — keep new code Swift-5 compatible (no strict concurrency).
 - UI state on `@MainActor`; `GitRunner.run` hops to `DispatchQueue.global(qos: .userInitiated)` and bridges via `withCheckedThrowingContinuation`.
-- Frameworks linked via `linkerSettings`: AppKit, SwiftUI, UniformTypeIdentifiers. One third-party dep: `Highlightr` (syntax highlighting in the diff viewer; ships a resource bundle that `run.sh` copies into the `.app`).
+- Frameworks linked via `linkerSettings`: AppKit, SwiftUI, UniformTypeIdentifiers. Two third-party deps: `Highlightr` (syntax highlighting in the diff viewer; ships a resource bundle that `run.sh` copies into the `.app`) and `SwiftTerm` (xterm emulator + PTY backing the built-in bottom terminal panel).
 - Bundle ID `com.thienpham.MyGit`, min macOS 15.
