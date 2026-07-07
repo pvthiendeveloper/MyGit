@@ -23,10 +23,24 @@ struct FileEditorView: View {
 struct FileEditorContent: View {
     @ObservedObject var tab: OpenFileTab
     @EnvironmentObject var vm: FileEditorViewModel
+    @EnvironmentObject var terminal: TerminalViewModel
+
+    private var isShellScript: Bool {
+        (tab.name as NSString).pathExtension.lowercased() == "sh"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                if isShellScript {
+                    Button(action: runScript) {
+                        Image(systemName: "play.fill")
+                            .foregroundStyle(.green)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Run script in terminal")
+                    .disabled(tab.isBinary)
+                }
                 Text(tab.path)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -65,10 +79,22 @@ struct FileEditorContent: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TextEditor(text: $tab.content)
-                    .font(.system(size: 12, design: .monospaced))
-                    .background(Color(NSColor.textBackgroundColor))
+                CodeEditor(
+                    text: $tab.content,
+                    syntaxExt: (tab.name as NSString).pathExtension
+                )
+                .background(Color(NSColor.textBackgroundColor))
             }
+        }
+    }
+
+    /// Save any unsaved edits first (IntelliJ runs the on-disk file), then run
+    /// the script in the bottom terminal panel.
+    private func runScript() {
+        Task {
+            if tab.isDirty { await vm.saveFileTab(tab) }
+            guard let abs = vm.absolutePath(for: tab) else { return }
+            terminal.runShellScript(absolutePath: abs)
         }
     }
 }

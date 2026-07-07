@@ -6,10 +6,37 @@ struct SearchHit: Identifiable, Hashable {
     let bundleID: URL
     let repoName: String
     let path: String   // repo-relative
+    /// Set for content (`git grep`) hits: the matching line + its text preview.
+    var matchLine: Int? = nil
+    var preview: String? = nil
 
     var id: String { "\(bundleID.path)|\(path)" }
     var name: String { (path as NSString).lastPathComponent }
     var dir: String { (path as NSString).deletingLastPathComponent }
+    var ext: String { (path as NSString).pathExtension.lowercased() }
+}
+
+/// What the query matches against.
+enum SearchScope: String, CaseIterable, Identifiable {
+    case name       // filename / path only (default — fast, in-memory)
+    case content    // file contents only (git grep)
+    case both       // name + contents
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .name: return "File name"
+        case .content: return "Contents"
+        case .both: return "Name & contents"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .name: return "doc.text.magnifyingglass"
+        case .content: return "text.magnifyingglass"
+        case .both: return "sparkle.magnifyingglass"
+        }
+    }
 }
 
 /// IntelliJ-style "Search Everywhere" (double-Shift): fuzzy file search across
@@ -19,16 +46,21 @@ final class SearchEverywhereViewModel: ObservableObject {
     @Published var isPresented = false
     /// Bound to the text field — updates instantly for display.
     @Published var query = ""
-    /// Debounced copy of `query`; scoring runs off this to avoid re-scoring the
-    /// whole index on every keystroke.
-    @Published private var debouncedQuery = ""
     @Published var selectedIndex = 0
     @Published private(set) var indexing = false
+    /// True while a `git grep` content search is in flight.
+    @Published private(set) var searchingContent = false
     /// nil = all repos. Otherwise restrict to this bundle id.
     @Published var repoFilter: URL? = nil
     @Published private(set) var repoOptions: [RepoOption] = []
+    /// What the query matches against (name / contents / both).
+    @Published var scope: SearchScope = .name
+    /// nil = all file types. Otherwise restrict to this extension (e.g. "swift").
+    @Published var typeFilter: String? = nil
     /// Bumped whenever the file index changes, so `results` recomputes in views.
     @Published private var index: [SearchHit] = []
+    /// Content-search hits for the current debounced query (git grep output).
+    @Published private var contentHits: [SearchHit] = []
 
     struct RepoOption: Identifiable, Hashable {
         let id: URL     // bundle id
@@ -38,19 +70,33 @@ final class SearchEverywhereViewModel: ObservableObject {
     private let git: GitRepository
     private let maxResults = 200
     private var cancellables: Set<AnyCancellable> = []
+    /// Repos to grep, captured from the last `buildIndex`.
+    private var repos: [(id: URL, name: String, url: URL)] = []
+    private var contentTask: Task<Void, Never>?
 
     init(git: GitRepository) {
         self.git = git
-        $query
-            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
-            .removeDuplicates()
-            .sink { [weak self] in self?.debouncedQuery = $0 }
+        // Content grep spawns a process per repo — debounce it longer. Re-run
+        // whenever the query, scope, or repo scope changes.
+        Publishers.CombineLatest3(
+            $query.debounce(for: .milliseconds(500), scheduler: DispatchQueue.main).removeDuplicates(),
+            $scope, $repoFilter
+        )
+            .sink { [weak self] q, scope, filter in
+                self?.runContentSearch(query: q, scope: scope, repoFilter: filter)
+            }
             .store(in: &cancellables)
+    }
+
+    var indexCount: Int { index.count }
+
+    /// Extensions present in the index, for the file-type filter menu.
+    var typeOptions: [String] {
+        Set(index.compactMap { $0.ext.isEmpty ? nil : $0.ext }).sorted()
     }
 
     func present() {
         query = ""
-        debouncedQuery = ""
         selectedIndex = 0
         isPresented = true
     }
@@ -58,27 +104,89 @@ final class SearchEverywhereViewModel: ObservableObject {
     func dismiss() {
         isPresented = false
         query = ""
-        debouncedQuery = ""
+        contentTask?.cancel()
+        contentHits = []
     }
 
-    /// Filtered + scored results, derived from the debounced query / filter /
-    /// index. Computed (not stored) so it can never desync from the inputs.
+    /// Does a hit pass the repo + file-type filters (query-independent)?
+    private func passesFilters(_ hit: SearchHit) -> Bool {
+        if let f = repoFilter, hit.bundleID != f { return false }
+        if let ext = typeFilter, hit.ext != ext { return false }
+        return true
+    }
+
+    /// Filtered + scored results, derived from the debounced query / filters /
+    /// index / content hits. Computed (not stored) so it can never desync.
     var results: [SearchHit] {
-        let base = repoFilter == nil ? index : index.filter { $0.bundleID == repoFilter }
-        let q = debouncedQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return Array(base.prefix(maxResults)) }
-        let scored: [(SearchHit, Int)] = base.compactMap { hit in
-            guard let s = Self.score(query: q, hit: hit) else { return nil }
-            return (hit, s)
+        // Name search is in-memory and cheap — filter off the LIVE query so it
+        // can never desync from a Combine pipeline that isn't delivering.
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+
+        // Name (fuzzy) hits over the in-memory index.
+        var nameHits: [SearchHit] = []
+        if scope != .content {
+            let base = index.filter(passesFilters)
+            if q.isEmpty {
+                nameHits = Array(base.prefix(maxResults))
+            } else {
+                nameHits = base.compactMap { hit -> (SearchHit, Int)? in
+                    guard let s = Self.score(query: q, hit: hit) else { return nil }
+                    return (hit, s)
+                }
+                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.path.count < $1.0.path.count }
+                .map { $0.0 }
+            }
         }
-        return scored
-            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.path.count < $1.0.path.count }
-            .prefix(maxResults)
-            .map { $0.0 }
+        if scope == .name { return Array(nameHits.prefix(maxResults)) }
+
+        // Content hits are already query-matched by git grep; apply UI filters.
+        let content = contentHits.filter(passesFilters)
+        if scope == .content { return Array(content.prefix(maxResults)) }
+
+        // Both: name hits first, then content-only hits not already listed.
+        var seen = Set(nameHits.map(\.id))
+        var merged = nameHits
+        for c in content where !seen.contains(c.id) {
+            merged.append(c)
+            seen.insert(c.id)
+        }
+        return Array(merged.prefix(maxResults))
+    }
+
+    /// Kick off a `git grep` across the (repo-scoped) workspace. No-op unless the
+    /// scope needs contents and the query is non-empty.
+    private func runContentSearch(query: String, scope: SearchScope, repoFilter: URL?) {
+        contentTask?.cancel()
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard scope != .name, !q.isEmpty else {
+            contentHits = []
+            searchingContent = false
+            return
+        }
+        let targets = repos.filter { repoFilter == nil || $0.id == repoFilter }
+        searchingContent = true
+        contentTask = Task { [weak self, git] in
+            var hits: [SearchHit] = []
+            for r in targets {
+                if Task.isCancelled { return }
+                let matches = (try? await git.grep(query: q, at: r.url)) ?? []
+                for m in matches {
+                    hits.append(SearchHit(bundleID: r.id, repoName: r.name, path: m.path,
+                                          matchLine: m.line, preview: m.preview))
+                }
+            }
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self, !Task.isCancelled else { return }
+                self.contentHits = hits
+                self.searchingContent = false
+            }
+        }
     }
 
     /// (Re)build the file index from the workspace's repos.
     func buildIndex(_ repos: [(id: URL, name: String, url: URL)]) async {
+        self.repos = repos
         repoOptions = repos.map { RepoOption(id: $0.id, name: $0.name) }
         // Drop a stale filter that no longer matches a repo in this workspace.
         if let f = repoFilter, !repos.contains(where: { $0.id == f }) { repoFilter = nil }

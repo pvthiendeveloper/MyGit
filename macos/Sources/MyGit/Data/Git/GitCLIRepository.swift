@@ -21,6 +21,31 @@ struct GitCLIRepository: GitRepository {
         return out.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
     }
 
+    func grep(query: String, at repo: URL) async throws -> [GitGrepMatch] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return [] }
+        // `-I` skips binaries; fixed-string + case-insensitive; one hit per file
+        // (keeps SearchHit ids unique — it's a file finder, not a line finder).
+        // grep exits 1 when there are no matches (like `diff`), so use `run`.
+        let result = try await GitRunner.run(
+            ["grep", "-n", "-I", "--fixed-strings", "--ignore-case",
+             "--max-count=1", "-e", q],
+            cwd: repo
+        )
+        guard result.exitCode == 0 else { return [] }   // 1 = no matches
+        var hits: [GitGrepMatch] = []
+        for line in result.stdout.split(separator: "\n", omittingEmptySubsequences: true) {
+            // Format: <path>:<lineno>:<text>
+            let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, let n = Int(parts[1]) else { continue }
+            let preview = parts[2].trimmingCharacters(in: .whitespaces)
+            hits.append(GitGrepMatch(path: String(parts[0]), line: n,
+                                     preview: String(preview.prefix(200))))
+            if hits.count >= 500 { break }
+        }
+        return hits
+    }
+
     func log(at repo: URL, limit: Int) async throws -> [GitCommit] {
         let out = try await GitRunner.runOrThrow(
             ["log", "-n", String(limit), "--pretty=format:\(GitLogParser.format)"],

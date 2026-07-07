@@ -6,6 +6,14 @@ enum ConflictSide {
     case ours, theirs
 }
 
+/// One `git grep` hit: a repo-relative path, the 1-based line number, and the
+/// matching line's text (trimmed for preview).
+struct GitGrepMatch: Sendable, Hashable {
+    let path: String
+    let line: Int
+    let preview: String
+}
+
 protocol GitRepository: Sendable {
     // Inspect
     func status(at repo: URL) async throws -> GitStatusSummary
@@ -88,6 +96,9 @@ protocol GitRepository: Sendable {
     func lsTreeAtRevision(_ rev: String, at repo: URL) async throws -> [String]
     /// All tracked file paths (repo-relative), recursive. Drives Search Everywhere.
     func listFiles(at repo: URL) async throws -> [String]
+    /// Content search over tracked files (`git grep`). Drives Search Everywhere's
+    /// content/both scopes. Case-insensitive fixed-string match.
+    func grep(query: String, at repo: URL) async throws -> [GitGrepMatch]
     func pushedHashes(at repo: URL) async throws -> Set<String>
     func amendMessage(_ message: String, at repo: URL) async throws
     func interactiveRebase(todo: [RebaseStep], onto base: String, at repo: URL) async throws
