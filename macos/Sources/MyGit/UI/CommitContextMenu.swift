@@ -30,7 +30,8 @@ struct CommitContextMenu: View {
 
         Divider()
 
-        Button("Edit Commit Message…") { vm.editMessageFor = commit }.disabled(!canRewrite)
+        // Allowed for the tip even when pushed: amends HEAD, then force-push.
+        Button("Edit Commit Message…") { vm.editMessageFor = commit }.disabled(!canRewrite && !isTip)
         Button("Fixup…") { vm.fixupIntoParent(commit) }.disabled(!canRewrite || isRoot)
         Button("Squash Into…") { vm.squashIntoParent(commit) }.disabled(!canRewrite || isRoot)
         Button("Drop Commit") { vm.pendingDrop = commit }.disabled(!canRewrite)

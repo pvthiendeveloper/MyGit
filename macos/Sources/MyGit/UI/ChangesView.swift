@@ -123,11 +123,15 @@ struct ChangeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Toggle(isOn: Binding(
-                get: { vm.stagedPaths.contains(change.path) },
-                set: { _ in vm.toggleStaged(change) }
-            )) { EmptyView() }
-            .toggleStyle(.checkbox)
+            // .highPriorityGesture: the row's own .onTapGesture (selection) would
+            // otherwise swallow taps on the checkbox. High priority wins over it.
+            Image(systemName: vm.stagedPaths.contains(change.path) ? "checkmark.square.fill" : "square")
+                .font(.system(size: 14))
+                .foregroundStyle(isSelected ? Color.white
+                    : (vm.stagedPaths.contains(change.path) ? Color.accentColor : Color.secondary))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+                .highPriorityGesture(TapGesture().onEnded { vm.toggleStaged(change) })
 
             Text(change.path)
                 .font(.system(size: 12))

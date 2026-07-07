@@ -248,9 +248,12 @@ struct ToolbarBar: View {
     }
 
     private var primaryRemoteBadge: String? {
-        if let s = changes.status, s.behind > 0 { return "\(s.behind) ↓" }
-        if let s = changes.status, s.ahead > 0 { return "\(s.ahead) ↑" }
-        return nil
+        guard let s = changes.status else { return nil }
+        // Show both counts when diverged: pull count (↓) and push count (↑).
+        var parts: [String] = []
+        if s.behind > 0 { parts.append("\(s.behind) ↓") }
+        if s.ahead > 0 { parts.append("\(s.ahead) ↑") }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ")
     }
 
     @ViewBuilder

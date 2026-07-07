@@ -115,10 +115,15 @@ final class ChangesViewModel: ObservableObject {
             let parsed = try await git.status(at: repo.url)
             status = parsed
             let allPaths = Set(parsed.changes.map { $0.path })
-            let kept = stagedPaths.intersection(allPaths)
-            if kept.isEmpty {
+            if previousPaths.isEmpty {
+                // First status after opening/switching the repo: default all checked.
                 stagedPaths = allPaths
             } else {
+                // Preserve the user's explicit checks/unchecks; auto-check only
+                // files that newly appeared since the last refresh. Must NOT fall
+                // back to "check everything" when the user has unchecked all —
+                // otherwise the FSEvents auto-refresh re-checks them instantly.
+                let kept = stagedPaths.intersection(allPaths)
                 stagedPaths = kept.union(allPaths.subtracting(previousPaths))
             }
             previousPaths = allPaths

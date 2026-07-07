@@ -54,8 +54,12 @@ final class RemoteViewModel: ObservableObject {
 
     func forcePush() async {
         guard let branch = currentBranch() else { return }
+        // Plain --force (not --force-with-lease): the lease variant silently
+        // declines to force when there's no local remote-tracking ref for the
+        // branch, degrading to a normal push that fails non-fast-forward. This
+        // action is already gated behind an explicit destructive confirmation.
         await runRemoteHandlingUpstream(
-            args: ["push", "--force-with-lease", "origin", branch],
+            args: ["push", "--force", "origin", branch],
             branchName: branch
         )
     }
