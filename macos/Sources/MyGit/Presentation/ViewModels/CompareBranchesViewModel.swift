@@ -156,6 +156,8 @@ final class CompareBranchesViewModel: ObservableObject {
             openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsParent, false)
         case .showDiffInNewTab:
             openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsParent, true)
+        case .viewImage:
+            break   // image preview is a Pull-Requests-only action
         case .compareWithLocal:
             openDiffTab(commit.hash, commit.shortHash, entry.path, .commitVsWorking, true)
         case .compareBeforeWithLocal:

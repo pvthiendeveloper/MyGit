@@ -71,6 +71,8 @@ protocol GitRepository: Sendable {
     func commitMerge(at repo: URL) async throws
     /// Name of the incoming branch of an in-progress merge (from MERGE_HEAD), if any.
     func mergeSourceName(at repo: URL) async -> String?
+    /// Read a single git config value (`git config --get <key>`), nil if unset.
+    func configValue(_ key: String, at repo: URL) async -> String?
     /// Read one of the three conflict stages of a path from the index:
     /// 1 = base (merge base), 2 = ours (HEAD), 3 = theirs (MERGE_HEAD).
     /// Returns "" when the stage is absent (side added/deleted the file).

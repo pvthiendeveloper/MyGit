@@ -87,7 +87,9 @@ final class RepoBundle: Identifiable {
         self.pullRequests = PullRequestsViewModel(
             pullRequests: container.pullRequests,
             account: account,
-            main: main
+            main: main,
+            git: container.git,
+            repoSource: repoSource
         )
 
         self.compareVM = CompareBranchesViewModel()

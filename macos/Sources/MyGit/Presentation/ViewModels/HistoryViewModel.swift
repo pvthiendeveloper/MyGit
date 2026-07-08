@@ -144,6 +144,8 @@ final class HistoryViewModel: ObservableObject {
             main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsParent, forceNew: false)
         case .showDiffInNewTab:
             main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsParent, forceNew: true)
+        case .viewImage:
+            break   // image preview is a Pull-Requests-only action
         case .compareWithLocal:
             main.openDiffTab(commitHash: commit.hash, commitShortHash: commit.shortHash, path: entry.path, mode: .commitVsWorking, forceNew: true)
         case .compareBeforeWithLocal:

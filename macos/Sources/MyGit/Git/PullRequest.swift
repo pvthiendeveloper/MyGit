@@ -51,6 +51,10 @@ struct PullRequestSummary: Identifiable, Hashable {
     var number: Int { id }
     let title: String
     let authorName: String
+    /// Host-stable author identity (GitHub login / Bitbucket account UUID),
+    /// matched against `PRUser.id` to tell whether this is the current user's PR.
+    /// nil when the host didn't supply one.
+    var authorId: String? = nil
     let authorAvatarURL: URL?
     let sourceBranch: String
     let destBranch: String
@@ -82,6 +86,17 @@ struct PullRequestDetail: Hashable {
     var reviewers: [PRParticipant] { participants.filter { $0.isReviewer } }
 }
 
+/// One merge-readiness rule for a PR, shown in the merge-checks list.
+/// `blocking` marks a rule we can authoritatively evaluate and that should gate
+/// the Merge button; non-blocking rows are informational (e.g. approval counts
+/// whose required threshold we can't read without repo-admin scope).
+struct PRMergeCheck: Hashable, Identifiable {
+    var id: String { title }
+    let title: String
+    let passed: Bool
+    let blocking: Bool
+}
+
 /// One page of a PR list plus whether more pages exist.
 struct PullRequestPage {
     let items: [PullRequestSummary]
@@ -99,6 +114,22 @@ struct PRFileChange: Identifiable, Hashable {
     let deletions: Int
     /// Unified per-file patch, when the host provides one (GitHub). nil → counts only.
     let patch: String?
+    /// Host API URLs for the file's raw bytes on each side (for image preview).
+    /// nil when unavailable (e.g. the old side of an added file).
+    var newBlobURL: URL? = nil
+    var oldBlobURL: URL? = nil
+
+    /// True for raster file types we can render directly as an image.
+    var isImage: Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ["png", "jpg", "jpeg", "gif", "bmp", "heic", "heif", "tiff", "webp"].contains(ext)
+    }
+
+    /// Android VectorDrawable candidate — an `.xml` that may render as an image.
+    var isVectorDrawable: Bool { (path as NSString).pathExtension.lowercased() == "xml" }
+
+    /// Whether "View as Image" can attempt a visual preview for this file.
+    var isPreviewable: Bool { isImage || isVectorDrawable }
 
     var statusLabel: String {
         switch status {

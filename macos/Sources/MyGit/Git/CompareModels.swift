@@ -74,6 +74,7 @@ final class ChangedFileNode: Identifiable {
 enum CompareFileAction {
     case showDiff
     case showDiffInNewTab
+    case viewImage
     case compareWithLocal
     case compareBeforeWithLocal
     case editSource
@@ -88,6 +89,7 @@ enum CompareFileAction {
         switch self {
         case .showDiff: return "Show Diff"
         case .showDiffInNewTab: return "Show Diff in a New Tab"
+        case .viewImage: return "View as Image"
         case .compareWithLocal: return "Compare with Local"
         case .compareBeforeWithLocal: return "Compare Before with Local"
         case .editSource: return "Edit Source"

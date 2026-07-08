@@ -4,6 +4,14 @@ struct GitCLIRepository: GitRepository {
 
     // MARK: - Inspect
 
+    func configValue(_ key: String, at repo: URL) async -> String? {
+        let r = try? await GitRunner.run(["config", "--get", key], cwd: repo)
+        guard let out = r?.stdout.trimmingCharacters(in: .whitespacesAndNewlines), !out.isEmpty else {
+            return nil
+        }
+        return out
+    }
+
     func status(at repo: URL) async throws -> GitStatusSummary {
         let out = try await GitRunner.runOrThrow(
             ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"],

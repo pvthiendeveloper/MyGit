@@ -35,6 +35,16 @@ struct PullRequestDetailView: View {
                 chip(pr.destBranch)
                 StateBadge(state: pr.state)
                 Spacer()
+                Button { Task { await vm.refreshSelected() } } label: {
+                    if vm.detailLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(vm.detailLoading)
+                .help("Refresh this pull request")
                 Button { vm.openInBrowser(pr) } label: {
                     Label("Open in browser", systemImage: "arrow.up.right.square")
                 }
@@ -43,36 +53,76 @@ struct PullRequestDetailView: View {
             Text(pr.title).font(.title3).bold()
             Text("#\(pr.number) · \(pr.authorName) · updated \(PRDate.relativeLabel(pr.updatedAt))")
                 .font(.caption).foregroundStyle(.secondary)
-            if vm.canReview { reviewActions }
+            if vm.canReview || vm.hasOwnerActions { actionBar }
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Reviewer toggle: Approve / Request changes. Each button reflects the
-    /// current user's own standing and withdraws it on a second click.
-    private var reviewActions: some View {
+    /// Single combined action row: reviewer toggles (Approve / Request changes),
+    /// a Merge button, and a "More" overflow menu — each part shown only when
+    /// applicable. Reviewer toggles reflect the current user's standing and
+    /// withdraw on a second click.
+    private var actionBar: some View {
         let state = vm.myReviewState
         let approved = state == .approved
         let changesRequested = state == .changesRequested
         return HStack(spacing: 8) {
-            Button {
-                Task { await vm.toggleApprove() }
-            } label: {
-                Label(approved ? "Approved" : "Approve",
-                      systemImage: approved ? "checkmark.circle.fill" : "checkmark.circle")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
+            if vm.canReview {
+                Button {
+                    Task { await vm.toggleApprove() }
+                } label: {
+                    Label(approved ? "Approved" : "Approve",
+                          systemImage: approved ? "checkmark.circle.fill" : "checkmark.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
 
-            Button {
-                Task { await vm.toggleRequestChanges() }
-            } label: {
-                Label(changesRequested ? "Changes requested" : "Request changes",
-                      systemImage: changesRequested ? "exclamationmark.bubble.fill" : "exclamationmark.bubble")
+                Button {
+                    Task { await vm.toggleRequestChanges() }
+                } label: {
+                    Label(changesRequested ? "Changes requested" : "Request changes",
+                          systemImage: changesRequested ? "exclamationmark.bubble.fill" : "exclamationmark.bubble")
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
             }
-            .buttonStyle(.bordered)
-            .tint(.orange)
+
+            if vm.canMerge {
+                Button {
+                    Task { await vm.merge() }
+                } label: {
+                    Label(vm.mergeBlocked ? "Merge blocked" : "Merge",
+                          systemImage: vm.mergeBlocked ? "lock.fill" : "arrow.triangle.merge")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(vm.mergeBlocked ? .gray : .green)
+                .disabled(vm.mergeBlocked)
+                .help(vm.mergeBlocked ? "Some required merge checks are failing." : "Merge this pull request.")
+            }
+
+            if vm.hasMenuActions {
+                Menu {
+                    if vm.canMarkDraft {
+                        Button("Mark as draft") { Task { await vm.markDraft() } }
+                    }
+                    if vm.canMarkReady {
+                        Button("Mark as ready for review") { Task { await vm.markReady() } }
+                    }
+                    if vm.canReopen {
+                        Button("Reopen") { Task { await vm.reopen() } }
+                    }
+                    if vm.canDecline {
+                        Button(vm.isGitHub ? "Close" : "Decline", role: .destructive) {
+                            Task { await vm.decline() }
+                        }
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
 
             if vm.reviewSubmitting { ProgressView().controlSize(.small) }
             Spacer(minLength: 0)
@@ -146,12 +196,39 @@ struct PullRequestDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
 
-        if let checks = detail.checks {
+        // Standalone build/check counts — only when there's no merge-checks list
+        // to fold them into (e.g. merged/closed PRs), so open PRs show one section.
+        if let checks = detail.checks, vm.mergeChecks.isEmpty {
             section("Checks") {
                 HStack(spacing: 16) {
                     checkStat("Checks", checks.passed, checks.total)
                     if checks.buildsTotal > 0 {
                         checkStat("Builds", checks.buildsPassed, checks.buildsTotal)
+                    }
+                }
+            }
+        }
+
+        if !vm.mergeChecks.isEmpty {
+            let passed = vm.mergeChecks.filter(\.passed).count
+            section("Merge checks · \(passed)/\(vm.mergeChecks.count) passed") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(vm.mergeChecks) { check in
+                        HStack(spacing: 8) {
+                            Image(systemName: check.passed ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                .foregroundStyle(check.passed ? .green : (check.blocking ? .red : .orange))
+                            Text(check.title).font(.system(size: 12))
+                            if !check.blocking {
+                                Text("info").font(.system(size: 9, weight: .medium))
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.2)))
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    if vm.isBitbucket {
+                        Text("Approval thresholds are enforced by Bitbucket on merge (reading the exact policy needs repo-admin scope).")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -191,10 +268,14 @@ struct PullRequestDetailView: View {
                         switch action {
                         case .showDiff: openFileDiff(for: entry.path, forceNew: false)
                         case .showDiffInNewTab: openFileDiff(for: entry.path, forceNew: true)
+                        case .viewImage:
+                            if let file = vm.files.first(where: { $0.path == entry.path }) {
+                                presentImagePreview(file)
+                            }
                         default: break   // local-repo actions don't apply to a remote PR
                         }
                     },
-                    menuActions: [.showDiff, .showDiffInNewTab]
+                    menuActions: [.showDiff, .showDiffInNewTab, .viewImage]
                 )
             }
         }
@@ -208,11 +289,26 @@ struct PullRequestDetailView: View {
                  leftLabel: pr.destBranch, rightLabel: pr.sourceBranch, forceNew: forceNew)
     }
 
+    /// Open the in-app before/after image preview for a file (raster or Android
+    /// vector XML). Used by the "View as Image" menu action and by auto-open on
+    /// raster images.
+    private func presentImagePreview(_ file: PRFileChange) {
+        let vm = self.vm
+        ImagePreviewWindow.open(file: file) { url in await vm.imageData(url) }
+    }
+
     /// Open a file's patch in the side-by-side diff viewer (same as commit
     /// diffs), reconstructing both sides from the patch. Falls back to the PR
     /// page in the browser when no textual diff is available (e.g. a binary file).
     private func openDiff(file: PRFileChange, dedupKey: String,
                           leftLabel: String, rightLabel: String, forceNew: Bool) {
+        // Raster images have no text diff — preview them in-app (before/after)
+        // instead of falling back to the browser. (Vector XML stays a text diff
+        // on click; "View as Image" renders it.)
+        if file.isImage, file.newBlobURL != nil || file.oldBlobURL != nil {
+            presentImagePreview(file)
+            return
+        }
         let patch = file.patch ?? ""
         if patch.isEmpty {
             if let pr = vm.selected { vm.openInBrowser(pr) }
@@ -316,10 +412,14 @@ struct PullRequestDetailView: View {
                             switch action {
                             case .showDiff: openCommitFileDiff(for: entry.path, forceNew: false)
                             case .showDiffInNewTab: openCommitFileDiff(for: entry.path, forceNew: true)
+                            case .viewImage:
+                                if let file = vm.commitFiles.first(where: { $0.path == entry.path }) {
+                                    presentImagePreview(file)
+                                }
                             default: break
                             }
                         },
-                        menuActions: [.showDiff, .showDiffInNewTab]
+                        menuActions: [.showDiff, .showDiffInNewTab, .viewImage]
                     )
                 }
             }

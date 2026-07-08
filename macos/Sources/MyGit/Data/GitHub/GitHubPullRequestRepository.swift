@@ -191,7 +191,10 @@ struct GitHubPullRequestRepository: PullRequestRepository {
             status: status,
             additions: (f["additions"] as? Int) ?? 0,
             deletions: (f["deletions"] as? Int) ?? 0,
-            patch: f["patch"] as? String
+            patch: f["patch"] as? String,
+            // `raw_url` is the new (head) version; GitHub PR-files don't expose an
+            // old raw URL, so image preview shows the new side only.
+            newBlobURL: (f["raw_url"] as? String).flatMap(URL.init(string:))
         )
     }
 
@@ -237,6 +240,8 @@ struct GitHubPullRequestRepository: PullRequestRepository {
             id: number,
             title: (json["title"] as? String) ?? "(untitled)",
             authorName: (user?["login"] as? String) ?? "unknown",
+            // Author id is the login — matches `currentUser`'s id (also the login).
+            authorId: user?["login"] as? String,
             authorAvatarURL: (user?["avatar_url"] as? String).flatMap(URL.init(string:)),
             sourceBranch: (head?["ref"] as? String) ?? "?",
             destBranch: (base?["ref"] as? String) ?? "?",
@@ -311,6 +316,74 @@ struct GitHubPullRequestRepository: PullRequestRepository {
         }
     }
 
+    func lifecycle(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRLifecycleAction, token: String
+    ) async throws {
+        let base = "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/pulls/\(number)"
+        switch action {
+        case .merge:
+            guard let url = URL(string: base + "/merge") else {
+                throw PullRequestError.badResponse("bad merge URL")
+            }
+            var req = request(url, token: token)
+            req.httpMethod = "PUT"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["merge_method": "merge"])
+            let (data, resp) = try await session.data(for: req)
+            try Self.checkStatus(resp, data)
+        case .decline:
+            // GitHub has no "decline" — closing a PR without merging is the equivalent.
+            try await patchState(base: base, state: "closed", token: token)
+        case .reopen:
+            try await patchState(base: base, state: "open", token: token)
+        case .markDraft, .markReady:
+            try await setDraft(host: host, base: base, draft: action == .markDraft, token: token)
+        }
+    }
+
+    private func patchState(base: String, state: String, token: String) async throws {
+        guard let url = URL(string: base) else { throw PullRequestError.badResponse("bad PR URL") }
+        var req = request(url, token: token)
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["state": state])
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
+    }
+
+    /// Toggle draft state. The `draft` field isn't editable via REST — GitHub
+    /// only exposes it through GraphQL, which needs the PR's node id, so fetch
+    /// that first, then run the appropriate mutation.
+    private func setDraft(host: String, base: String, draft: Bool, token: String) async throws {
+        guard let url = URL(string: base) else { throw PullRequestError.badResponse("bad PR URL") }
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let nodeID = json["node_id"] as? String else {
+            throw PullRequestError.badResponse(Self.snippet(data))
+        }
+        let mutation = draft
+            ? "mutation { convertPullRequestToDraft(input: {pullRequestId: \"\(nodeID)\"}) { clientMutationId } }"
+            : "mutation { markPullRequestReadyForReview(input: {pullRequestId: \"\(nodeID)\"}) { clientMutationId } }"
+        let gqlBase = host.lowercased() == "github.com"
+            ? "https://api.github.com/graphql"
+            : "https://\(host)/api/graphql"
+        guard let gurl = URL(string: gqlBase) else { throw PullRequestError.badResponse("bad graphql URL") }
+        var req = request(gurl, token: token)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["query": mutation])
+        let (gdata, gresp) = try await session.data(for: req)
+        try Self.checkStatus(gresp, gdata)
+        // GraphQL replies 200 even on error — the failure is in an `errors` array.
+        if let j = try? JSONSerialization.jsonObject(with: gdata) as? [String: Any],
+           let errs = j["errors"] as? [[String: Any]],
+           let first = errs.first?["message"] as? String {
+            throw PullRequestError.badResponse(first)
+        }
+    }
+
     private func submitReview(base: String, event: String, body: String = "", token: String) async throws {
         guard let url = URL(string: base + "/reviews") else {
             throw PullRequestError.badResponse("bad reviews URL")
@@ -355,6 +428,52 @@ struct GitHubPullRequestRepository: PullRequestRepository {
         ])
         let (ddata, dresp) = try await session.data(for: req)
         try Self.checkStatus(dresp, ddata)
+    }
+
+    func download(host: String, url: URL, token: String) async throws -> Data {
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        return data
+    }
+
+    func mergeChecks(
+        host: String, owner: String, repo: String,
+        number: Int, token: String
+    ) async throws -> [PRMergeCheck] {
+        let base = "\(Self.apiBase(host: host))/repos/\(owner)/\(repo)/pulls/\(number)"
+        guard let url = URL(string: base) else { return [] }
+        let (data, resp) = try await session.data(for: request(url, token: token))
+        try Self.checkStatus(resp, data)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+
+        // `mergeable` is a tri-state (null while GitHub computes it); `mergeable_state`
+        // summarizes review/check/conflict status.
+        let mergeable = json["mergeable"] as? Bool
+        let mergeState = (json["mergeable_state"] as? String) ?? ""
+        let headSHA = ((json["head"] as? [String: Any])?["sha"] as? String) ?? ""
+
+        var checks: [PRMergeCheck] = []
+        if mergeState == "draft" {
+            checks.append(PRMergeCheck(title: "Ready for review (not a draft)", passed: false, blocking: true))
+        }
+        if let mergeable {
+            checks.append(PRMergeCheck(title: "No merge conflicts",
+                                       passed: mergeable && mergeState != "dirty", blocking: true))
+        }
+        // "blocked" = required reviews or required status checks not satisfied.
+        checks.append(PRMergeCheck(title: "Required reviews & checks satisfied",
+                                   passed: mergeState != "blocked" && mergeState != "draft",
+                                   blocking: true))
+        if mergeState == "behind" {
+            checks.append(PRMergeCheck(title: "Branch up to date with base", passed: false, blocking: false))
+        }
+        if let summary = try? await Self.checkRuns(
+            host: host, owner: owner, repo: repo, sha: headSHA, token: token, request: request
+        ) {
+            checks.append(PRMergeCheck(title: "All checks passed (\(summary.passed)/\(summary.total))",
+                                       passed: summary.passed == summary.total, blocking: true))
+        }
+        return checks
     }
 
     private static func checkRuns(

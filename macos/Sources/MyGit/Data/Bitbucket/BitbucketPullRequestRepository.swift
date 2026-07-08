@@ -190,9 +190,15 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         // diffstat has no per-file patch — fetch the raw unified diff and split
         // it per file so each row can show its diff. Best-effort (nil on failure).
         let patches = (try? await diffPatches(diffURL: diffURL, token: token)) ?? [:]
+        func selfHref(_ side: [String: Any]?) -> URL? {
+            (((side?["links"] as? [String: Any])?["self"] as? [String: Any])?["href"] as? String)
+                .flatMap(URL.init(string:))
+        }
         return values.compactMap { v in
-            let newPath = (v["new"] as? [String: Any])?["path"] as? String
-            let oldPath = (v["old"] as? [String: Any])?["path"] as? String
+            let new = v["new"] as? [String: Any]
+            let old = v["old"] as? [String: Any]
+            let newPath = new?["path"] as? String
+            let oldPath = old?["path"] as? String
             guard let path = newPath ?? oldPath else { return nil }
             let status: PRFileChange.Status
             switch v["status"] as? String {
@@ -207,7 +213,9 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
                 status: status,
                 additions: (v["lines_added"] as? Int) ?? 0,
                 deletions: (v["lines_removed"] as? Int) ?? 0,
-                patch: patches[path] ?? oldPath.flatMap { patches[$0] }
+                patch: patches[path] ?? oldPath.flatMap { patches[$0] },
+                newBlobURL: selfHref(new),
+                oldBlobURL: selfHref(old)
             )
         }
     }
@@ -301,6 +309,8 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
             id: number,
             title: (json["title"] as? String) ?? "(untitled)",
             authorName: (author?["display_name"] as? String) ?? "unknown",
+            // Author id is the account UUID — matches `currentUser`'s id.
+            authorId: author?["uuid"] as? String,
             authorAvatarURL: avatarURL(author),
             sourceBranch: source ?? "?",
             destBranch: dest ?? "?",
@@ -378,6 +388,128 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         req.httpMethod = method
         let (data, resp) = try await session.data(for: req)
         try Self.checkStatus(resp, data)
+    }
+
+    func lifecycle(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRLifecycleAction, token: String
+    ) async throws {
+        let base = "\(Self.apiBase)/repositories/\(owner)/\(repo)/pullrequests/\(number)"
+        switch action {
+        case .merge:
+            try await post(base + "/merge", token: token)
+        case .decline:
+            try await post(base + "/decline", token: token)
+        case .reopen:
+            // Bitbucket Cloud has no API to reopen a declined PR.
+            throw PullRequestError.unsupportedHost("Bitbucket (reopening a declined PR)")
+        case .markDraft, .markReady:
+            try await putDraft(base: base, draft: action == .markDraft, token: token)
+        }
+    }
+
+    private func post(_ urlString: String, token: String, body: [String: Any] = [:]) async throws {
+        guard let url = URL(string: urlString) else { throw PullRequestError.badResponse("bad URL") }
+        var req = request(url, token: token)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Bitbucket rejects a JSON-typed POST with an empty body as HTTP 400, so
+        // always send a JSON object (`{}` when there are no fields).
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, resp) = try await session.data(for: req)
+        try Self.checkStatus(resp, data)
+    }
+
+    /// Toggle draft via a full PR update. Bitbucket's PUT requires the title, so
+    /// fetch the current one and resend it alongside the new draft flag.
+    private func putDraft(base: String, draft: Bool, token: String) async throws {
+        guard let url = URL(string: base) else { throw PullRequestError.badResponse("bad PR URL") }
+        let (data, resp) = try await send(url, token: token)
+        try Self.checkStatus(resp, data)
+        let title = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+            .flatMap { $0?["title"] as? String } ?? ""
+        var req = request(url, token: token)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["title": title, "draft": draft])
+        let (pdata, presp) = try await session.data(for: req)
+        try Self.checkStatus(presp, pdata)
+    }
+
+    func mergeChecks(
+        host: String, owner: String, repo: String,
+        number: Int, token: String
+    ) async throws -> [PRMergeCheck] {
+        let base = "\(Self.apiBase)/repositories/\(owner)/\(repo)"
+        let prBase = "\(base)/pullrequests/\(number)"
+
+        // PR participants (approvals / changes-requested), fetched fresh.
+        guard let prURL = URL(string: prBase) else { return [] }
+        let (prData, prResp) = try await send(prURL, token: token)
+        try Self.checkStatus(prResp, prData)
+        let prJSON = (try? JSONSerialization.jsonObject(with: prData)) as? [String: Any] ?? [:]
+        let participants = (prJSON["participants"] as? [[String: Any]]) ?? []
+        let approvedUUIDs = Set(participants
+            .filter { ($0["approved"] as? Bool) == true }
+            .compactMap { ($0["user"] as? [String: Any])?["uuid"] as? String })
+        let changesRequested = participants.contains { ($0["state"] as? String) == "changes_requested" }
+
+        // Build statuses.
+        let statuses = (try? await jsonValues(prBase + "/statuses?pagelen=100", token: token)) ?? []
+        let states = statuses.compactMap { $0["state"] as? String }
+        let hasFailed = states.contains { $0 == "FAILED" || $0 == "STOPPED" }
+        let hasInProgress = states.contains("INPROGRESS")
+        let passedBuilds = states.filter { $0 == "SUCCESSFUL" }.count
+
+        // Tasks (any unresolved blocks).
+        let tasks = (try? await jsonValues(prBase + "/tasks?pagelen=100", token: token)) ?? []
+        let unresolvedTasks = tasks.filter { ($0["state"] as? String) != "RESOLVED" }.count
+
+        // Default reviewers → how many approved.
+        let defaultReviewers = (try? await jsonValues(base + "/default-reviewers?pagelen=100", token: token)) ?? []
+        let defaultReviewerUUIDs = Set(defaultReviewers.compactMap { $0["uuid"] as? String })
+        let defaultApprovals = approvedUUIDs.intersection(defaultReviewerUUIDs).count
+
+        var checks: [PRMergeCheck] = []
+        // A repo with configured default reviewers has a review policy, so treat
+        // "needs approval" as blocking (conservative ≥1 minimum — the exact
+        // threshold lives in branch restrictions, which need repo-admin scope we
+        // don't have; Bitbucket enforces the real count on the merge POST).
+        let requiresReview = !defaultReviewerUUIDs.isEmpty
+        checks.append(PRMergeCheck(
+            title: "At least 1 approval (\(approvedUUIDs.count) so far)",
+            passed: approvedUUIDs.count > 0, blocking: requiresReview))
+        if requiresReview {
+            checks.append(PRMergeCheck(
+                title: "Default reviewer approved (\(defaultApprovals) of \(defaultReviewerUUIDs.count))",
+                passed: defaultApprovals > 0, blocking: true))
+        }
+        checks.append(PRMergeCheck(title: "No changes requested", passed: !changesRequested, blocking: true))
+        checks.append(PRMergeCheck(title: "No failed builds", passed: !hasFailed, blocking: true))
+        checks.append(PRMergeCheck(title: "No in-progress builds", passed: !hasInProgress, blocking: true))
+        if !states.isEmpty {
+            checks.append(PRMergeCheck(title: "1+ build passed", passed: passedBuilds > 0, blocking: true))
+        }
+        // Always shown (matches Bitbucket's own checklist); passes when there are
+        // no unresolved tasks — including the zero-tasks case.
+        checks.append(PRMergeCheck(title: "All tasks resolved", passed: unresolvedTasks == 0, blocking: true))
+        return checks
+    }
+
+    func download(host: String, url: URL, token: String) async throws -> Data {
+        // Bitbucket `src` links 302-redirect to a CDN; `send` re-attaches auth.
+        let (data, resp) = try await send(url, token: token)
+        try Self.checkStatus(resp, data)
+        return data
+    }
+
+    /// GET a paginated Bitbucket collection and return its `values` array.
+    private func jsonValues(_ urlString: String, token: String) async throws -> [[String: Any]] {
+        guard let url = URL(string: urlString) else { return [] }
+        let (data, resp) = try await send(url, token: token)
+        try Self.checkStatus(resp, data)
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (json?["values"] as? [[String: Any]]) ?? []
     }
 
     // MARK: - Helpers

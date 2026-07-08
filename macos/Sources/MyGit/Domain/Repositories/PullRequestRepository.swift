@@ -60,6 +60,25 @@ protocol PullRequestRepository: Sendable {
         host: String, owner: String, repo: String,
         number: Int, action: PRReviewAction, token: String
     ) async throws
+
+    /// Change a PR's lifecycle (merge / decline / reopen / draft toggle). Author
+    /// actions — the caller gates these on "is this my PR" and host support.
+    func lifecycle(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRLifecycleAction, token: String
+    ) async throws
+
+    /// Best-effort merge-readiness checklist (approvals, builds, tasks, …).
+    /// Empty when the host exposes nothing readable. Some rows are informational
+    /// only (`blocking == false`) when the exact policy can't be read.
+    func mergeChecks(
+        host: String, owner: String, repo: String,
+        number: Int, token: String
+    ) async throws -> [PRMergeCheck]
+
+    /// Fetch raw bytes from a host API URL with the host's auth applied (used to
+    /// load image blobs for in-app preview).
+    func download(host: String, url: URL, token: String) async throws -> Data
 }
 
 /// The authenticated user, with the host-stable identity used to match reviews.
@@ -73,6 +92,13 @@ struct PRUser: Sendable, Hashable {
 enum PRReviewAction: Sendable {
     case approve, unapprove
     case requestChanges, unrequestChanges
+}
+
+/// A lifecycle change the PR author can apply. Not all hosts support every case
+/// (e.g. Bitbucket can't reopen a declined PR) — the ViewModel gates which are
+/// offered per host + state.
+enum PRLifecycleAction: Sendable {
+    case merge, decline, reopen, markDraft, markReady
 }
 
 struct PullRequestInfo: Equatable {

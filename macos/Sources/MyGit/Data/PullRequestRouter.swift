@@ -92,4 +92,26 @@ struct PullRequestRouter: PullRequestRepository {
             host: host, owner: owner, repo: repo, number: number, action: action, token: token
         )
     }
+
+    func lifecycle(
+        host: String, owner: String, repo: String,
+        number: Int, action: PRLifecycleAction, token: String
+    ) async throws {
+        try await impl(for: host).lifecycle(
+            host: host, owner: owner, repo: repo, number: number, action: action, token: token
+        )
+    }
+
+    func mergeChecks(
+        host: String, owner: String, repo: String,
+        number: Int, token: String
+    ) async throws -> [PRMergeCheck] {
+        try await impl(for: host).mergeChecks(
+            host: host, owner: owner, repo: repo, number: number, token: token
+        )
+    }
+
+    func download(host: String, url: URL, token: String) async throws -> Data {
+        try await impl(for: host).download(host: host, url: url, token: token)
+    }
 }
