@@ -9,6 +9,17 @@ import Foundation
 /// (it is hidden), but we still descend *into* a found repo's working tree so
 /// repos nested deeper inside another repo are picked up.
 enum WorkspaceScanner {
+    /// Build output and dependency trees. These hold no repo the user thinks of
+    /// as theirs (SwiftPM/CocoaPods checkouts are clones, `node_modules` can
+    /// contain thousands) and they dominate the walk: a Flutter project with
+    /// `build/` is ~140k entries, which took the scan past the ~10s
+    /// LaunchServices registration deadline at startup. Pruning them keeps a
+    /// cold scan in the tens of milliseconds.
+    private static let prunedDirectoryNames: Set<String> = [
+        "node_modules", "Pods", "Carthage", "DerivedData", "build", "Build",
+        "vendor", "dist", "target", "venv", "__pycache__",
+    ]
+
     /// A path is a git repo if it contains `.git` (a dir for normal repos, a
     /// file for worktrees/submodules) — same predicate the rest of the app uses.
     static func isGitRepo(_ url: URL) -> Bool {
@@ -25,8 +36,13 @@ enum WorkspaceScanner {
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) {
             for case let url as URL in walker {
-                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-                      isGitRepo(url) else { continue }
+                guard (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                else { continue }
+                if prunedDirectoryNames.contains(url.lastPathComponent) {
+                    walker.skipDescendants()
+                    continue
+                }
+                guard isGitRepo(url) else { continue }
                 nested.append(Repository(url: url.standardizedFileURL.resolvingSymlinksInPath()))
             }
         }
