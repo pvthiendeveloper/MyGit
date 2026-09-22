@@ -60,6 +60,7 @@ struct ConflictsView: View {
     private var selected: FileChange? {
         conflicts.first { $0.id == selection }
     }
+    private var isCherryPick: Bool { changes.status?.cherryPickInProgress == true }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,9 +77,10 @@ struct ConflictsView: View {
             footer
         }
         .frame(minWidth: 640, minHeight: 380)
-        // Merge finished/aborted elsewhere -> nothing left to resolve, close.
-        .onChange(of: changes.status?.mergeInProgress) { _, merging in
-            if merging == false { onClose() }
+        // Merge/cherry-pick finished or aborted elsewhere -> nothing left to
+        // resolve, close.
+        .onChange(of: changes.status?.operationInProgress) { _, running in
+            if running == false { onClose() }
         }
         // Merge editor only applies to text files; gitlink/binary -> disabled.
         .task(id: selection) {
@@ -142,10 +144,15 @@ struct ConflictsView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.green)
             Text("All conflicts resolved").font(.headline)
-            Text("Commit to finish the merge.")
+            Text(isCherryPick ? "Continue to finish the cherry-pick." : "Commit to finish the merge.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            Button("Commit Merge") {
-                Task { await changes.commitMerge(); onClose() }
+            // A cherry-pick finishes through the sequencer, not a merge commit.
+            Button(isCherryPick ? "Continue Cherry-Pick" : "Commit Merge") {
+                Task {
+                    if isCherryPick { await changes.continueCherryPick() }
+                    else { await changes.commitMerge() }
+                    onClose()
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)

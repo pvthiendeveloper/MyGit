@@ -21,6 +21,8 @@ struct GitCLIRepository: GitRepository {
         // Robust across worktrees/submodules where `.git` is a file: ask git directly.
         let merge = try? await GitRunner.run(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd: repo)
         summary.mergeInProgress = (merge?.exitCode == 0)
+        let pick = try? await GitRunner.run(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], cwd: repo)
+        summary.cherryPickInProgress = (pick?.exitCode == 0)
         return summary
     }
 
@@ -50,6 +52,33 @@ struct GitCLIRepository: GitRepository {
             hits.append(GitGrepMatch(path: String(parts[0]), line: n,
                                      preview: String(preview.prefix(200))))
             if hits.count >= 500 { break }
+        }
+        return hits
+    }
+
+    func searchSymbol(_ symbol: String, at repo: URL) async throws -> [GitGrepMatch] {
+        let sym = symbol.trimmingCharacters(in: .whitespaces)
+        guard !sym.isEmpty else { return [] }
+        // Whole-word, case-sensitive, every hit per file (unlike `grep`, which
+        // caps at one — here the line numbers are the point).
+        let result = try await GitRunner.run(
+            ["grep", "-n", "-I", "--word-regexp", "--fixed-strings", "-e", sym],
+            cwd: repo
+        )
+        guard result.exitCode == 0 else { return [] }   // 1 = no matches
+        return GitCLIRepository.parseGrepLines(result.stdout, limit: 2000)
+    }
+
+    /// `<path>:<lineno>:<text>` lines from `git grep -n`.
+    private static func parseGrepLines(_ out: String, limit: Int) -> [GitGrepMatch] {
+        var hits: [GitGrepMatch] = []
+        for line in out.split(separator: "\n", omittingEmptySubsequences: true) {
+            let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3, let n = Int(parts[1]) else { continue }
+            let preview = parts[2].trimmingCharacters(in: .whitespaces)
+            hits.append(GitGrepMatch(path: String(parts[0]), line: n,
+                                     preview: String(preview.prefix(200))))
+            if hits.count >= limit { break }
         }
         return hits
     }
@@ -242,6 +271,23 @@ struct GitCLIRepository: GitRepository {
         }
     }
 
+    func discardAll(at repo: URL, includeUntracked: Bool) async throws {
+        // `reset --hard` needs a commit to reset to; an unborn HEAD (no commits
+        // yet) only has an index to clear. It also clears MERGE_HEAD, so a
+        // rollback during a conflicted merge leaves the repo in a clean state.
+        let head = try await GitRunner.run(["rev-parse", "--verify", "-q", "HEAD"], cwd: repo)
+        if head.exitCode == 0 {
+            _ = try await GitRunner.runOrThrow(["reset", "--hard", "HEAD"], cwd: repo)
+        } else {
+            _ = try await GitRunner.runOrThrow(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "."], cwd: repo)
+        }
+        if includeUntracked {
+            // -d removes untracked directories; no -x, so ignored files (build
+            // output, .env, …) survive.
+            _ = try await GitRunner.runOrThrow(["clean", "-f", "-d", "-q"], cwd: repo)
+        }
+    }
+
     func diffPatch(at repo: URL, changes: [FileChange]) async throws -> String {
         guard !changes.isEmpty else { return "" }
         var patch = ""
@@ -277,6 +323,16 @@ struct GitCLIRepository: GitRepository {
 
     func push(at repo: URL, args: [String], auth: AuthOverride?) async throws {
         _ = try await GitRunner.runOrThrow(authPrefix(auth) + args, cwd: repo)
+    }
+
+    func upstreamRef(at repo: URL) async -> String? {
+        let res = try? await GitRunner.run(
+            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            cwd: repo
+        )
+        guard let res, res.exitCode == 0 else { return nil }
+        let name = res.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
     }
 
     private func authPrefix(_ auth: AuthOverride?) -> [String] {
@@ -445,8 +501,46 @@ struct GitCLIRepository: GitRepository {
 
     // MARK: - Commit actions
 
-    func cherryPick(commit: String, at repo: URL) async throws {
-        _ = try await GitRunner.runOrThrow(["cherry-pick", commit], cwd: repo)
+    @discardableResult
+    func cherryPick(commit: String, at repo: URL) async throws -> CherryPickOutcome {
+        let args = ["cherry-pick", commit]
+        let r = try await GitRunner.run(args, cwd: repo)
+        if r.exitCode == 0 { return .done }
+
+        // Git reports both mid-flight endings on a non-zero exit; tell them
+        // apart so the UI can offer skip/commit-empty vs. conflict resolution.
+        let output = r.stderr + r.stdout
+        if output.contains("is now empty") || output.contains("nothing to commit") {
+            return .empty
+        }
+        if let s = try? await status(at: repo), s.cherryPickInProgress || s.hasConflicts {
+            return .conflicts
+        }
+        throw GitError.nonZeroExit(args: args, code: r.exitCode, stderr: r.stderr)
+    }
+
+    func cherryPickSkip(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["cherry-pick", "--skip"], cwd: repo)
+    }
+
+    func cherryPickAbort(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["cherry-pick", "--abort"], cwd: repo)
+    }
+
+    func cherryPickContinue(at repo: URL) async throws {
+        // `core.editor=true` keeps --continue from opening an editor for the
+        // commit message (GIT_TERMINAL_PROMPT=0 would leave it hanging).
+        _ = try await GitRunner.runOrThrow(
+            ["-c", "core.editor=true", "cherry-pick", "--continue"], cwd: repo
+        )
+    }
+
+    func cherryPickCommitEmpty(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["commit", "--allow-empty", "--no-edit"], cwd: repo)
+        // Single-commit picks are finished by that commit and `--continue` then
+        // errors with "no cherry-pick in progress"; only resume a live sequence.
+        let r = try await GitRunner.run(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], cwd: repo)
+        if r.exitCode == 0 { try await cherryPickContinue(at: repo) }
     }
 
     func revertCommit(_ commit: String, at repo: URL) async throws {
@@ -480,6 +574,44 @@ struct GitCLIRepository: GitRepository {
         let r = try await GitRunner.run(["rev-list", "@{upstream}"], cwd: repo)
         guard r.exitCode == 0 else { return [] }
         return Set(r.stdout.split(separator: "\n").map(String.init))
+    }
+
+    func refsPointingAt(commit: String, at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(
+            ["for-each-ref", "--points-at", commit, "--format=%(refname)%00%(refname:short)",
+             "refs/heads", "refs/remotes", "refs/tags"],
+            cwd: repo
+        )
+        return GitCLIRepository.shortRefNames(out)
+    }
+
+    /// `<full ref>\0<short name>` lines → short names, minus each remote's
+    /// symbolic `refs/remotes/<remote>/HEAD` (which shortens to just "origin").
+    private static func shortRefNames(_ out: String) -> [String] {
+        out.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2, !parts[0].hasSuffix("/HEAD") else { return nil }
+            let name = parts[1].trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? nil : name
+        }
+    }
+
+    func branchesContaining(commit: String, at repo: URL) async throws -> (local: [String], remote: [String]) {
+        // `run` (not runOrThrow): an unknown/unborn revision just yields nothing.
+        @Sendable func names(_ args: [String]) async -> [String] {
+            let r = try? await GitRunner.run(args, cwd: repo)
+            guard let r, r.exitCode == 0 else { return [] }
+            return GitCLIRepository.shortRefNames(r.stdout)
+        }
+        let fmt = "--format=%(refname)%00%(refname:short)"
+        async let local = names(["branch", "--contains", commit, fmt])
+        async let remote = names(["branch", "--remotes", "--contains", commit, fmt])
+        return await (local: local, remote: remote)
+    }
+
+    func isAncestor(_ commit: String, of ref: String, at repo: URL) async -> Bool {
+        let r = try? await GitRunner.run(["merge-base", "--is-ancestor", commit, ref], cwd: repo)
+        return r?.exitCode == 0
     }
 
     func amendMessage(_ message: String, at repo: URL) async throws {

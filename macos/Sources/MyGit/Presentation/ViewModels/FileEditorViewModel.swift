@@ -5,6 +5,10 @@ final class FileEditorViewModel: ObservableObject {
     @Published var openFileTabs: [OpenFileTab] = []
     @Published var activeFileTabId: UUID?
     @Published private(set) var closedPaths: [String] = []
+    /// Pending ⌘-click result the user still has to choose from.
+    @Published var symbolLookup: SymbolLookup?
+    /// Symbol currently being resolved, so the UI can show progress.
+    @Published private(set) var resolvingSymbol: String?
 
     var activeFileTab: OpenFileTab? {
         guard let id = activeFileTabId else { return nil }
@@ -12,20 +16,98 @@ final class FileEditorViewModel: ObservableObject {
     }
 
     private let fileEditor: FileEditorRepository
+    private let git: GitRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
     private let onSaved: () async -> Void
 
     init(
         fileEditor: FileEditorRepository,
+        git: GitRepository,
         main: MainViewModel,
         repoSource: @escaping () -> Repository?,
         onSaved: @escaping () async -> Void
     ) {
         self.fileEditor = fileEditor
+        self.git = git
         self.main = main
         self.repoSource = repoSource
         self.onSaved = onSaved
+    }
+
+    // MARK: - ⌘-click navigation
+
+    /// Resolve a ⌘-clicked identifier the way an IDE would, but backed by
+    /// `git grep` instead of a language server:
+    /// - clicked on a use, one declaration found → jump straight to it;
+    /// - clicked on the declaration itself → list the usages to pick from;
+    /// - several declarations (or no declaration at all) → let the user choose.
+    func goToDefinition(symbol: String, line: Int, in tab: OpenFileTab) {
+        guard let repo = repoSource() else { return }
+        resolvingSymbol = symbol
+        Task {
+            defer { resolvingSymbol = nil }
+            let matches: [GitGrepMatch]
+            do { matches = try await git.searchSymbol(symbol, at: repo.url) }
+            catch {
+                main.errorMessage = error.localizedDescription
+                return
+            }
+            let occurrences = matches.map {
+                SymbolOccurrence(
+                    path: $0.path,
+                    line: $0.line,
+                    preview: $0.preview,
+                    isDefinition: SymbolClassifier.isDefinition(line: $0.preview, symbol: symbol)
+                )
+            }
+            guard !occurrences.isEmpty else {
+                main.errorMessage = "No occurrences of \"\(symbol)\" in tracked files."
+                return
+            }
+            let definitions = occurrences.filter { $0.isDefinition }
+            let usages = occurrences.filter { !$0.isDefinition }
+            let onDefinition = definitions.contains { $0.path == tab.path && $0.line == line }
+
+            let present: @MainActor (SymbolLookup.Kind) -> Void = { kind in
+                self.symbolLookup = SymbolLookup(
+                    symbol: symbol,
+                    initialKind: kind,
+                    occurrences: occurrences,
+                    originPath: tab.path,
+                    originLine: line
+                )
+            }
+
+            if onDefinition || definitions.isEmpty {
+                let others = usages.filter { !($0.path == tab.path && $0.line == line) }
+                guard !others.isEmpty else {
+                    main.errorMessage = "\"\(symbol)\" isn't used anywhere else."
+                    return
+                }
+                if others.count == 1 { open(others[0]) } else { present(.usages) }
+            } else if definitions.count == 1 {
+                open(definitions[0])
+            } else {
+                present(.definitions)
+            }
+        }
+    }
+
+    /// Read a repo file as text (symbol-lookup preview). Nil for binaries or
+    /// anything that can't be read.
+    func fileContents(path: String) -> String? {
+        guard let repo = repoSource(),
+              let data = try? fileEditor.read(at: repo.url, path: path) else { return nil }
+        return decodeText(data)
+    }
+
+    /// Open (or focus) the occurrence's file and reveal its line.
+    func open(_ occurrence: SymbolOccurrence) {
+        symbolLookup = nil
+        openFile(path: occurrence.path)
+        guard let tab = openFileTabs.first(where: { $0.path == occurrence.path }) else { return }
+        tab.goto = EditorGoto(line: occurrence.line)
     }
 
     func repositoryDidChange() {

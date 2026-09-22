@@ -13,11 +13,20 @@ struct CodeEditor: NSViewRepresentable {
     var fontSize: CGFloat = 12
     /// File extension for syntax highlighting; nil disables it (plain text).
     var syntaxExt: String?
+    /// False for previews (symbol lookup), where the text is only for reading.
+    var isEditable: Bool = true
+    /// Line to reveal (from ⌘-click navigation / search results).
+    var goto: EditorGoto?
+    /// ⌘-click on an identifier: (symbol, 1-based line it was clicked on).
+    var onCommandClick: ((String, Int) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSView {
-        let tv = NSTextView()
+        let tv = NavigableTextView()
+        tv.onCommandClick = { [weak coordinator = context.coordinator] symbol, line in
+            coordinator?.parent.onCommandClick?(symbol, line)
+        }
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
@@ -25,6 +34,7 @@ struct CodeEditor: NSViewRepresentable {
         tv.isAutomaticSpellingCorrectionEnabled = false
         tv.isAutomaticTextReplacementEnabled = false
         tv.allowsUndo = true
+        tv.isEditable = isEditable
         tv.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         tv.textColor = .textColor
         tv.textContainerInset = NSSize(width: 4, height: 4)
@@ -86,6 +96,7 @@ struct CodeEditor: NSViewRepresentable {
     func updateNSView(_ container: NSView, context: Context) {
         context.coordinator.parent = self
         guard let tv = context.coordinator.textView else { return }
+        if tv.isEditable != isEditable { tv.isEditable = isEditable }
         let textChanged = tv.string != text
         if textChanged { tv.string = text }
         let fontChanged = (tv.font?.pointSize ?? 0) != fontSize
@@ -98,6 +109,12 @@ struct CodeEditor: NSViewRepresentable {
             context.coordinator.applyHighlight(tv)
             context.coordinator.gutter?.refresh()
         }
+        // A goto can arrive before the file's text does (the tab is still
+        // loading), so retry it on every pass until it lands on real content.
+        if let goto, context.coordinator.appliedGoto != goto.token, !tv.string.isEmpty {
+            context.coordinator.appliedGoto = goto.token
+            context.coordinator.reveal(line: goto.line, in: tv)
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -106,9 +123,35 @@ struct CodeEditor: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var gutter: LineNumberGutter?
         var lastExt: String?
+        var appliedGoto: UUID?
         private var highlightWork: DispatchWorkItem?
 
         init(_ p: CodeEditor) { parent = p }
+
+        /// Select a whole line and scroll it to the middle of the view.
+        func reveal(line: Int, in tv: NSTextView) {
+            let ns = tv.string as NSString
+            var index = 0
+            var current = 1
+            while current < line, index < ns.length {
+                index = NSMaxRange(ns.lineRange(for: NSRange(location: index, length: 0)))
+                current += 1
+            }
+            guard index <= ns.length else { return }
+            let lineRange = ns.lineRange(for: NSRange(location: min(index, max(0, ns.length - 1)), length: 0))
+            tv.setSelectedRange(lineRange)
+            tv.scrollRangeToVisible(lineRange)
+            if let lm = tv.layoutManager, let tc = tv.textContainer, let clip = scrollView?.contentView {
+                let rect = lm.boundingRect(forGlyphRange: lm.glyphRange(forCharacterRange: lineRange,
+                                                                       actualCharacterRange: nil),
+                                           in: tc)
+                let target = max(0, rect.midY - clip.bounds.height / 2 + tv.textContainerInset.height)
+                clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: target))
+                scrollView?.reflectScrolledClipView(clip)
+            }
+            tv.window?.makeFirstResponder(tv)
+            gutter?.needsDisplay = true
+        }
 
         @objc func viewChanged() { gutter?.needsDisplay = true }
 
@@ -146,6 +189,67 @@ struct CodeEditor: NSViewRepresentable {
             storage.endEditing()
             tv.typingAttributes = [.font: font, .foregroundColor: NSColor.textColor]
         }
+    }
+}
+
+/// `NSTextView` that reports ⌘-clicks on identifiers, so the editor can offer
+/// IDE-style "go to definition" without a language server.
+final class NavigableTextView: NSTextView {
+    var onCommandClick: ((String, Int) -> Void)?
+
+    private static let identifierChars: CharacterSet = {
+        var set = CharacterSet.alphanumerics
+        set.insert(charactersIn: "_$")
+        return set
+    }()
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.modifierFlags.contains(.command), let onCommandClick else {
+            super.mouseDown(with: event)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        let ns = string as NSString
+        guard let range = Self.identifierRange(in: ns, at: index) else {
+            super.mouseDown(with: event)
+            return
+        }
+        setSelectedRange(range)
+        onCommandClick(ns.substring(with: range), Self.lineNumber(in: ns, at: range.location))
+    }
+
+    /// The identifier surrounding `index`, or nil when the click isn't on one.
+    static func identifierRange(in ns: NSString, at index: Int) -> NSRange? {
+        guard ns.length > 0 else { return nil }
+        var start = min(index, ns.length - 1)
+        // A click just past the end of a word still targets that word.
+        if !isIdentifier(ns.character(at: start)), start > 0, isIdentifier(ns.character(at: start - 1)) {
+            start -= 1
+        }
+        guard isIdentifier(ns.character(at: start)) else { return nil }
+        var end = start
+        while start > 0, isIdentifier(ns.character(at: start - 1)) { start -= 1 }
+        while end + 1 < ns.length, isIdentifier(ns.character(at: end + 1)) { end += 1 }
+        let range = NSRange(location: start, length: end - start + 1)
+        // Skip pure numbers — nothing to navigate to.
+        let text = ns.substring(with: range)
+        guard text.rangeOfCharacter(from: CharacterSet.letters.union(CharacterSet(charactersIn: "_"))) != nil else {
+            return nil
+        }
+        return range
+    }
+
+    private static func isIdentifier(_ unichar: unichar) -> Bool {
+        guard let scalar = UnicodeScalar(unichar) else { return false }
+        return identifierChars.contains(scalar)
+    }
+
+    private static func lineNumber(in ns: NSString, at location: Int) -> Int {
+        var line = 1
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: location),
+                               options: [.byLines, .substringNotRequired]) { _, _, _, _ in line += 1 }
+        return line
     }
 }
 

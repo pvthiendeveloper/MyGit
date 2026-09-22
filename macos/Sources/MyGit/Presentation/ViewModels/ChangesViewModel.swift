@@ -31,6 +31,7 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingDiscardAll = false
     @Published var pendingStash = false
     @Published var pendingAbortMerge = false
+    @Published var pendingAbortCherryPick = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
@@ -547,6 +548,26 @@ final class ChangesViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Cherry-pick sequencer
+
+    /// Escape hatches for a cherry-pick git left open (conflicts, or a pick that
+    /// turned out empty). Mirrors `abortMerge`'s shape.
+    func continueCherryPick() async { await runSequencerOp { try await self.git.cherryPickContinue(at: $0) } }
+    func skipCherryPick() async { await runSequencerOp { try await self.git.cherryPickSkip(at: $0) } }
+    func abortCherryPick() async { await runSequencerOp { try await self.git.cherryPickAbort(at: $0) } }
+
+    private func runSequencerOp(_ op: @escaping (URL) async throws -> Void) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await op(repo.url)
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Merge conflict resolution
 
     /// Resolve one conflicted file by taking a whole side (ours/theirs), then stage it.
@@ -625,17 +646,16 @@ final class ChangesViewModel: ObservableObject {
         }
     }
 
-    /// Discard every uncommitted change: restore tracked files, delete untracked ones.
-    func discardAllChanges() async {
-        guard let repo = repoSource(), let status, !main.isBusy else { return }
+    /// Roll every uncommitted change back to HEAD. `includeUntracked` also deletes
+    /// untracked files/directories; ignored files are never touched.
+    func discardAllChanges(includeUntracked: Bool = true) async {
+        guard let repo = repoSource(), let status, !status.changes.isEmpty, !main.isBusy else { return }
         main.isBusy = true
         defer { main.isBusy = false }
         do {
-            let tracked = status.changes.filter { !$0.isUntracked }.map { $0.path }
-            if !tracked.isEmpty { try await git.restore(at: repo.url, paths: tracked) }
-            for c in status.changes where c.isUntracked {
-                try await git.removeFile(at: repo.url, path: c.path, tracked: false)
-            }
+            try await git.discardAll(at: repo.url, includeUntracked: includeUntracked)
+            stagedPaths.removeAll()
+            selectedChange = nil
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription

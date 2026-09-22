@@ -105,13 +105,52 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     }
 }
 
+/// Which browser a run-script action should hand off to. Tools that open a URL
+/// during a run (e.g. `aws sso login`, which goes through Python's `webbrowser`
+/// module) honour the `$BROWSER` env var; we export it for the run's subshell.
+enum ScriptBrowser: String, CaseIterable, Identifiable {
+    case systemDefault
+    case safari
+    case chrome
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .systemDefault: return "System Default"
+        case .safari: return "Safari"
+        case .chrome: return "Google Chrome"
+        }
+    }
+
+    /// `$BROWSER` value that forces this browser; nil leaves it unset so the OS
+    /// default browser is used. `%s` is where `webbrowser` substitutes the URL.
+    var browserEnv: String? {
+        switch self {
+        case .systemDefault: return nil
+        case .safari: return "open -a Safari %s"
+        case .chrome: return "open -a \"Google Chrome\" %s"
+        }
+    }
+}
+
 /// Shared, workspace-global state for the bottom terminal panel — visibility and
 /// the open tab list. New tabs open in the caller-supplied cwd (the active repo).
 @MainActor
 final class TerminalViewModel: ObservableObject {
+    private static let scriptBrowserKey = "MyGit.scriptBrowser"
+
     @Published var isVisible = false
     @Published private(set) var sessions: [TerminalSession] = []
     @Published var activeID: UUID?
+
+    /// Remembered browser for the run-script button, persisted across launches.
+    @Published var scriptBrowser: ScriptBrowser =
+        ScriptBrowser(rawValue: UserDefaults.standard.string(forKey: scriptBrowserKey) ?? "")
+            ?? .systemDefault
+    {
+        didSet { UserDefaults.standard.set(scriptBrowser.rawValue, forKey: Self.scriptBrowserKey) }
+    }
 
     var active: TerminalSession? { sessions.first { $0.id == activeID } }
 
@@ -138,14 +177,17 @@ final class TerminalViewModel: ObservableObject {
     /// panel, reuses the active session (or spawns one), and feeds a command that
     /// runs the script from its own directory in a subshell — so the interactive
     /// session's own cwd is left untouched. `$SHELL` typing keeps the user's PATH.
-    func runShellScript(absolutePath: String) {
+    func runShellScript(absolutePath: String, browser: ScriptBrowser = .systemDefault) {
         let url = URL(fileURLWithPath: absolutePath)
         let dir = url.deletingLastPathComponent()
         let name = url.lastPathComponent
         isVisible = true
         let session = active ?? newSession(cwd: dir)
         let interpreter = name.hasSuffix(".sh") ? "bash " : ""
-        let command = "(cd \(Self.shellQuote(dir.path)) && \(interpreter)\(Self.shellQuote(name)))\n"
+        // Scope the browser override to the run's subshell only, so the
+        // interactive session's own $BROWSER is left untouched.
+        let browserPrefix = browser.browserEnv.map { "export BROWSER=\(Self.shellQuote($0)); " } ?? ""
+        let command = "(\(browserPrefix)cd \(Self.shellQuote(dir.path)) && \(interpreter)\(Self.shellQuote(name)))\n"
         session.view.send(txt: command)
         DispatchQueue.main.async { session.view.window?.makeFirstResponder(session.view) }
     }

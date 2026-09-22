@@ -3,9 +3,20 @@ import Foundation
 import AppKit
 #endif
 
+/// One request to scroll the tree to a path. Carries a token so revealing the
+/// same path twice still moves the scroll view.
+struct TreeReveal: Equatable {
+    let path: String
+    let token: UUID
+}
+
 @MainActor
 final class FilesViewModel: ObservableObject {
     @Published var fileTreeNodes: [FileTreeNode] = []
+    /// Row the tree highlights — follows the focused editor tab.
+    @Published var selectedPath: String?
+    /// Latest scroll-into-view request; the view consumes it.
+    @Published var pendingReveal: TreeReveal?
 
     private let git: GitRepository
     private let main: MainViewModel
@@ -19,6 +30,33 @@ final class FilesViewModel: ObservableObject {
 
     func repositoryDidChange() {
         fileTreeNodes = []
+        selectedPath = nil
+        pendingReveal = nil
+    }
+
+    /// Expand every ancestor folder of a repo-relative path (loading children on
+    /// demand), select the row, and ask the view to scroll it into view. Drives
+    /// "follow the focused editor tab" — the tree opens straight to that file.
+    func reveal(path: String) async {
+        let comps = path.split(separator: "/").map(String.init)
+        guard !comps.isEmpty else { return }
+        if fileTreeNodes.isEmpty { await refreshFileTree() }
+
+        var level = fileTreeNodes
+        var prefix = ""
+        // Walk the ancestors only — the leaf itself is never expanded.
+        for comp in comps.dropLast() {
+            prefix = prefix.isEmpty ? comp : "\(prefix)/\(comp)"
+            guard let dir = level.first(where: { $0.id == prefix }), dir.isDirectory else { return }
+            if !dir.isLoaded { await loadChildren(of: dir) }
+            dir.isExpanded = true
+            level = dir.children
+        }
+        // Bail out when the file isn't in the tree (deleted, or outside the repo).
+        guard level.contains(where: { $0.id == path }) else { return }
+
+        selectedPath = path
+        pendingReveal = TreeReveal(path: path, token: UUID())
     }
 
     func refreshFileTree() async {

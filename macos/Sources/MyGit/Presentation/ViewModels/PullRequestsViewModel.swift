@@ -148,13 +148,7 @@ final class PullRequestsViewModel: ObservableObject {
 
     /// Lowercased, bracket/paren-stripped, whitespace-collapsed name for loose
     /// identity comparison across git config vs. host display names.
-    private static func normalizedName(_ s: String) -> String {
-        let stripped = s.unicodeScalars.filter { !"()[]{}".unicodeScalars.contains($0) }
-        return String(String.UnicodeScalarView(stripped))
-            .lowercased()
-            .split(whereSeparator: { $0 == " " || $0 == "\t" })
-            .joined(separator: " ")
-    }
+    private static func normalizedName(_ s: String) -> String { PRIdentity.normalizedName(s) }
 
     /// Set once a detail load has attempted to resolve the host user (`/user`).
     private var identityResolved = false

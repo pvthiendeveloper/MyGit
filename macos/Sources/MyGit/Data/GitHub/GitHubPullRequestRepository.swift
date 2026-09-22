@@ -82,6 +82,13 @@ struct GitHubPullRequestRepository: PullRequestRepository {
         return PullRequestInfo(number: number, url: htmlURL)
     }
 
+    /// GitHub has no "default reviewers" concept (review policy lives in
+    /// CODEOWNERS / branch protection, which isn't a reviewer list), so nothing
+    /// to prefill.
+    func defaultReviewers(host: String, owner: String, repo: String, token: String) async throws -> [PRUser] {
+        []
+    }
+
     private static let perPage = 30
 
     func list(

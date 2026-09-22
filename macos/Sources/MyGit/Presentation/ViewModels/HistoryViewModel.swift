@@ -2,6 +2,20 @@ import Foundation
 import Combine
 import AppKit
 
+/// Per-commit facts the commit context menu needs but `git log` doesn't carry.
+struct CommitMenuInfo: Equatable {
+    var refsAtCommit: [String] = []
+    var localBranches: [String] = []
+    var remoteBranches: [String] = []
+    var isAncestorOfHead = false
+
+    var hasContainingBranches: Bool { !localBranches.isEmpty || !remoteBranches.isEmpty }
+}
+
+/// Where `Go to Child/Parent Commit` should move the selection — History drives
+/// its own list; a compare panel drives the side it is hosted in.
+enum CommitNavigation { case child, parent }
+
 @MainActor
 final class HistoryViewModel: ObservableObject {
     @Published var commits: [GitCommit] = []
@@ -18,6 +32,12 @@ final class HistoryViewModel: ObservableObject {
     // Gating state for the commit context menu.
     @Published private(set) var pushedHashes: Set<String> = []
     @Published private(set) var headHash: String?
+    /// Per-commit menu data that the log doesn't carry (refs at the commit,
+    /// branches containing it, HEAD-reachability). Filled by `prefetchMenuInfo`.
+    @Published private(set) var menuInfo: [String: CommitMenuInfo] = [:]
+    /// Bumped after every successful commit action so other panes (the compare
+    /// panels) can reload what they show.
+    @Published private(set) var opsCompleted = 0
 
     // Sheet / dialog triggers driven by the context menu.
     @Published var newBranchFrom: GitCommit?
@@ -29,12 +49,16 @@ final class HistoryViewModel: ObservableObject {
     @Published var rebaseFrom: GitCommit?
     @Published var diffResult: String?
     @Published var treeResult: [String]?
+    /// Set when a cherry-pick applied cleanly but produced nothing to commit —
+    /// git holds the sequencer open until the user skips or commits it empty.
+    @Published var pendingEmptyCherryPick: GitCommit?
 
     /// Widest lane span across all rows — drives the graph column width.
     var graphColumns: Int { graphRows.map { $0.maxColumns }.max() ?? 1 }
 
     private let pageSize = 100
     private var limit = 100
+    private var menuInfoLoading: Set<String> = []
 
     private let git: GitRepository
     private let main: MainViewModel
@@ -43,6 +67,9 @@ final class HistoryViewModel: ObservableObject {
 
     private var onFinished: () async -> Void = {}
     private var pushUpTo: (GitCommit) async -> Void = { _ in }
+    /// Invoked when a cherry-pick stops on conflicts, so the UI can open the
+    /// resolver instead of showing git's raw hint as an error.
+    private var onCherryPickConflict: (GitCommit) -> Void = { _ in }
 
     init(git: GitRepository, main: MainViewModel, repoSource: @escaping () -> Repository?) {
         self.git = git
@@ -72,6 +99,7 @@ final class HistoryViewModel: ObservableObject {
 
     func setOnFinished(_ block: @escaping () async -> Void) { onFinished = block }
     func setPushUpTo(_ block: @escaping (GitCommit) async -> Void) { pushUpTo = block }
+    func setOnCherryPickConflict(_ block: @escaping (GitCommit) -> Void) { onCherryPickConflict = block }
 
     func repositoryDidChange() {
         selectedCommit = nil
@@ -81,6 +109,7 @@ final class HistoryViewModel: ObservableObject {
         graphRows = []
         pushedHashes = []
         headHash = nil
+        menuInfo = [:]
         limit = pageSize
         hasMore = false
     }
@@ -197,13 +226,51 @@ final class HistoryViewModel: ObservableObject {
 
     func isTip(_ c: GitCommit) -> Bool { c.id == headHash }
     func isPushed(_ c: GitCommit) -> Bool { pushedHashes.contains(c.id) }
-    func canRewrite(_ c: GitCommit) -> Bool { !isPushed(c) }
+
+    /// History rewrites (`fixup`/`squash`/`drop`/`reword`/interactive rebase) run
+    /// as a `commit~1..HEAD` rebase, so they only apply to unpushed commits that
+    /// HEAD can actually reach — commits shown in a compare panel may be neither.
+    func canRewrite(_ c: GitCommit) -> Bool {
+        guard !isPushed(c) else { return false }
+        if let info = menuInfo[c.id] { return info.isAncestorOfHead }
+        return commits.contains { $0.id == c.id }
+    }
+
+    func info(for commit: GitCommit) -> CommitMenuInfo? { menuInfo[commit.id] }
+
+    /// Load the per-commit menu data once, keyed by hash. Called when a commit
+    /// row is hovered so the menu is already populated on right-click.
+    func prefetchMenuInfo(for commit: GitCommit) {
+        guard menuInfo[commit.id] == nil,
+              !menuInfoLoading.contains(commit.id),
+              let repo = repoSource() else { return }
+        menuInfoLoading.insert(commit.id)
+        Task {
+            async let refsAt = git.refsPointingAt(commit: commit.id, at: repo.url)
+            async let containing = git.branchesContaining(commit: commit.id, at: repo.url)
+            async let ancestor = git.isAncestor(commit.id, of: "HEAD", at: repo.url)
+            let branches = (try? await containing) ?? (local: [], remote: [])
+            let info = CommitMenuInfo(
+                refsAtCommit: (try? await refsAt) ?? [],
+                localBranches: branches.local,
+                remoteBranches: branches.remote,
+                isAncestorOfHead: await ancestor
+            )
+            menuInfo[commit.id] = info
+            menuInfoLoading.remove(commit.id)
+        }
+    }
 
     // MARK: - Safe actions
 
     func copyHash(_ commit: GitCommit) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(commit.id, forType: .string)
+    }
+
+    func copyMessage(_ commit: GitCommit) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(commit.fullMessage, forType: .string)
     }
 
     func createPatch(_ commit: GitCommit) {
@@ -218,8 +285,44 @@ final class HistoryViewModel: ObservableObject {
         }
     }
 
-    func cherryPick(_ commit: GitCommit) { runOp { try await self.git.cherryPick(commit: commit.id, at: $0) } }
+    /// Cherry-pick, routing git's two mid-flight endings to UI instead of an
+    /// error dialog: conflicts open the resolver, an empty pick asks what to do.
+    func cherryPick(_ commit: GitCommit) {
+        guard let repo = repoSource() else { return }
+        Task {
+            main.isBusy = true
+            defer { main.isBusy = false }
+            do {
+                let outcome = try await git.cherryPick(commit: commit.id, at: repo.url)
+                menuInfo = [:]
+                opsCompleted += 1
+                await onFinished()
+                switch outcome {
+                case .done: break
+                case .empty: pendingEmptyCherryPick = commit
+                case .conflicts: onCherryPickConflict(commit)
+                }
+            } catch {
+                main.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Cherry-pick sequencer
+
+    func skipCherryPick() { runOp { try await self.git.cherryPickSkip(at: $0) } }
+    func abortCherryPick() { runOp { try await self.git.cherryPickAbort(at: $0) } }
+    func continueCherryPick() { runOp { try await self.git.cherryPickContinue(at: $0) } }
+    func commitEmptyCherryPick() { runOp { try await self.git.cherryPickCommitEmpty(at: $0) } }
     func checkout(_ commit: GitCommit) { runOp { try await self.git.checkoutRevision(commit.id, at: $0) } }
+
+    /// Check out a branch that points at / contains the commit. Remote-tracking
+    /// names are stripped of their remote so git DWIMs a local tracking branch
+    /// instead of detaching HEAD (same rule as the branch popover).
+    func checkoutBranch(_ name: String, isRemote: Bool) {
+        let target = GitBranch.checkoutName(for: name, isRemote: isRemote)
+        runOp { try await self.git.checkout(target, at: $0) }
+    }
 
     func showAtRevision(_ commit: GitCommit) {
         guard let repo = repoSource() else { return }
@@ -379,6 +482,8 @@ final class HistoryViewModel: ObservableObject {
             defer { main.isBusy = false }
             do {
                 try await op(repo.url)
+                menuInfo = [:]
+                opsCompleted += 1
                 await onFinished()
             } catch {
                 main.errorMessage = error.localizedDescription

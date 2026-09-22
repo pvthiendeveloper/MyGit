@@ -2,6 +2,8 @@ import SwiftUI
 
 struct FilesView: View {
     @EnvironmentObject var vm: FilesViewModel
+    @EnvironmentObject var editor: FileEditorViewModel
+    @EnvironmentObject var settings: SettingsViewModel
     @State private var searchText = ""
     @State private var rootExpanded = true
 
@@ -30,18 +32,54 @@ struct FilesView: View {
                     .font(.system(size: 12))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        rootRow
-                        if rootExpanded || !searchText.isEmpty {
-                            ForEach(vm.fileTreeNodes) { node in
-                                FileNodeView(node: node, depth: 1, query: searchText)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            rootRow
+                            if rootExpanded || !searchText.isEmpty {
+                                ForEach(vm.fileTreeNodes) { node in
+                                    FileNodeView(node: node, depth: 1, query: searchText)
+                                }
                             }
                         }
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .onChange(of: vm.pendingReveal) { _, reveal in
+                        scrollToReveal(reveal, proxy: proxy)
+                    }
+                    // The tree may only mount after a reveal was requested (an
+                    // empty tree shows the placeholder instead of this scroll
+                    // view) — honour the pending request on the way in.
+                    .onAppear { scrollToReveal(vm.pendingReveal, proxy: proxy) }
                 }
             }
+        }
+        // Follow the focused editor tab: expand down to that file and select it.
+        // Opt-out via Settings ▸ Files; ⌘⇧1 still reveals on demand.
+        .onChange(of: editor.activeFileTab?.path) { _, path in
+            guard settings.autoRevealActiveFile, let path else { return }
+            Task { await vm.reveal(path: path) }
+        }
+        .task {
+            // Entering the Files tab with a file already open reveals it too.
+            guard settings.autoRevealActiveFile else { return }
+            if let path = editor.activeFileTab?.path { await vm.reveal(path: path) }
+        }
+    }
+
+    /// Scroll a revealed row into view. The rows the reveal just expanded only
+    /// exist after SwiftUI lays them out, so wait one beat first.
+    private func scrollToReveal(_ reveal: TreeReveal?, proxy: ScrollViewProxy) {
+        guard let reveal else { return }
+        rootExpanded = true
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(reveal.path, anchor: .center)
+            }
+            // Consume it, so re-entering the Files tab doesn't replay an old
+            // reveal (the selection highlight stays put).
+            if vm.pendingReveal == reveal { vm.pendingReveal = nil }
         }
     }
 
@@ -139,6 +177,8 @@ private struct FileRowView: View {
     @EnvironmentObject var vm: FilesViewModel
     @EnvironmentObject var editor: FileEditorViewModel
 
+    private var isSelected: Bool { vm.selectedPath == node.id }
+
     private var icon: String {
         if node.isDirectory {
             return node.isExpanded ? "folder.fill" : "folder"
@@ -170,7 +210,7 @@ private struct FileRowView: View {
                 .frame(width: 16)
 
             Text(node.name)
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                 .lineLimit(1)
 
             Spacer()
@@ -178,13 +218,17 @@ private struct FileRowView: View {
         .padding(.vertical, 3)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity)
-        .background(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.25)
+                       : (isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onTap)
         .contextMenu { contextMenu }
         .padding(.horizontal, 4)
+        .id(node.id)   // scroll target for `FilesViewModel.reveal`
     }
 
     @ViewBuilder

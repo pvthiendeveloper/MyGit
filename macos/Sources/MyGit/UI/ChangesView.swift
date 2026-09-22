@@ -13,7 +13,7 @@ struct ChangesListView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if vm.status?.mergeInProgress == true {
+            if vm.status?.operationInProgress == true {
                 mergeBanner
                 Divider()
             }
@@ -44,22 +44,32 @@ struct ChangesListView: View {
 
     private var mergeBanner: some View {
         let conflicted = vm.status?.hasConflicts == true
+        let cherryPick = vm.status?.cherryPickInProgress == true
+        let what = cherryPick ? "cherry-pick" : "merge"
         return HStack(spacing: 8) {
             Image(systemName: conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(conflicted ? .orange : .green)
             VStack(alignment: .leading, spacing: 1) {
-                Text(conflicted ? "Merge conflicts" : "Conflicts resolved")
+                Text(conflicted
+                     ? (cherryPick ? "Cherry-pick conflicts" : "Merge conflicts")
+                     : "Conflicts resolved")
                     .font(.system(size: 12, weight: .semibold))
                 Text(conflicted
                      ? "Pick a side per file with Resolve, or edit + Mark Resolved."
-                     : "Commit to finish the merge.")
+                     : (cherryPick ? "Continue to finish the cherry-pick." : "Commit to finish the merge."))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             if !conflicted {
-                Button("Commit Merge") { Task { await vm.commitMerge() } }
-                    .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
+                if cherryPick {
+                    Button("Continue") { Task { await vm.continueCherryPick() } }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Commit Merge") { Task { await vm.commitMerge() } }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                }
             }
             Button("Resolve") {
                 Task {
@@ -69,9 +79,18 @@ struct ChangesListView: View {
                 }
             }
             .controlSize(.small)
+            .disabled(!conflicted)
             .help("Open the conflicts overview")
-            Button("Abort") { vm.pendingAbortMerge = true }
-                .controlSize(.small)
+            if cherryPick {
+                Button("Skip") { Task { await vm.skipCherryPick() } }
+                    .controlSize(.small)
+                    .help("Drop this commit from the cherry-pick")
+            }
+            Button("Abort") {
+                if cherryPick { vm.pendingAbortCherryPick = true } else { vm.pendingAbortMerge = true }
+            }
+            .controlSize(.small)
+            .help("Abort the in-progress \(what)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -222,13 +241,11 @@ struct ChangeRow: View {
 
         Button("Reveal in Finder") { vm.revealInFinder(change) }
         Button("Open in Default App") { vm.openInDefaultApp(change) }
-        Menu("Copy Path/Reference…") {
-            Button("Copy Absolute Path") { vm.copyAbsolutePath(change) }
-            Button("Copy Relative Path") { vm.copyRelativePath(change) }
-            Button("Copy File Name") { vm.copyFileName(change) }
-            Divider()
-            Button("Copy File Contents") { vm.copyFileContents(change) }
-        }
+        Divider()
+        Button("Copy Absolute Path") { vm.copyAbsolutePath(change) }
+        Button("Copy Relative Path") { vm.copyRelativePath(change) }
+        Button("Copy File Name") { vm.copyFileName(change) }
+        Button("Copy File Contents") { vm.copyFileContents(change) }
 
         Divider()
 

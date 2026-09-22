@@ -5,6 +5,7 @@ struct MainView: View {
     @EnvironmentObject var repos: RepositoryListViewModel
     @EnvironmentObject var remote: RemoteViewModel
     @EnvironmentObject var terminal: TerminalViewModel
+    @EnvironmentObject var history: HistoryViewModel
     @State private var remoteURLInput: String = ""
 
     private var sidebarMinWidth: CGFloat {
@@ -34,6 +35,9 @@ struct MainView: View {
             DetailPanel()
                 .frame(minWidth: 420)
         }
+        // One host for both commit menus (history list + compare panels) — two
+        // would fight over the same trigger state and present twice.
+        .commitActionHost(history)
     }
 
     var body: some View {

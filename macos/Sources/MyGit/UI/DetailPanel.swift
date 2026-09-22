@@ -24,6 +24,11 @@ struct DetailPanel: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(NSColor.textBackgroundColor))
+        // One host for ⌘-click results, whichever editor tab triggered them.
+        .sheet(item: $editor.symbolLookup) { lookup in
+            SymbolLookupSheet(lookup: lookup) { editor.open($0) }
+                .environmentObject(editor)
+        }
     }
 
     // Tab bar shown when compare or any diff tab is active
@@ -486,6 +491,8 @@ struct NoLocalChangesView: View {
 
 struct CommitDetailHeader: View {
     let commit: GitCommit
+    /// Clicking the header focuses it so ⌘C (Edit ▸ Copy) copies the message.
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -506,5 +513,20 @@ struct CommitDetailHeader: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.accentColor.opacity(isFocused ? 0.12 : 0))
+        )
+        .contentShape(Rectangle())
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        // ⌘C on the focused header copies the whole message, not just a selection.
+        .copyable([commit.fullMessage])
+        .onTapGesture { isFocused = true }
+        .contextMenu {
+            Button("Copy Commit Message") { FileActions.copyToPasteboard(commit.fullMessage) }
+            Button("Copy Revision Number") { FileActions.copyToPasteboard(commit.id) }
+        }
     }
 }

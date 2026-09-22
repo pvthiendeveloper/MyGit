@@ -18,6 +18,11 @@ protocol PullRequestRepository: Sendable {
         token: String
     ) async throws -> PullRequestInfo
 
+    /// The repo's configured default reviewers (Bitbucket's `default-reviewers`).
+    /// Empty on hosts with no such concept (GitHub). Best-effort — used to
+    /// prefill the composer's Reviewers field.
+    func defaultReviewers(host: String, owner: String, repo: String, token: String) async throws -> [PRUser]
+
     /// A page of the repo's pull requests (across all states), newest first.
     /// `page` is 1-based.
     func list(

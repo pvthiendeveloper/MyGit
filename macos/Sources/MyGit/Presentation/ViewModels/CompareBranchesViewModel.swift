@@ -82,6 +82,26 @@ final class CompareBranchesViewModel: ObservableObject {
         Task { await loadChangedFiles(for: commit) }
     }
 
+    func selected(for side: CompareSide) -> GitCommit? {
+        side == .aMinusB ? selectedAB : selectedBA
+    }
+
+    /// Move the selection to the commit's child/parent *within the same panel* —
+    /// the compare lists hold only one side of the range, so History's own
+    /// navigation (which walks its full log) would jump nowhere useful.
+    func navigate(_ direction: CommitNavigation, from commit: GitCommit, side: CompareSide) {
+        let list = side == .aMinusB ? filteredAB : filteredBA
+        let target: GitCommit?
+        switch direction {
+        case .parent:
+            target = commit.parents.compactMap { p in list.first { $0.id == p } }.first
+        case .child:
+            target = list.first { $0.parents.contains(commit.id) }
+        }
+        guard let target else { return }
+        selectCommit(target, side: side)
+    }
+
     func openFile(_ entry: ChangedFileEntry) {
         guard repoSource() != nil else { return }
         let commit = focused == .aMinusB ? selectedAB : selectedBA

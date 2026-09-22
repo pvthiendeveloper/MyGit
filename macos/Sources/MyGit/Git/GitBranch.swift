@@ -29,6 +29,17 @@ struct GitBranch: Identifiable, Hashable {
     }
 }
 
+extension GitBranch {
+    /// Same rule as `checkoutName`, for a bare ref name with no `GitBranch` in
+    /// hand. `isRemote` must come from the caller — `origin/x` and a local
+    /// `feature/x` are indistinguishable by shape.
+    static func checkoutName(for name: String, isRemote: Bool) -> String {
+        guard isRemote else { return name }
+        let parts = name.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        return parts.count == 2 ? String(parts[1]) : name
+    }
+}
+
 enum GitBranchParser {
     // Format: %(refname)%00%(upstream:short)%00%(HEAD)
     static func parse(_ output: String, currentBranch: String?) -> [GitBranch] {

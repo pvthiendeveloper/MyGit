@@ -20,6 +20,12 @@ struct GitCommit: Identifiable, Hashable {
 
     var hash: String { id }
     var shortHash: String { String(id.prefix(7)) }
+
+    /// Subject + body, the way `git log` shows a commit message.
+    var fullMessage: String {
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedBody.isEmpty ? subject : "\(subject)\n\n\(trimmedBody)"
+    }
 }
 
 enum GitLogParser {

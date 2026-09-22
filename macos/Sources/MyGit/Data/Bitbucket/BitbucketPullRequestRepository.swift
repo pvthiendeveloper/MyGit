@@ -93,6 +93,19 @@ struct BitbucketPullRequestRepository: PullRequestRepository {
         return PullRequestInfo(number: number, url: href)
     }
 
+    /// The repo's default reviewers. Readable with a plain `read:repository`
+    /// token (unlike `/user` and branch-restrictions), so this works even when
+    /// identity can't be resolved.
+    func defaultReviewers(host: String, owner: String, repo: String, token: String) async throws -> [PRUser] {
+        let values = try await jsonValues(
+            "\(Self.apiBase)/repositories/\(owner)/\(repo)/default-reviewers?pagelen=100", token: token)
+        return values.compactMap { u in
+            guard let uuid = u["uuid"] as? String else { return nil }
+            let name = (u["display_name"] as? String) ?? (u["nickname"] as? String) ?? uuid
+            return PRUser(id: uuid, name: name)
+        }
+    }
+
     private static let pageLen = 30
 
     func list(

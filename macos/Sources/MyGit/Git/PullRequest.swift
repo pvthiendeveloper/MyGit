@@ -122,14 +122,18 @@ struct PRFileChange: Identifiable, Hashable {
     /// True for raster file types we can render directly as an image.
     var isImage: Bool {
         let ext = (path as NSString).pathExtension.lowercased()
-        return ["png", "jpg", "jpeg", "gif", "bmp", "heic", "heif", "tiff", "webp"].contains(ext)
+        return ["png", "jpg", "jpeg", "jfif", "gif", "bmp", "heic", "heif",
+                "tiff", "tif", "webp", "avif", "ico", "icns", "apng"].contains(ext)
     }
 
     /// Android VectorDrawable candidate — an `.xml` that may render as an image.
     var isVectorDrawable: Bool { (path as NSString).pathExtension.lowercased() == "xml" }
 
+    /// A plain SVG file — rendered directly in the WebView.
+    var isSVG: Bool { (path as NSString).pathExtension.lowercased() == "svg" }
+
     /// Whether "View as Image" can attempt a visual preview for this file.
-    var isPreviewable: Bool { isImage || isVectorDrawable }
+    var isPreviewable: Bool { isImage || isVectorDrawable || isSVG }
 
     var statusLabel: String {
         switch status {
@@ -157,6 +161,19 @@ struct PRCommit: Identifiable, Hashable {
     let date: Date?
     var shortHash: String { String(id.prefix(7)) }
     var subject: String { message.split(separator: "\n").first.map(String.init) ?? message }
+}
+
+/// Loose identity comparison across git config names and host display names.
+/// Lowercased, bracket/paren-stripped, whitespace-collapsed, so
+/// `Thien Pham (Genesis)` matches `Thien Pham [Genesis]`.
+enum PRIdentity {
+    static func normalizedName(_ s: String) -> String {
+        let stripped = s.unicodeScalars.filter { !"()[]{}".unicodeScalars.contains($0) }
+        return String(String.UnicodeScalarView(stripped))
+            .lowercased()
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .joined(separator: " ")
+    }
 }
 
 /// Shared ISO-8601 parsing for host timestamps. GitHub uses plain internet

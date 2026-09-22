@@ -376,8 +376,10 @@ struct SideBySideDiffTabView: View {
         let charW = fontSize * 0.62
         let leftMax = rows.compactMap { $0.leftText?.count }.max() ?? 0
         let rightMax = rows.compactMap { $0.rightText?.count }.max() ?? 0
-        let leftW = max(CGFloat(leftMax) * charW + 24, 120)
-        let rightW = max(CGFloat(rightMax) * charW + 24, 120)
+        // Clamp: a minified file can report a single multi-MB line, and a scroll
+        // canvas that wide bogs the layout down for no readable benefit.
+        let leftW = min(max(CGFloat(leftMax) * charW + 24, 120), Self.maxPaneWidth)
+        let rightW = min(max(CGFloat(rightMax) * charW + 24, 120), Self.maxPaneWidth)
 
         if isRightEditable {
             return AnyView(editableAligned(rows: rows, leftW: max(leftW, rightW)))
@@ -430,6 +432,9 @@ struct SideBySideDiffTabView: View {
         }
     }
 
+    /// Upper bound for a code pane's horizontal scroll canvas (points).
+    private static let maxPaneWidth: CGFloat = 60_000
+
     private func rowAnchor(_ id: Int) -> String { "R-\(id)" }
 
     // One fixed-height row per line so the code text, the per-line highlight band, and
@@ -451,16 +456,16 @@ struct SideBySideDiffTabView: View {
                             .font(.system(size: fontSize, design: .monospaced))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
-                            .textSelection(.enabled)
                             .padding(.leading, 8)
                     }
-                    .frame(minWidth: contentWidth, maxWidth: .infinity, minHeight: rowHeight,
-                           maxHeight: rowHeight, alignment: .leading)
+                    .frame(width: contentWidth, height: rowHeight, alignment: .leading)
                     .id(rowAnchor(row.id))
                 }
             }
-            .frame(minWidth: contentWidth, maxWidth: .infinity, alignment: .topLeading)
+            .frame(width: contentWidth, alignment: .topLeading)
             .padding(.vertical, 4)
+            // One selection modifier for the pane instead of one per row.
+            .textSelection(.enabled)
         }
         .defaultScrollAnchor(.topLeading)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

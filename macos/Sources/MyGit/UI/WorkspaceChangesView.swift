@@ -16,12 +16,21 @@ struct WorkspaceChangesView: View {
                     .padding(10)
             }
         } else {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(coordinator.bundles) { bundle in
-                        RepoChangesSection(bundle: bundle)
-                        Divider()
-                    }
+            // List (NSTableView-backed) instead of ScrollView+VStack: rows are
+            // materialised lazily. A plain stack builds every row of every repo
+            // up front, which blows up SwiftUI's attribute graph (and aborts the
+            // process) once a workspace has a few hundred changed files.
+            List {
+                ForEach(coordinator.bundles) { bundle in
+                    RepoChangesSection(bundle: bundle)
+                }
+            }
+            .listStyle(.inset)
+            // Alerts/confirmation dialogs live outside the lazy rows so they
+            // still present when their section is scrolled off-screen.
+            .background {
+                ForEach(coordinator.bundles) { bundle in
+                    Color.clear.changesGitActionHost(bundle.changes)
                 }
             }
         }
@@ -44,34 +53,42 @@ private struct RepoChangesSection: View {
     private var isActive: Bool { coordinator.activeBundle.id == bundle.id }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            if expanded {
-                if changes.isEmpty {
-                    Text("No local changes")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    ForEach(changes) { change in
-                        ChangeRow(change: change)
-                            .environmentObject(bundle.changes)
-                            .environmentObject(bundle.editor)
-                            .padding(.horizontal, 6)
-                    }
-                    CommitComposerView()
+        Section(isExpanded: $expanded) {
+            if changes.isEmpty {
+                Text("No local changes")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(rowBackground)
+            } else {
+                ForEach(changes) { change in
+                    ChangeRow(change: change)
                         .environmentObject(bundle.changes)
-                        .padding(10)
+                        .environmentObject(bundle.editor)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(rowBackground)
                 }
+                CommitComposerView()
+                    .environmentObject(bundle.changes)
+                    .padding(10)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(rowBackground)
             }
+        } header: {
+            header
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(rowBackground)
         }
-        .background(isActive ? Color.accentColor.opacity(0.06) : Color.clear)
         .onChange(of: changesVM.selectedChange) {
             coordinator.setActive(bundle)
         }
-        .changesGitActionHost(bundle.changes)
+    }
+
+    private var rowBackground: Color {
+        isActive ? Color.accentColor.opacity(0.06) : Color.clear
     }
 
     private var header: some View {
@@ -114,7 +131,7 @@ private struct RepoChangesSection: View {
 
             Spacer()
 
-            if changesVM.status?.mergeInProgress == true {
+            if changesVM.status?.operationInProgress == true, changesVM.status?.hasConflicts == true {
                 Button {
                     Task {
                         let (ours, theirs) = await changesVM.mergeBranchNames()

@@ -56,5 +56,11 @@ struct CommitRow: View {
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        // Plain list rows (single-repo list + the per-repo workspace sections)
+        // aren't backed by a commit-action host, so copying is all they offer.
+        .contextMenu {
+            Button("Copy Commit Message") { FileActions.copyToPasteboard(commit.fullMessage) }
+            Button("Copy Revision Number") { FileActions.copyToPasteboard(commit.id) }
+        }
     }
 }

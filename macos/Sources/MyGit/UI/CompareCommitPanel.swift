@@ -3,7 +3,9 @@ import SwiftUI
 struct CompareCommitPanel: View {
     let side: CompareSide
     @ObservedObject var vm: CompareBranchesViewModel
-    @State private var localSelection: GitCommit?
+    /// The repo's History VM owns every commit action (and its dialogs), so the
+    /// compare panels drive the same menu rather than duplicating the plumbing.
+    @EnvironmentObject var history: HistoryViewModel
 
     private var commits: [GitCommit] { side == .aMinusB ? vm.filteredAB : vm.filteredBA }
     private var filter: Binding<CompareFilter> {
@@ -77,17 +79,28 @@ struct CompareCommitPanel: View {
                                 commit: commit,
                                 isFirst: index == 0,
                                 isLast: index == commits.count - 1,
-                                isSelected: localSelection == commit
+                                isSelected: vm.selected(for: side) == commit
                             )
                             .contentShape(Rectangle())
-                            .onTapGesture {
-                                localSelection = commit
-                                vm.selectCommit(commit, side: side)
+                            .onTapGesture { vm.selectCommit(commit, side: side) }
+                            // Warm the menu's branch/ancestry data before the
+                            // right-click — a context menu can't load async.
+                            .onHover { inside in
+                                if inside { history.prefetchMenuInfo(for: commit) }
+                            }
+                            .contextMenu {
+                                CommitContextMenu(commit: commit, vm: history) { direction in
+                                    vm.navigate(direction, from: commit, side: side)
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+        // Commit actions rewrite the branches being compared — reload both sides.
+        .onChange(of: history.opsCompleted) { _, _ in
+            Task { await vm.load() }
         }
     }
 }

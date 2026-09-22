@@ -28,6 +28,10 @@ struct PullRequestComposeView: View {
     @State private var files: [ChangedFileEntry] = []
     @State private var commits: [GitCommit] = []
     @State private var loadingDiff = false
+    @State private var loadingReviewers = false
+    /// Reviewer identifier → display name, filled by "Load default reviewers"
+    /// so the chips read as people rather than UUIDs.
+    @State private var reviewerNames: [String: String] = [:]
 
     private let git: GitRepository = GitCLIRepository()
 
@@ -142,14 +146,7 @@ struct PullRequestComposeView: View {
                                 .padding(6)
                         }
                 }
-                section("Reviewers") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        TextField("usernames, comma-separated", text: $reviewers)
-                            .textFieldStyle(.roundedBorder)
-                        Text("GitHub: usernames · Bitbucket: account UUIDs `{…}`. Best-effort — a bad name won't block the PR.")
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                }
+                reviewersSection
                 HStack {
                     Spacer()
                     Button("Cancel") { bundle.pullRequests.isComposing = false }
@@ -162,6 +159,80 @@ struct PullRequestComposeView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Reviewers: a free-text list of host identifiers plus a one-click fill from
+    /// the repo's configured default reviewers (Bitbucket). Loaded reviewers are
+    /// shown as removable name chips; the text field stays the source of truth.
+    private var reviewersSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Reviewers").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button { loadDefaultReviewers() } label: {
+                    HStack(spacing: 4) {
+                        if loadingReviewers {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "person.2.badge.plus")
+                        }
+                        Text("Load default reviewers")
+                    }
+                    .font(.system(size: 11))
+                }
+                .buttonStyle(.link)
+                .disabled(loadingReviewers)
+                .help("Fill in the repository's default reviewers. You're excluded — a PR can't list its own author.")
+            }
+            TextField("usernames, comma-separated", text: $reviewers)
+                .textFieldStyle(.roundedBorder)
+            if !reviewerTokens.isEmpty {
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(reviewerTokens, id: \.self) { reviewerChip($0) }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text("GitHub: usernames · Bitbucket: account UUIDs `{…}`. Best-effort — a bad name won't block the PR.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func reviewerChip(_ token: String) -> some View {
+        HStack(spacing: 4) {
+            Text(reviewerNames[token] ?? token)
+                .font(.system(size: 11))
+                .lineLimit(1).truncationMode(.middle)
+            Button { removeReviewer(token) } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(Color.secondary.opacity(0.15)))
+    }
+
+    /// Fetch the repo's default reviewers (author already filtered out by the
+    /// ViewModel) and merge them into the field, keeping anything typed by hand.
+    private func loadDefaultReviewers() {
+        loadingReviewers = true
+        Task {
+            let users = await bundle.remote.defaultReviewers()
+            loadingReviewers = false
+            guard !users.isEmpty else {
+                main.errorMessage = "No default reviewers configured for this repository (or the host doesn't provide them)."
+                return
+            }
+            for u in users { reviewerNames[u.id] = u.name }
+            var tokens = reviewerTokens
+            for u in users where !tokens.contains(u.id) { tokens.append(u.id) }
+            reviewers = tokens.joined(separator: ", ")
+        }
+    }
+
+    private func removeReviewer(_ token: String) {
+        reviewers = reviewerTokens.filter { $0 != token }.joined(separator: ", ")
     }
 
     // MARK: - Files changed (local base...head)

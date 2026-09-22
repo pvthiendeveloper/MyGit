@@ -22,6 +22,7 @@ final class RepoBundle: Identifiable {
     let remote: RemoteViewModel
     let pullRequests: PullRequestsViewModel
     let compareVM: CompareBranchesViewModel
+    let run: RunViewModel
 
     init(repo: Repository, container: AppContainer, main: MainViewModel, settings: SettingsViewModel) {
         self.repo = repo
@@ -53,6 +54,7 @@ final class RepoBundle: Identifiable {
 
         self.editor = FileEditorViewModel(
             fileEditor: container.fileEditor,
+            git: container.git,
             main: main,
             repoSource: repoSource,
             onSaved: { [weak changes] in await changes?.refreshStatus() }
@@ -93,6 +95,7 @@ final class RepoBundle: Identifiable {
         )
 
         self.compareVM = CompareBranchesViewModel()
+        self.run = RunViewModel(main: main, repoSource: repoSource)
 
         refreshAllBox.body = { [weak self] in await self?.refreshAll() }
         changes.setOnFinished(refreshAll)
@@ -104,6 +107,11 @@ final class RepoBundle: Identifiable {
             if force { await remote?.forcePush() } else { await remote?.push() }
         }
         history.setOnFinished(refreshAll)
+        history.setOnCherryPickConflict { [weak self] commit in
+            guard let self else { return }
+            let ours = changes.status?.branch ?? "HEAD"
+            ConflictsWindow.open(bundle: self, ours: ours, theirs: commit.shortHash)
+        }
         history.setPushUpTo { [weak remote] commit in await remote?.pushUpToCommit(commit.id) }
         stash.setOnFinished(refreshAll)
     }

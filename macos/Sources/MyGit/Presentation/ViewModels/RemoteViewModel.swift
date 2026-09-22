@@ -49,7 +49,24 @@ final class RemoteViewModel: ObservableObject {
 
     func push() async {
         guard let branch = currentBranch() else { return }
-        await runRemoteHandlingUpstream(args: ["push"], branchName: branch)
+        // Push HEAD to the tracked upstream branch explicitly. A bare `git push`
+        // relies on push.default; with `simple` it 128s when the upstream branch
+        // name differs from the local branch name. Resolving @{upstream} and
+        // pushing HEAD:<remote-branch> works regardless of push.default.
+        if let repo = repoSource(),
+           let upstream = await git.upstreamRef(at: repo.url),
+           let slash = upstream.firstIndex(of: "/") {
+            let remote = String(upstream[..<slash])
+            let remoteBranch = String(upstream[upstream.index(after: slash)...])
+            await runRemoteHandlingUpstream(
+                args: ["push", remote, "HEAD:\(remoteBranch)"],
+                branchName: branch
+            )
+        } else {
+            // No upstream configured → let the bare push surface the
+            // "has no upstream branch" path so we can offer to set it.
+            await runRemoteHandlingUpstream(args: ["push"], branchName: branch)
+        }
     }
 
     func forcePush() async {
@@ -119,6 +136,32 @@ final class RemoteViewModel: ObservableObject {
               let host = acc.host, let owner = acc.owner, let name = acc.repo,
               let token = account.storedToken() else { return nil }
         return try? await pullRequests.defaultBranch(host: host, owner: owner, repo: name, token: token)
+    }
+
+    /// The repo's configured default reviewers, minus the PR author (you) — a
+    /// Bitbucket PR rejects the author as a reviewer. Author identity is resolved
+    /// by host id when the token allows it (`/user`), else by matching the
+    /// display name against local git `user.name`. Empty on any failure.
+    func defaultReviewers() async -> [PRUser] {
+        guard let acc = account.account,
+              let host = acc.host, let owner = acc.owner, let name = acc.repo,
+              let token = account.storedToken() else { return [] }
+        guard let list = try? await pullRequests.defaultReviewers(
+            host: host, owner: owner, repo: name, token: token
+        ), !list.isEmpty else { return [] }
+
+        let me = try? await pullRequests.currentUser(host: host, token: token)
+        var localName: String?
+        if me == nil, let repo = repoSource() {
+            localName = await git.configValue("user.name", at: repo.url)
+        }
+        return list.filter { u in
+            if let me { return u.id != me.id }
+            if let localName {
+                return PRIdentity.normalizedName(u.name) != PRIdentity.normalizedName(localName)
+            }
+            return true
+        }
     }
 
     /// Push the current branch (publishing/updating origin), then open a pull

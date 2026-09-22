@@ -7,9 +7,15 @@ struct ChangesGitMenu: View {
     let bundle: RepoBundle
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var coordinator: AppCoordinator
+    // Observed so the rollback item's count/enabled state tracks the live status.
+    @ObservedObject private var changes: ChangesViewModel
+
+    init(bundle: RepoBundle) {
+        self.bundle = bundle
+        self._changes = ObservedObject(wrappedValue: bundle.changes)
+    }
 
     private var remote: RemoteViewModel { bundle.remote }
-    private var changes: ChangesViewModel { bundle.changes }
 
     var body: some View {
         // Remote & log
@@ -39,6 +45,13 @@ struct ChangesGitMenu: View {
             Button("Abort Merge", role: .destructive) { changes.pendingAbortMerge = true }
         }
 
+        if changes.status?.cherryPickInProgress == true {
+            Button("Continue Cherry-Pick") { Task { await changes.continueCherryPick() } }
+                .disabled(changes.status?.hasConflicts == true)
+            Button("Skip Commit") { Task { await changes.skipCherryPick() } }
+            Button("Abort Cherry-Pick", role: .destructive) { changes.pendingAbortCherryPick = true }
+        }
+
         Divider()
 
         // Create
@@ -58,8 +71,22 @@ struct ChangesGitMenu: View {
         }
         Menu("Uncommitted Changes") {
             Button("Stash All…") { changes.pendingStash = true }
-            Button("Rollback All…", role: .destructive) { changes.pendingDiscardAll = true }
+            Button(rollbackTitle, role: .destructive) { changes.pendingDiscardAll = true }
+                .disabled(changeCount == 0)
         }
+
+        Divider()
+
+        // Top-level too — rollback-all is a frequent action, one click deep.
+        Button(rollbackTitle, role: .destructive) { changes.pendingDiscardAll = true }
+            .disabled(changeCount == 0)
+    }
+
+    private var changeCount: Int { changes.status?.changes.count ?? 0 }
+
+    private var rollbackTitle: String {
+        changeCount > 0 ? "Rollback All (\(changeCount) file\(changeCount == 1 ? "" : "s"))…"
+                        : "Rollback All…"
     }
 }
 
@@ -105,6 +132,17 @@ struct ChangesGitActionHost: ViewModifier {
                 Text("Discards the merge and restores the working tree to before it started.")
             }
             .confirmationDialog(
+                "Abort the in-progress cherry-pick?",
+                isPresented: $vm.pendingAbortCherryPick
+            ) {
+                Button("Abort Cherry-Pick", role: .destructive) {
+                    Task { await vm.abortCherryPick() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Discards the picked changes and restores the branch to before the cherry-pick started.")
+            }
+            .confirmationDialog(
                 "Reset current branch to HEAD?",
                 isPresented: $vm.pendingResetHead
             ) {
@@ -118,15 +156,19 @@ struct ChangesGitActionHost: ViewModifier {
                 Text("Hard reset discards all uncommitted working-tree changes.")
             }
             .confirmationDialog(
-                "Discard all local changes?",
+                "Rollback all local changes?",
                 isPresented: $vm.pendingDiscardAll
             ) {
-                Button("Discard All", role: .destructive) {
-                    Task { await vm.discardAllChanges() }
+                Button("Rollback All", role: .destructive) {
+                    Task { await vm.discardAllChanges(includeUntracked: true) }
+                }
+                Button("Rollback Tracked Only", role: .destructive) {
+                    Task { await vm.discardAllChanges(includeUntracked: false) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Restores tracked files and deletes untracked ones. This cannot be undone.")
+                Text("Resets tracked files to HEAD and deletes untracked files "
+                     + "(ignored files are kept). This cannot be undone.")
             }
             // Per-file rollback/delete alerts — hosted here (not just in
             // ChangesListView) so they also present in the multi-repo section view.

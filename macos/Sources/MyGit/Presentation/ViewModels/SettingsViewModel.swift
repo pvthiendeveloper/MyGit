@@ -23,6 +23,13 @@ final class SettingsViewModel: ObservableObject {
         didSet { defaults.set(generateBody, forKey: Keys.generateBody) }
     }
 
+    /// Expand the file tree down to the focused editor tab automatically.
+    /// Off means the tree only jumps there on demand (View ▸ Reveal Active File,
+    /// ⌘⇧1). On by default — it matches how IDE navigators behave.
+    @Published var autoRevealActiveFile: Bool {
+        didSet { defaults.set(autoRevealActiveFile, forKey: Keys.autoRevealActiveFile) }
+    }
+
     /// Transient connection-test result per provider (not persisted).
     @Published var testStatus: [String: ConnectionTestStatus] = [:]
 
@@ -50,6 +57,7 @@ final class SettingsViewModel: ObservableObject {
     private enum Keys {
         static let provider = "MyGit.ai.provider"
         static let generateBody = "MyGit.ai.generateBody"
+        static let autoRevealActiveFile = "MyGit.files.autoRevealActiveFile"
         static func model(_ p: AIProvider) -> String { "MyGit.ai.model.\(p.rawValue)" }
         static func baseURL(_ p: AIProvider) -> String { "MyGit.ai.baseURL.\(p.rawValue)" }
         static func modelList(_ p: AIProvider) -> String { "MyGit.ai.modelList.\(p.rawValue)" }
@@ -65,6 +73,8 @@ final class SettingsViewModel: ObservableObject {
         self.activeProvider = AIProvider(rawValue: defaults.string(forKey: Keys.provider) ?? "")
             ?? .custom
         self.generateBody = defaults.bool(forKey: Keys.generateBody)
+        // Absent key → on; `bool(forKey:)` alone would default it to off.
+        self.autoRevealActiveFile = defaults.object(forKey: Keys.autoRevealActiveFile) as? Bool ?? true
 
         var m: [String: String] = [:]
         var b: [String: String] = [:]

@@ -6,6 +6,17 @@ enum ConflictSide {
     case ours, theirs
 }
 
+/// How a `git cherry-pick` ended. Git leaves the sequencer mid-flight for the
+/// last two, so the UI has to offer a way out (resolve / skip / abort).
+enum CherryPickOutcome {
+    case done
+    /// Conflicts staged as unmerged paths; `CHERRY_PICK_HEAD` is set.
+    case conflicts
+    /// The pick produced no changes (already applied, or emptied by conflict
+    /// resolution). Git wants `--skip` or `commit --allow-empty`.
+    case empty
+}
+
 /// One `git grep` hit: a repo-relative path, the 1-based line number, and the
 /// matching line's text (trimmed for preview).
 struct GitGrepMatch: Sendable, Hashable {
@@ -44,12 +55,18 @@ protocol GitRepository: Sendable {
     func restore(at repo: URL, paths: [String]) async throws
     func addToIndex(at repo: URL, paths: [String]) async throws
     func removeFile(at repo: URL, path: String, tracked: Bool) async throws
+    /// Roll the working tree + index back to HEAD. `includeUntracked` also deletes
+    /// untracked files and directories (ignored files are always kept).
+    func discardAll(at repo: URL, includeUntracked: Bool) async throws
     func diffPatch(at repo: URL, changes: [FileChange]) async throws -> String
 
     // Remote
     func fetch(at repo: URL, auth: AuthOverride?) async throws
     func pull(at repo: URL, auth: AuthOverride?) async throws
     func push(at repo: URL, args: [String], auth: AuthOverride?) async throws
+    /// Short upstream ref of the current branch (e.g. "origin/feature/x"), or
+    /// nil when the branch has no configured upstream.
+    func upstreamRef(at repo: URL) async -> String?
 
     // Branches
     func branches(at repo: URL, currentBranch: String?) async throws -> [GitBranch]
@@ -90,7 +107,16 @@ protocol GitRepository: Sendable {
     func checkoutRevision(_ rev: String, at repo: URL) async throws
 
     // Commit actions
-    func cherryPick(commit: String, at repo: URL) async throws
+    @discardableResult
+    func cherryPick(commit: String, at repo: URL) async throws -> CherryPickOutcome
+    /// Drop the in-flight pick and move to the next one (`cherry-pick --skip`).
+    func cherryPickSkip(at repo: URL) async throws
+    /// Roll the whole sequence back (`cherry-pick --abort`).
+    func cherryPickAbort(at repo: URL) async throws
+    /// Resume after conflicts were staged (`cherry-pick --continue`).
+    func cherryPickContinue(at repo: URL) async throws
+    /// Record the empty pick as an empty commit, then resume the sequence.
+    func cherryPickCommitEmpty(at repo: URL) async throws
     func revertCommit(_ commit: String, at repo: URL) async throws
     func resetTo(commit: String, mode: GitResetMode, at repo: URL) async throws
     func formatPatch(commit: String, at repo: URL) async throws -> String
@@ -101,7 +127,16 @@ protocol GitRepository: Sendable {
     /// Content search over tracked files (`git grep`). Drives Search Everywhere's
     /// content/both scopes. Case-insensitive fixed-string match.
     func grep(query: String, at repo: URL) async throws -> [GitGrepMatch]
+    /// Every whole-word occurrence of a symbol across tracked files. Backs
+    /// ⌘-click "go to definition" / "find usages" in the editor.
+    func searchSymbol(_ symbol: String, at repo: URL) async throws -> [GitGrepMatch]
     func pushedHashes(at repo: URL) async throws -> Set<String>
+    /// Refs (branches/tags, short names) that point directly at a commit.
+    func refsPointingAt(commit: String, at repo: URL) async throws -> [String]
+    /// Branches whose history contains a commit, split by local / remote-tracking.
+    func branchesContaining(commit: String, at repo: URL) async throws -> (local: [String], remote: [String])
+    /// True when `commit` is reachable from `ref` (so HEAD-relative rewrites apply).
+    func isAncestor(_ commit: String, of ref: String, at repo: URL) async -> Bool
     func amendMessage(_ message: String, at repo: URL) async throws
     func interactiveRebase(todo: [RebaseStep], onto base: String, at repo: URL) async throws
 

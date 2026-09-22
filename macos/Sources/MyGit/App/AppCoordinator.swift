@@ -98,6 +98,14 @@ final class AppCoordinator: ObservableObject {
         let built = workspace.repos.map {
             RepoBundle(repo: $0, container: container, main: main, settings: settings)
         }
+        for bundle in built {
+            // Runs land in the terminal panel: long, chatty, sometimes interactive.
+            bundle.run.setRunner { [weak self] script in
+                guard let self else { return }
+                self.terminal.isVisible = true
+                self.terminal.runShellScript(absolutePath: script)
+            }
+        }
         bundles = built
         activeBundle = built.first ?? emptyBundle
         watchers = built.map { bundle in

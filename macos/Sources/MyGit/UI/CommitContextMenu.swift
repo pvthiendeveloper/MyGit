@@ -5,19 +5,39 @@ import SwiftUI
 struct CommitContextMenu: View {
     let commit: GitCommit
     @ObservedObject var vm: HistoryViewModel
+    /// Non-nil when the menu is hosted outside History (the compare panels):
+    /// child/parent navigation then moves the selection in *that* list.
+    var onNavigate: ((CommitNavigation) -> Void)? = nil
 
     private var canRewrite: Bool { vm.canRewrite(commit) }
     private var isTip: Bool { vm.isTip(commit) }
     private var isRoot: Bool { commit.parents.isEmpty }
+    private var info: CommitMenuInfo? { vm.info(for: commit) }
+
+    /// Refs sitting exactly on this commit. Falls back to the log decorations
+    /// while the fuller `for-each-ref` answer is still loading.
+    private var refsAtCommit: [String] {
+        if let info, !info.refsAtCommit.isEmpty { return info.refsAtCommit }
+        return commit.refs.map { $0.name }
+    }
 
     var body: some View {
         Button("Copy Revision Number") { vm.copyHash(commit) }
+            .keyboardShortcut("c", modifiers: [.option, .shift, .command])
+        Button("Copy Commit Message") { vm.copyMessage(commit) }
+            .keyboardShortcut("c", modifiers: [.option, .command])
         Button("Create Patch…") { vm.createPatch(commit) }
         Button("Cherry-Pick") { vm.cherryPick(commit) }
 
         Divider()
 
-        Button("Checkout Revision") { vm.checkout(commit) }
+        Menu("Checkout") {
+            ForEach(refsAtCommit, id: \.self) { name in
+                Button(name) { vm.checkoutBranch(name, isRemote: isRemoteRef(name)) }
+            }
+            if !refsAtCommit.isEmpty { Divider() }
+            Button("Revision (Detached HEAD)") { vm.checkout(commit) }
+        }
         Button("Show Repository at Revision") { vm.showAtRevision(commit) }
         Button("Compare with Local") { vm.compareWithLocal(commit) }
 
@@ -43,13 +63,57 @@ struct CommitContextMenu: View {
 
         Divider()
 
+        Menu("Branches") { branchesSubmenu }
         Button("New Branch…") { vm.newBranchFrom = commit }
+            .keyboardShortcut("n", modifiers: [.option, .command])
         Button("New Tag…") { vm.newTagFrom = commit }
 
         Divider()
 
-        Button("Go to Child Commit") { vm.goToChild(commit) }
-        Button("Go to Parent Commit") { vm.goToParent(commit) }.disabled(isRoot)
+        Button("Go to Child Commit") { navigate(.child) }
+        Button("Go to Parent Commit") { navigate(.parent) }.disabled(isRoot)
+    }
+
+    /// Branches whose history contains this commit; selecting one checks it out.
+    @ViewBuilder
+    private var branchesSubmenu: some View {
+        if let info {
+            if info.hasContainingBranches {
+                if !info.localBranches.isEmpty {
+                    Section("Local") {
+                        ForEach(info.localBranches, id: \.self) { name in
+                            Button(name) { vm.checkoutBranch(name, isRemote: false) }
+                        }
+                    }
+                }
+                if !info.remoteBranches.isEmpty {
+                    Section("Remote") {
+                        ForEach(info.remoteBranches, id: \.self) { name in
+                            Button(name) { vm.checkoutBranch(name, isRemote: true) }
+                        }
+                    }
+                }
+            } else {
+                Button("No branches contain this commit") {}.disabled(true)
+            }
+        } else {
+            Button("Loading…") {}.disabled(true)
+        }
+    }
+
+    private func navigate(_ direction: CommitNavigation) {
+        if let onNavigate {
+            onNavigate(direction)
+            return
+        }
+        switch direction {
+        case .child: vm.goToChild(commit)
+        case .parent: vm.goToParent(commit)
+        }
+    }
+
+    private func isRemoteRef(_ name: String) -> Bool {
+        info?.remoteBranches.contains(name) ?? commit.refs.contains { $0.name == name && $0.kind == .remoteBranch }
     }
 }
 
@@ -96,6 +160,19 @@ struct CommitActionHost: ViewModifier {
                 Button("Drop", role: .destructive) { vm.drop(c) }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in Text("Rewrites history to remove this commit. Local commits only.") }
+
+            .confirmationDialog(
+                "Cherry-pick produced no changes",
+                isPresented: bool($vm.pendingEmptyCherryPick),
+                presenting: vm.pendingEmptyCherryPick
+            ) { _ in
+                Button("Skip Commit") { vm.skipCherryPick() }
+                Button("Commit as Empty") { vm.commitEmptyCherryPick() }
+                Button("Abort Cherry-Pick", role: .destructive) { vm.abortCherryPick() }
+                Button("Cancel", role: .cancel) {}
+            } message: { c in
+                Text("\(c.shortHash) is already contained in this branch, so nothing was left to commit. Git keeps the cherry-pick open until you skip it, commit it empty, or abort.")
+            }
 
             .sheet(item: $vm.newBranchFrom) { c in
                 CommitInputSheet(title: "New Branch", prompt: "Branch name",

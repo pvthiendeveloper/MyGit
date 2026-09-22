@@ -100,18 +100,16 @@ struct CommitComposerView: View {
                     }
                     .disabled(!vm.canAmend)
                 } label: {
-                    Color.clear
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 32, height: 32)
-                .background(Color.accentColor.opacity((!vm.canCommit || main.isBusy) ? 0.5 : 1))
-                .overlay(
                     Image(systemName: "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white)
-                        .allowsHitTesting(false)
-                )
+                        .frame(width: 36, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .background(Color.accentColor.opacity((!vm.canCommit || main.isBusy) ? 0.5 : 1))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .disabled(main.isBusy)
             }

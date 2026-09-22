@@ -22,7 +22,17 @@ final class SyntaxHighlighter {
 
     private var engines: [String: Highlightr] = [:]      // themeName -> engine
     private var lineCache: [String: [AttributedString]] = [:]
+    private var cacheOrder: [String] = []
+    private var cachedLines = 0
     private let cacheCap = 24
+    /// Highlighting materialises one `AttributedString` per line, which costs
+    /// roughly 10 KB of attribute runs. Past these limits the panes fall back to
+    /// plain text instead of eating gigabytes (a 60k-line file measured 1.2 GB).
+    private static let maxHighlightLines = 6_000     // matches LineDiffer's diff cap
+    private static let maxHighlightBytes = 512 * 1024
+    /// Total lines kept across cached files, so a couple of big diffs can't pin
+    /// hundreds of MB in the cache.
+    private static let maxCachedLines = 20_000
 
     private init() {}
 
@@ -47,6 +57,8 @@ final class SyntaxHighlighter {
     // Per-line, font-stripped colors for the read-only Text panes. "" lines yield "".
     func lines(_ text: String, ext: String, fontSize: CGFloat) -> [AttributedString] {
         guard !text.isEmpty, let lang = Self.language(forExtension: ext) else { return [] }
+        guard text.utf8.count <= Self.maxHighlightBytes,
+              text.count(where: { $0 == "\n" }) < Self.maxHighlightLines else { return [] }
         let key = "\(themeName)|\(lang)|\(text.hashValue)"
         if let hit = lineCache[key] { return hit }
 
@@ -58,9 +70,21 @@ final class SyntaxHighlighter {
             a.font = nil  // drop font so Text's monospaced face wins; keep per-run colors
             return a
         }
-        if lineCache.count >= cacheCap { lineCache.removeAll() }
+        if lineCache.count >= cacheCap { evictAll() }
         lineCache[key] = split
+        cacheOrder.append(key)
+        cachedLines += split.count
+        while cachedLines > Self.maxCachedLines, let oldest = cacheOrder.first, cacheOrder.count > 1 {
+            cachedLines -= lineCache.removeValue(forKey: oldest)?.count ?? 0
+            cacheOrder.removeFirst()
+        }
         return split
+    }
+
+    private func evictAll() {
+        lineCache.removeAll()
+        cacheOrder.removeAll()
+        cachedLines = 0
     }
 
     // Full attributed blob (font kept) for the editable NSTextView pane.

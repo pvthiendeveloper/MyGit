@@ -34,6 +34,7 @@ final class RepoWatcher {
         // window so the first change feels instant; WatchRoot/IgnoreSelf are
         // hygiene (track moves of the repo dir, drop our own writes from history).
         let flags = UInt32(
+            kFSEventStreamCreateFlagUseCFTypes |
             kFSEventStreamCreateFlagNoDefer |
             kFSEventStreamCreateFlagWatchRoot |
             kFSEventStreamCreateFlagIgnoreSelf |
@@ -65,7 +66,28 @@ final class RepoWatcher {
         self.stream = nil
     }
 
-    fileprivate func fire() { onChange() }
+    /// Events whose paths are *all* git-internal bookkeeping are dropped.
+    /// Our own `git status` refreshes `.git/index`'s stat cache, which fires
+    /// FSEvents, which would trigger another refresh — a self-feeding loop that
+    /// pegs the CPU forever. (`IgnoreSelf` doesn't help: git is a child
+    /// process, not us.) Ref/HEAD/MERGE changes are real and still pass.
+    fileprivate func fire(paths: [String]) {
+        guard paths.isEmpty || paths.contains(where: { !Self.isNoise($0) }) else { return }
+        onChange()
+    }
+
+    private static func isNoise(_ path: String) -> Bool {
+        guard let range = path.range(of: "/.git/") else {
+            return path.hasSuffix("/.git")
+        }
+        let rest = path[range.upperBound...]
+        // Refs, HEAD and merge state are meaningful; index/logs/objects churn is not.
+        if rest.hasPrefix("refs/") || rest.hasPrefix("HEAD") || rest.hasPrefix("MERGE")
+            || rest.hasPrefix("REBASE") || rest.hasPrefix("CHERRY") || rest.hasPrefix("packed-refs") {
+            return false
+        }
+        return true
+    }
 }
 
 /// C-compatible FSEvents callback. Recovers the `RepoWatcher` from the context
@@ -80,5 +102,6 @@ private func repoWatcherCallback(
     eventIds: UnsafePointer<FSEventStreamEventId>
 ) {
     guard let info = clientCallBackInfo else { return }
-    Unmanaged<RepoWatcher>.fromOpaque(info).takeUnretainedValue().fire()
+    let paths = (Unmanaged<CFArray>.fromOpaque(eventPaths).takeUnretainedValue() as? [String]) ?? []
+    Unmanaged<RepoWatcher>.fromOpaque(info).takeUnretainedValue().fire(paths: paths)
 }

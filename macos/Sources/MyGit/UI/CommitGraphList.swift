@@ -31,6 +31,9 @@ struct CommitGraphList: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture { vm.selectedCommit = row.commit }
+                        .onHover { inside in
+                            if inside { vm.prefetchMenuInfo(for: row.commit) }
+                        }
                         .contextMenu { CommitContextMenu(commit: row.commit, vm: vm) }
                     }
                     if vm.hasMore {
@@ -40,7 +43,6 @@ struct CommitGraphList: View {
                     }
                 }
             }
-            .commitActionHost(vm)
         }
     }
 }

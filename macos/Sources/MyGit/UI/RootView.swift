@@ -24,6 +24,7 @@ struct RootView: View {
             .environmentObject(bundle.remote)
             .environmentObject(bundle.pullRequests)
             .environmentObject(bundle.compareVM)
+            .environmentObject(bundle.run)
             .overlay {
                 // Observe the search VM directly — RootView only observes the
                 // coordinator, so a nested VM change wouldn't re-render otherwise.

@@ -99,11 +99,15 @@ struct ImagePreviewView: View {
 
     private func render(_ url: URL?) async -> Side {
         guard let url, let data = await fetch(url) else { return Side() }
-        if file.isImage { return Side(image: NSImage(data: data)) }
-        if let xml = String(data: data, encoding: .utf8),
-           let svg = AndroidVectorDrawable.toSVG(xml) {
-            return Side(svg: svg)
+        if file.isImage, let img = NSImage(data: data) { return Side(image: img) }
+        if let text = String(data: data, encoding: .utf8) {
+            // Plain SVG renders as-is; Android VectorDrawable XML converts first.
+            if file.isSVG, text.contains("<svg") { return Side(svg: text) }
+            if let svg = AndroidVectorDrawable.toSVG(text) { return Side(svg: svg) }
         }
+        // Last resort: let ImageIO/NSImage try any bytes (covers formats not in
+        // the extension list — ico, avif, etc.).
+        if let img = NSImage(data: data) { return Side(image: img) }
         return Side()
     }
 }
@@ -121,7 +125,8 @@ struct SVGWebView: NSViewRepresentable {
     func updateNSView(_ view: WKWebView, context: Context) {
         // Checkerboard backdrop so icons of any color (incl. black/white) show.
         let html = """
-        <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+        <html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>svg{width:100%;height:100%;}</style></head>
         <body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
         background-color:#9a9a9a;
         background-image:linear-gradient(45deg,#8a8a8a 25%,transparent 25%),linear-gradient(-45deg,#8a8a8a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#8a8a8a 75%),linear-gradient(-45deg,transparent 75%,#8a8a8a 75%);

@@ -3,6 +3,7 @@ import SwiftUI
 /// A selectable leaf in the settings sidebar.
 enum SettingsItem: Hashable {
     case provider(AIProvider)
+    case files
 }
 
 /// Settings shell — sidebar (search + collapsible groups) on the left,
@@ -30,6 +31,10 @@ struct SettingsView: View {
                             Label("AI", systemImage: "sparkles")
                         }
                     }
+                    if matchesSearch("files navigator reveal editor") {
+                        Label("Files", systemImage: "folder")
+                            .tag(SettingsItem.files)
+                    }
                 }
                 .listStyle(.sidebar)
             }
@@ -54,6 +59,12 @@ struct SettingsView: View {
         .padding(.vertical, 10)
     }
 
+    /// Sidebar rows that aren't providers filter on their own keyword blob.
+    private func matchesSearch(_ keywords: String) -> Bool {
+        let q = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return q.isEmpty || keywords.contains(q)
+    }
+
     private var filteredProviders: [AIProvider] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return AIProvider.allCases }
@@ -69,11 +80,31 @@ struct SettingsView: View {
         switch selection {
         case .provider(let p):
             AICommitSettingsView(provider: p)
+        case .files:
+            FilesSettingsView()
         case nil:
             Text("Select a setting")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+/// File-tree behaviour settings.
+struct FilesSettingsView: View {
+    @EnvironmentObject var settings: SettingsViewModel
+
+    var body: some View {
+        Form {
+            Section("Navigator") {
+                Toggle("Auto-expand to the active file", isOn: $settings.autoRevealActiveFile)
+                Text("Expands the file tree down to whichever file the editor is showing and selects it. With this off, use View ▸ Reveal Active File (⌘⇧1).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

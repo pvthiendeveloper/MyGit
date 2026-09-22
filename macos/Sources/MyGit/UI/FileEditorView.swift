@@ -33,12 +33,30 @@ struct FileEditorContent: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 if isShellScript {
-                    Button(action: runScript) {
+                    Menu {
+                        Section("Open URLs during run with") {
+                            ForEach(ScriptBrowser.allCases) { choice in
+                                Button {
+                                    terminal.scriptBrowser = choice
+                                    runScript(browser: choice)
+                                } label: {
+                                    if terminal.scriptBrowser == choice {
+                                        Label(choice.label, systemImage: "checkmark")
+                                    } else {
+                                        Text(choice.label)
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
                         Image(systemName: "play.fill")
                             .foregroundStyle(.green)
+                    } primaryAction: {
+                        runScript(browser: terminal.scriptBrowser)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Run script in terminal")
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Run script in terminal — ▾ picks which browser it opens")
                     .disabled(tab.isBinary)
                 }
                 Text(tab.path)
@@ -47,6 +65,12 @@ struct FileEditorContent: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                if let symbol = vm.resolvingSymbol {
+                    HStack(spacing: 4) {
+                        ProgressView().controlSize(.small)
+                        Text("Finding \(symbol)…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if tab.isBinary {
                     Text("binary").font(.caption).foregroundStyle(.secondary)
                 }
@@ -81,7 +105,11 @@ struct FileEditorContent: View {
             } else {
                 CodeEditor(
                     text: $tab.content,
-                    syntaxExt: (tab.name as NSString).pathExtension
+                    syntaxExt: (tab.name as NSString).pathExtension,
+                    goto: tab.goto,
+                    onCommandClick: { symbol, line in
+                        vm.goToDefinition(symbol: symbol, line: line, in: tab)
+                    }
                 )
                 .background(Color(NSColor.textBackgroundColor))
             }
@@ -90,11 +118,11 @@ struct FileEditorContent: View {
 
     /// Save any unsaved edits first (IntelliJ runs the on-disk file), then run
     /// the script in the bottom terminal panel.
-    private func runScript() {
+    private func runScript(browser: ScriptBrowser) {
         Task {
             if tab.isDirty { await vm.saveFileTab(tab) }
             guard let abs = vm.absolutePath(for: tab) else { return }
-            terminal.runShellScript(absolutePath: abs)
+            terminal.runShellScript(absolutePath: abs, browser: browser)
         }
     }
 }

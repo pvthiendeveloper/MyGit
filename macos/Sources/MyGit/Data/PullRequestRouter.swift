@@ -45,6 +45,10 @@ struct PullRequestRouter: PullRequestRepository {
         )
     }
 
+    func defaultReviewers(host: String, owner: String, repo: String, token: String) async throws -> [PRUser] {
+        try await impl(for: host).defaultReviewers(host: host, owner: owner, repo: repo, token: token)
+    }
+
     func list(
         host: String, owner: String, repo: String,
         page: Int, token: String

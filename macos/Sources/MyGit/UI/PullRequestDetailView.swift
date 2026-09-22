@@ -386,6 +386,10 @@ struct PullRequestDetailView: View {
                     .background(selected ? Color.accentColor.opacity(0.15) : Color.clear)
                     .contentShape(Rectangle())
                     .onTapGesture { vm.selectCommit(c) }
+                    .contextMenu {
+                        Button("Copy Commit Message") { FileActions.copyToPasteboard(c.message) }
+                        Button("Copy Revision Number") { FileActions.copyToPasteboard(c.id) }
+                    }
                     Divider()
                 }
             }
