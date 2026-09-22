@@ -52,13 +52,16 @@ final class RepoBundle: Identifiable {
         )
         self.account = account
 
-        self.editor = FileEditorViewModel(
+        let editor = FileEditorViewModel(
             fileEditor: container.fileEditor,
+            ai: container.commitMessage,
             git: container.git,
             main: main,
             repoSource: repoSource,
             onSaved: { [weak changes] in await changes?.refreshStatus() }
         )
+        self.editor = editor
+        editor.setAIConfigSource { [weak settings] in settings?.requestConfig() }
 
         let currentBranch: () -> String? = { [weak changes] in changes?.status?.branch }
 

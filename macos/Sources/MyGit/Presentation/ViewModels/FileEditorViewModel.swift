@@ -19,6 +19,8 @@ final class FileEditorViewModel: ObservableObject {
     }
 
     private let fileEditor: FileEditorRepository
+    private let ai: CommitMessageRepository
+    private var aiConfigSource: () -> AIRequestConfig? = { nil }
     private let git: GitRepository
     private let main: MainViewModel
     private let repoSource: () -> Repository?
@@ -26,16 +28,38 @@ final class FileEditorViewModel: ObservableObject {
 
     init(
         fileEditor: FileEditorRepository,
+        ai: CommitMessageRepository,
         git: GitRepository,
         main: MainViewModel,
         repoSource: @escaping () -> Repository?,
         onSaved: @escaping () async -> Void
     ) {
         self.fileEditor = fileEditor
+        self.ai = ai
         self.git = git
         self.main = main
         self.repoSource = repoSource
         self.onSaved = onSaved
+    }
+
+    func setAIConfigSource(_ block: @escaping () -> AIRequestConfig?) { aiConfigSource = block }
+
+    /// Ask the configured LLM to continue the code at the caret. Returns nil
+    /// when AI isn't configured or it had nothing to add.
+    func aiSuggestion(prefix: String, suffix: String, language: String) async -> String? {
+        guard let config = aiConfigSource() else {
+            main.errorMessage = CommitMessageError.missingAPIKey.errorDescription
+            return nil
+        }
+        do {
+            let text = try await ai.completeCode(prefix: prefix, suffix: suffix,
+                                                 language: language, config: config)
+            let trimmed = text.trimmingCharacters(in: .newlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     // MARK: - Completion

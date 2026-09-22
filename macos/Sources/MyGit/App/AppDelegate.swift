@@ -191,6 +191,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            // ⌘⇧P asks the AI for a continuation, but only while editing code —
+            // the menu owns that chord otherwise (Repository ▸ Pull), and menu
+            // key equivalents run before the text view ever sees the key.
+            if event.modifierFlags.contains(.command), event.modifierFlags.contains(.shift),
+               event.charactersIgnoringModifiers?.lowercased() == "p",
+               let editor = NSApp.keyWindow?.firstResponder as? NavigableTextView,
+               editor.isEditable {
+                editor.requestAISuggestion()
+                return nil
+            }
             // Esc closes the overlay when it's open.
             if self.coordinator.search.isPresented, event.keyCode == 53 {
                 self.coordinator.search.dismiss()

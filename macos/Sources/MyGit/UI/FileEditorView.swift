@@ -112,7 +112,16 @@ struct FileEditorContent: View {
                         vm.goToDefinition(symbol: symbol, line: line, in: tab)
                     },
                     completionSymbols: { vm.repoSymbols },
-                    autocompleteWhileTyping: settings.autocompleteWhileTyping
+                    autocompleteWhileTyping: settings.autocompleteWhileTyping,
+                    aiSuggest: settings.aiInlineCompletion
+                        ? { prefix, suffix in
+                            await vm.aiSuggestion(
+                                prefix: prefix,
+                                suffix: suffix,
+                                language: (tab.name as NSString).pathExtension
+                            )
+                          }
+                        : nil
                 )
                 .background(Color(NSColor.textBackgroundColor))
                 .task { await vm.loadRepoSymbols() }

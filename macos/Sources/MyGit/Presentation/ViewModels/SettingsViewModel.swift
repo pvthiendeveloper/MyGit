@@ -36,6 +36,12 @@ final class SettingsViewModel: ObservableObject {
         didSet { defaults.set(autocompleteWhileTyping, forKey: Keys.autocompleteWhileTyping) }
     }
 
+    /// Offer AI continuations at the caret (⌥↩). Off by default — it spends
+    /// tokens and needs a round trip.
+    @Published var aiInlineCompletion: Bool {
+        didSet { defaults.set(aiInlineCompletion, forKey: Keys.aiInlineCompletion) }
+    }
+
     /// Transient connection-test result per provider (not persisted).
     @Published var testStatus: [String: ConnectionTestStatus] = [:]
 
@@ -65,6 +71,7 @@ final class SettingsViewModel: ObservableObject {
         static let generateBody = "MyGit.ai.generateBody"
         static let autoRevealActiveFile = "MyGit.files.autoRevealActiveFile"
         static let autocompleteWhileTyping = "MyGit.editor.autocompleteWhileTyping"
+        static let aiInlineCompletion = "MyGit.editor.aiInlineCompletion"
         static func model(_ p: AIProvider) -> String { "MyGit.ai.model.\(p.rawValue)" }
         static func baseURL(_ p: AIProvider) -> String { "MyGit.ai.baseURL.\(p.rawValue)" }
         static func modelList(_ p: AIProvider) -> String { "MyGit.ai.modelList.\(p.rawValue)" }
@@ -83,6 +90,7 @@ final class SettingsViewModel: ObservableObject {
         // Absent key → on; `bool(forKey:)` alone would default it to off.
         self.autoRevealActiveFile = defaults.object(forKey: Keys.autoRevealActiveFile) as? Bool ?? true
         self.autocompleteWhileTyping = defaults.object(forKey: Keys.autocompleteWhileTyping) as? Bool ?? true
+        self.aiInlineCompletion = defaults.bool(forKey: Keys.aiInlineCompletion)
 
         var m: [String: String] = [:]
         var b: [String: String] = [:]

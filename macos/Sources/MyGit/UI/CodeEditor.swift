@@ -24,6 +24,8 @@ struct CodeEditor: NSViewRepresentable {
     var completionSymbols: () -> [String] = { [] }
     /// Pop the completion list automatically while typing an identifier.
     var autocompleteWhileTyping = true
+    /// ⌘⇧P asks this for an AI continuation at the caret (prefix, suffix).
+    var aiSuggest: ((String, String) async -> String?)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -36,6 +38,9 @@ struct CodeEditor: NSViewRepresentable {
             coordinator?.parent.completionSymbols() ?? []
         }
         tv.autocompleteWhileTyping = autocompleteWhileTyping
+        tv.aiSuggest = { [weak coordinator = context.coordinator] prefix, suffix in
+            await coordinator?.parent.aiSuggest?(prefix, suffix)
+        }
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
@@ -209,9 +214,27 @@ final class NavigableTextView: NSTextView {
     /// Repo-wide declared names, merged with this buffer's own words.
     var completionSymbols: () -> [String] = { [] }
     var autocompleteWhileTyping = true
+    /// Asks for an AI continuation at the caret; nil disables the shortcut.
+    var aiSuggest: ((String, String) async -> String?)?
     /// Set while the last edit was a plain insertion, so completion doesn't pop
     /// up while deleting.
     private var lastEditWasInsertion = false
+
+    /// Dimmed preview of an AI suggestion, drawn over the text rather than
+    /// inserted — inserting it would dirty the file before the user accepts.
+    private lazy var ghostView: NSTextView = {
+        let view = NSTextView(frame: .zero)
+        view.isEditable = false
+        view.isSelectable = false
+        view.drawsBackground = true
+        view.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.92)
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.isHidden = true
+        return view
+    }()
+    private var ghostText: String?
+    private var isRequestingSuggestion = false
 
     fileprivate static let identifierChars: CharacterSet = {
         var set = CharacterSet.alphanumerics
@@ -220,6 +243,7 @@ final class NavigableTextView: NSTextView {
     }()
 
     override func mouseDown(with event: NSEvent) {
+        dismissSuggestion()
         guard event.modifierFlags.contains(.command), let onCommandClick else {
             super.mouseDown(with: event)
             return
@@ -261,6 +285,92 @@ final class NavigableTextView: NSTextView {
         return identifierChars.contains(scalar)
     }
 
+    // MARK: - AI suggestion (ghost text)
+
+    /// ⌘⇧P asks for a suggestion (routed from `AppDelegate`'s key monitor, since
+    /// the menu would swallow it first); ⇥ accepts the one on screen; ⎋ drops it.
+    func requestAISuggestion() { requestSuggestion() }
+
+    /// True while a suggestion is on screen, so the app-level shortcut knows
+    /// this view is the one to talk to.
+    var hasAISuggestion: Bool { ghostText != nil }
+
+    override func keyDown(with event: NSEvent) {
+        if ghostText != nil {
+            if event.keyCode == 48 {            // tab
+                acceptSuggestion()
+                return
+            }
+            if event.keyCode == 53 {            // esc
+                dismissSuggestion()
+                return
+            }
+            dismissSuggestion()
+        }
+        super.keyDown(with: event)
+    }
+
+    private func requestSuggestion() {
+        guard let aiSuggest, isEditable, !isRequestingSuggestion else { return }
+        let ns = string as NSString
+        let caret = selectedRange().location
+        guard caret <= ns.length else { return }
+        let prefix = ns.substring(to: caret)
+        let suffix = ns.substring(from: caret)
+        isRequestingSuggestion = true
+        showGhost("…")
+        Task { @MainActor in
+            let suggestion = await aiSuggest(prefix, suffix)
+            isRequestingSuggestion = false
+            guard let suggestion, !suggestion.isEmpty else {
+                dismissSuggestion()
+                return
+            }
+            ghostText = suggestion
+            showGhost(suggestion)
+        }
+    }
+
+    private func acceptSuggestion() {
+        guard let text = ghostText else { return }
+        dismissSuggestion()
+        insertText(text, replacementRange: selectedRange())
+    }
+
+    private func dismissSuggestion() {
+        ghostText = nil
+        ghostView.isHidden = true
+    }
+
+    /// Park the preview just after the caret, clipped to the visible width.
+    private func showGhost(_ text: String) {
+        guard let layoutManager, let textContainer else { return }
+        if ghostView.superview == nil { addSubview(ghostView) }
+        let font = self.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        ghostView.string = text
+        ghostView.font = font
+        ghostView.textColor = .tertiaryLabelColor
+
+        let caret = selectedRange()
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: NSRange(location: caret.location, length: 0),
+                                                  actualCharacterRange: nil)
+        var origin = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer).origin
+        origin.x += textContainerInset.width
+        origin.y += textContainerInset.height
+
+        let lines = max(1, text.components(separatedBy: "\n").count)
+        let lineHeight = layoutManager.defaultLineHeight(for: font)
+        let width = max(80, (text.components(separatedBy: "\n").map { $0.count }.max() ?? 1))
+        let charWidth = font.maximumAdvancement.width
+        ghostView.frame = NSRect(
+            x: origin.x,
+            y: origin.y,
+            width: min(CGFloat(width) * charWidth + 8, max(120, visibleRect.width - origin.x - 8)),
+            height: CGFloat(lines) * lineHeight + 4
+        )
+        ghostView.isHidden = false
+    }
+
     // MARK: - Completion
 
     /// AppKit owns the popup (arrow keys, Esc, insertion); this just supplies
@@ -296,8 +406,23 @@ final class NavigableTextView: NSTextView {
                 : $0.score < $1.score
         }
         guard !sorted.isEmpty else { return nil }
-        index?.pointee = 0
+        // -1 = nothing preselected. With an item selected, AppKit writes it
+        // into the buffer as an inline preview, which reads as the editor
+        // typing for you.
+        index?.pointee = -1
         return Array(sorted.prefix(60).map { $0.word })
+    }
+
+    /// Only commit on an explicit pick (⏎/⇥/click). AppKit otherwise inserts
+    /// each candidate as you arrow through the list.
+    override func insertCompletion(
+        _ word: String,
+        forPartialWordRange charRange: NSRange,
+        movement: Int,
+        isFinal flag: Bool
+    ) {
+        guard flag, movement != NSTextMovement.cancel.rawValue else { return }
+        super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: true)
     }
 
     /// Identifiers already present in this buffer.
@@ -327,6 +452,7 @@ final class NavigableTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        dismissSuggestion()
         guard autocompleteWhileTyping, isEditable, lastEditWasInsertion else { return }
         let ns = string as NSString
         let caret = selectedRange().location

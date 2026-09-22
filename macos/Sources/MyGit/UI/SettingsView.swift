@@ -127,6 +127,12 @@ struct EditorSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("AI") {
+                Toggle("AI continuation on ⌘⇧P", isOn: $settings.aiInlineCompletion)
+                Text("Asks the active AI provider to continue the code at the caret and shows it dimmed; ⇥ accepts, ⎋ dismisses. The shortcut only fires while editing code — elsewhere ⌘⇧P still means Pull. Uses the same key as commit-message generation and spends tokens per request.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
