@@ -103,6 +103,10 @@ final class RepoBundle: Identifiable {
             guard let self else { return }
             ConflictsWindow.open(bundle: self, ours: ours, theirs: theirs)
         }
+        remote.setOnMergeConflict { [weak self] ours, theirs in
+            guard let self else { return }
+            ConflictsWindow.open(bundle: self, ours: ours, theirs: theirs)
+        }
         changes.setPushAfterCommit { [weak remote] force in
             if force { await remote?.forcePush() } else { await remote?.push() }
         }

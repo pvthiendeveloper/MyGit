@@ -49,10 +49,11 @@ struct GitStatusSummary {
     let changes: [FileChange]
     var mergeInProgress: Bool = false
     var cherryPickInProgress: Bool = false
+    var rebaseInProgress: Bool = false
 
     var hasConflicts: Bool { changes.contains { $0.isConflicted } }
     /// Any sequencer/merge operation git is holding open.
-    var operationInProgress: Bool { mergeInProgress || cherryPickInProgress }
+    var operationInProgress: Bool { mergeInProgress || cherryPickInProgress || rebaseInProgress }
 }
 
 enum GitStatusParser {

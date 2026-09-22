@@ -121,21 +121,77 @@ enum ProjectToolchain {
 
     // MARK: - Project metadata
 
-    /// Schemes `xcodebuild` knows about, for the workspace if there is one.
-    static func iosSchemes(at repo: URL) async -> [String] {
-        var args = ["xcodebuild", "-list", "-json"]
+    struct SchemeList {
+        let schemes: [String]
+        /// Why `xcodebuild` couldn't answer, when it couldn't. Non-nil even if
+        /// `schemes` is filled from disk, so the UI can explain a stale list.
+        let warning: String?
+    }
+
+    /// Schemes for the repo. `xcodebuild -list` is authoritative but fails
+    /// whenever the project can't resolve its packages/pods, so fall back to the
+    /// `.xcscheme` files on disk — enough to build with.
+    static func iosSchemes(at repo: URL) async -> SchemeList {
+        var attempts: [[String]] = []
         if let workspace = xcodeContainer(at: repo, ext: "xcworkspace") {
-            args += ["-workspace", workspace]
-        } else if let project = xcodeContainer(at: repo, ext: "xcodeproj") {
-            args += ["-project", project]
-        } else {
-            return []
+            attempts.append(["-workspace", workspace])
         }
-        let listed = await ProcessRunner.run(xcrun, args, cwd: repo, timeout: 60)
-        guard let data = listed.stdout.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        let container = (root["workspace"] ?? root["project"]) as? [String: Any]
-        return (container?["schemes"] as? [String]) ?? []
+        if let project = xcodeContainer(at: repo, ext: "xcodeproj") {
+            attempts.append(["-project", project])
+        }
+
+        var lastError: String?
+        for container in attempts {
+            let listed = await ProcessRunner.run(
+                xcrun, ["xcodebuild", "-list", "-json"] + container, cwd: repo, timeout: 90
+            )
+            // xcodebuild prefixes its JSON with log lines often enough to matter.
+            if let start = listed.stdout.firstIndex(of: "{"),
+               let data = String(listed.stdout[start...]).data(using: .utf8),
+               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let info = (root["workspace"] ?? root["project"]) as? [String: Any],
+               let schemes = info["schemes"] as? [String], !schemes.isEmpty {
+                return SchemeList(schemes: schemes, warning: nil)
+            }
+            let stderr = listed.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stderr.isEmpty { lastError = Self.firstErrorLine(stderr) }
+        }
+
+        let onDisk = schemesOnDisk(at: repo)
+        return SchemeList(
+            schemes: onDisk,
+            warning: lastError ?? (onDisk.isEmpty ? "No schemes found in this project." : nil)
+        )
+    }
+
+    /// Shared + per-user `.xcscheme` files inside the root project/workspace.
+    private static func schemesOnDisk(at repo: URL) -> [String] {
+        let fm = FileManager.default
+        let containers = ((try? fm.contentsOfDirectory(atPath: repo.path)) ?? [])
+            .filter { $0.hasSuffix(".xcodeproj") || $0.hasSuffix(".xcworkspace") }
+        var names: Set<String> = []
+        for container in containers {
+            let base = repo.appendingPathComponent(container)
+            var roots = [base.appendingPathComponent("xcshareddata/xcschemes")]
+            let userData = base.appendingPathComponent("xcuserdata")
+            for user in (try? fm.contentsOfDirectory(atPath: userData.path)) ?? [] {
+                roots.append(userData.appendingPathComponent(user).appendingPathComponent("xcschemes"))
+            }
+            for root in roots {
+                for file in (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
+                where file.hasSuffix(".xcscheme") {
+                    names.insert((file as NSString).deletingPathExtension)
+                }
+            }
+        }
+        return names.sorted()
+    }
+
+    /// The first line that actually names the problem, skipping timestamps.
+    private static func firstErrorLine(_ stderr: String) -> String {
+        let lines = stderr.split(separator: "\n").map(String.init)
+        let meaningful = lines.first { $0.contains("error:") } ?? lines.last ?? stderr
+        return String(meaningful.prefix(200))
     }
 
     /// `<name>.xcworkspace` / `.xcodeproj` at the repo root, if present.
@@ -143,6 +199,70 @@ enum ProjectToolchain {
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: repo.path)) ?? []
         // Skip the project bundled *inside* a workspace-style Pods setup.
         return entries.filter { $0.hasSuffix(".\(ext)") }.sorted().first
+    }
+
+    /// Modules and their build variants, read from Gradle's own task list.
+    ///
+    /// `gradlew tasks --all` is the only source that knows the real flavor
+    /// matrix (`installGosaDebug`, …); parsing the Gradle files would have to
+    /// re-implement flavor dimensions. It needs a Gradle configuration pass, so
+    /// it's slow on a cold daemon — callers cache the result.
+    static func androidModules(at repo: URL) async -> [GradleModule] {
+        let gradlew = repo.appendingPathComponent("gradlew")
+        guard FileManager.default.isExecutableFile(atPath: gradlew.path) else { return [] }
+        let listed = await ProcessRunner.run(
+            gradlew.path, ["-q", "tasks", "--all", "--console=plain"], cwd: repo, timeout: 300
+        )
+        guard !listed.stdout.isEmpty else { return [] }
+
+        // "demoApp:installGosaDebug - Installs the Debug build for flavor Gosa."
+        let pattern = try? NSRegularExpression(
+            pattern: #"^(?:([A-Za-z0-9_.:-]+):)?(install|assemble)([A-Za-z0-9]+)\s+-\s+(.*)$"#,
+            options: [.anchorsMatchLines]
+        )
+        var installs: [String: Set<String>] = [:]
+        var assembles: [String: Set<String>] = [:]
+        let text = listed.stdout
+        pattern?.enumerateMatches(in: text, range: NSRange(text.startIndex..., in: text)) { match, _, _ in
+            guard let match else { return }
+            func group(_ i: Int) -> String? {
+                guard let range = Range(match.range(at: i), in: text) else { return nil }
+                return String(text[range])
+            }
+            let module = group(1) ?? ""
+            guard let verb = group(2), var variant = group(3), let description = group(4) else { return }
+            // AGP's own wording is the only reliable filter: `installGophDebug`
+            // and `installGophDebugPrivateArtifact` are both install tasks, but
+            // only the first is a build variant (the second pushes an Internal
+            // Sharing artifact for it). Same for the test/aggregate tasks.
+            switch verb {
+            case "install":
+                guard description.hasPrefix("Installs the") else { return }
+            default:
+                // Library modules say "Assembles main output for variant debug";
+                // the aggregate tasks say "…for all Debug variants" / "Test
+                // applications", which aren't variants to pick.
+                guard description.hasPrefix("Assembles main output for variant") else { return }
+            }
+            guard !variant.hasSuffix("AndroidTest"), !variant.hasSuffix("UnitTest") else { return }
+            variant = variant.prefix(1).lowercased() + variant.dropFirst()
+            if verb == "install" { installs[module, default: []].insert(variant) }
+            else { assembles[module, default: []].insert(variant) }
+        }
+
+        var modules: [GradleModule] = installs.map {
+            GradleModule(path: $0.key, variants: $0.value.sorted(), isApplication: true)
+        }
+        for (module, variants) in assembles where installs[module] == nil {
+            // Library modules: shown in the panel, not installable.
+            guard !module.isEmpty else { continue }
+            modules.append(GradleModule(path: module, variants: variants.sorted(), isApplication: false))
+        }
+        return modules.sorted {
+            $0.isApplication == $1.isApplication
+                ? $0.path.localizedStandardCompare($1.path) == .orderedAscending
+                : $0.isApplication
+        }
     }
 
     /// `applicationId` from the app module's Gradle file — needed to launch the
@@ -175,10 +295,18 @@ enum ProjectToolchain {
 
     /// Write the build-install-launch script for a target and return its path.
     /// Returns nil when the toolchain needed for it isn't installed.
-    static func runScript(kind: ProjectKind, device: RunDevice, scheme: String?, repo: URL) -> String? {
+    static func runScript(
+        kind: ProjectKind,
+        device: RunDevice,
+        scheme: String?,
+        buildTask: String,
+        variant: String?,
+        repo: URL
+    ) -> String? {
         let body: String?
         switch kind {
-        case .android: body = androidScript(device: device, repo: repo)
+        case .android:
+            body = androidScript(device: device, repo: repo, buildTask: buildTask, variant: variant)
         case .ios: body = iosScript(device: device, scheme: scheme, repo: repo)
         case .unknown: body = nil
         }
@@ -195,11 +323,15 @@ enum ProjectToolchain {
         return file.path
     }
 
-    private static func androidScript(device: RunDevice, repo: URL) -> String? {
+    private static func androidScript(
+        device: RunDevice,
+        repo: URL,
+        buildTask: String,
+        variant: String?
+    ) -> String? {
         guard let adb = adbPath else { return nil }
         let gradle = FileManager.default.isExecutableFile(atPath: repo.appendingPathComponent("gradlew").path)
             ? "./gradlew" : "gradle"
-        let appId = androidApplicationId(at: repo)
 
         var script = """
         #!/bin/bash
@@ -212,12 +344,25 @@ enum ProjectToolchain {
         switch device.kind {
         case .androidEmulator(let avd) where !device.isBooted:
             guard let emulator = emulatorPath else { return nil }
+            // Poll for the serial: the AVD appears in `adb devices` a moment
+            // after `wait-for-device` returns, and an empty serial would make
+            // every later adb call target "".
             script += """
-            echo "▶ booting emulator \(avd)…"
+            echo "▶ booting emulator \(avd) ..."
             \(q(emulator)) -avd \(q(avd)) >/dev/null 2>&1 &
             "$ADB" wait-for-device
-            SERIAL="$("$ADB" devices | awk '/^emulator-/ {print $1; exit}')"
-            until [ "$("$ADB" -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')" = "1" ]; do
+            SERIAL=""
+            for _ in $(seq 1 150); do
+              SERIAL="$("$ADB" devices | awk '/^emulator-/ {print $1; exit}')"
+              [ -n "${SERIAL}" ] && break
+              sleep 2
+            done
+            if [ -z "${SERIAL}" ]; then
+              echo "emulator never showed up in adb devices"
+              exit 1
+            fi
+            echo "▶ waiting for boot ..."
+            until [ "$("$ADB" -s "${SERIAL}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')" = "1" ]; do
               sleep 2
             done
 
@@ -226,23 +371,73 @@ enum ProjectToolchain {
             script += "SERIAL=\(q(device.id))\n\n"
         }
 
+        // Every expansion is braced: bash folds a following multi-byte
+        // character (…, ▶) into the variable name, and `set -u` then aborts
+        // with "SERIAL…: unbound variable".
         script += """
-        export ANDROID_SERIAL="$SERIAL"
-        echo "▶ installing on $SERIAL…"
-        \(gradle) installDebug
+        export ANDROID_SERIAL="${SERIAL}"
+        echo "▶ building \(buildTask) ..."
+        \(gradle) \(buildTask)
 
         """
-        if let appId {
-            script += """
-            echo "▶ launching \(appId)…"
-            "$ADB" -s "$SERIAL" shell monkey -p \(q(appId)) -c android.intent.category.LAUNCHER 1 >/dev/null
-            echo "✔ running"
-            """
-        } else {
-            script += """
-            echo "✔ installed — couldn't read applicationId from the Gradle files, so launch it by hand."
-            """
-        }
+
+        // The APK's own metadata carries both the file name and the real
+        // applicationId (flavors add `applicationIdSuffix`), so read it instead
+        // of guessing either.
+        let variantFilter = variant.map { "'\($0)'" } ?? "None"
+        script += """
+        META="$(/usr/bin/python3 - <<'PY' 2>/dev/null || true
+        import glob, json, os
+        want = \(variantFilter)
+        # `outputs/` is where assemble lands; `intermediates/` is what older
+        # builds (and the install task) leave behind — accept both, prefer the
+        # first group that yields a match.
+        groups = [
+            '**/build/outputs/apk/**/output-metadata.json',
+            '**/build/intermediates/apk/**/output-metadata.json',
+        ]
+        best = None
+        for pattern in groups:
+            for path in glob.glob(pattern, recursive=True):
+                try:
+                    meta = json.load(open(path))
+                except Exception:
+                    continue
+                if want and meta.get('variantName') != want:
+                    continue
+                element = (meta.get('elements') or [{}])[0]
+                apk = os.path.join(os.path.dirname(path), element.get('outputFile', ''))
+                if not os.path.exists(apk):
+                    continue
+                stamp = os.path.getmtime(apk)
+                if best is None or stamp > best[0]:
+                    best = (stamp, apk, meta.get('applicationId', ''))
+            if best:
+                break
+        if best:
+            print(best[1])
+            print(best[2])
+        PY
+        )"
+        APK="$(printf '%s\n' "${META}" | sed -n '1p')"
+        PKG="$(printf '%s\n' "${META}" | sed -n '2p')"
+
+        if [ -z "${APK}" ]; then
+          echo "✖ no APK found for \(variant ?? "the build") — check the Gradle output above"
+          exit 1
+        fi
+
+        echo "▶ installing ${APK} on ${SERIAL} ..."
+        "$ADB" -s "${SERIAL}" install -r "${APK}"
+
+        if [ -n "${PKG}" ]; then
+          echo "▶ launching ${PKG} ..."
+          "$ADB" -s "${SERIAL}" shell monkey -p "${PKG}" -c android.intent.category.LAUNCHER 1 >/dev/null
+          echo "✔ running"
+        else
+          echo "✔ installed — couldn't read the package name, so launch it by hand."
+        fi
+        """
         return script
     }
 
@@ -267,29 +462,29 @@ enum ProjectToolchain {
         cd \(q(repo.path))
         DERIVED=".mygit-build"
 
-        echo "▶ building \(scheme)…"
+        echo "▶ building \(scheme) ..."
         xcrun xcodebuild \(container) -scheme \(q(scheme)) -configuration Debug \(sdkFlags) \\
-          -destination 'id=\(device.id)' -derivedDataPath "$DERIVED" build
+          -destination 'id=\(device.id)' -derivedDataPath "${DERIVED}" build
 
-        APP="$(ls -d "$DERIVED"/Build/Products/\(productsDir)/*.app | head -1)"
-        BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+        APP="$(ls -d "${DERIVED}"/Build/Products/\(productsDir)/*.app | head -1)"
+        BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Info.plist")"
 
         """
 
         if isSimulator {
             script += """
-            echo "▶ booting simulator…"
+            echo "▶ booting simulator ..."
             xcrun simctl boot \(q(device.id)) 2>/dev/null || true
             open -a Simulator
-            xcrun simctl install \(q(device.id)) "$APP"
-            xcrun simctl launch \(q(device.id)) "$BUNDLE_ID"
+            xcrun simctl install \(q(device.id)) "${APP}"
+            xcrun simctl launch \(q(device.id)) "${BUNDLE_ID}"
             echo "✔ running"
             """
         } else {
             script += """
-            echo "▶ installing on device…"
-            xcrun devicectl device install app --device \(q(device.id)) "$APP"
-            xcrun devicectl device process launch --device \(q(device.id)) "$BUNDLE_ID"
+            echo "▶ installing on device ..."
+            xcrun devicectl device install app --device \(q(device.id)) "${APP}"
+            xcrun devicectl device process launch --device \(q(device.id)) "${BUNDLE_ID}"
             echo "✔ running"
             """
         }

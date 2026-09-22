@@ -4,6 +4,7 @@ import SwiftUI
 enum SettingsItem: Hashable {
     case provider(AIProvider)
     case files
+    case editor
 }
 
 /// Settings shell — sidebar (search + collapsible groups) on the left,
@@ -34,6 +35,10 @@ struct SettingsView: View {
                     if matchesSearch("files navigator reveal editor") {
                         Label("Files", systemImage: "folder")
                             .tag(SettingsItem.files)
+                    }
+                    if matchesSearch("editor autocomplete completion code") {
+                        Label("Editor", systemImage: "curlybraces")
+                            .tag(SettingsItem.editor)
                     }
                 }
                 .listStyle(.sidebar)
@@ -82,6 +87,8 @@ struct SettingsView: View {
             AICommitSettingsView(provider: p)
         case .files:
             FilesSettingsView()
+        case .editor:
+            EditorSettingsView()
         case nil:
             Text("Select a setting")
                 .foregroundStyle(.secondary)
@@ -99,6 +106,24 @@ struct FilesSettingsView: View {
             Section("Navigator") {
                 Toggle("Auto-expand to the active file", isOn: $settings.autoRevealActiveFile)
                 Text("Expands the file tree down to whichever file the editor is showing and selects it. With this off, use View ▸ Reveal Active File (⌘⇧1).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// Code-editor behaviour settings.
+struct EditorSettingsView: View {
+    @EnvironmentObject var settings: SettingsViewModel
+
+    var body: some View {
+        Form {
+            Section("Completion") {
+                Toggle("Suggest while typing", isOn: $settings.autocompleteWhileTyping)
+                Text("Candidates are the identifiers in the open file plus every declaration in the repo (types, functions, properties). Press ⌥⎋ to ask for them explicitly; ⎋ dismisses the list.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

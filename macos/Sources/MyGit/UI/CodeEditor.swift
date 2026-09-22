@@ -19,6 +19,11 @@ struct CodeEditor: NSViewRepresentable {
     var goto: EditorGoto?
     /// ⌘-click on an identifier: (symbol, 1-based line it was clicked on).
     var onCommandClick: ((String, Int) -> Void)?
+    /// Extra completion candidates (declared names across the repo). The buffer's
+    /// own words are gathered by the text view itself.
+    var completionSymbols: () -> [String] = { [] }
+    /// Pop the completion list automatically while typing an identifier.
+    var autocompleteWhileTyping = true
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -27,6 +32,10 @@ struct CodeEditor: NSViewRepresentable {
         tv.onCommandClick = { [weak coordinator = context.coordinator] symbol, line in
             coordinator?.parent.onCommandClick?(symbol, line)
         }
+        tv.completionSymbols = { [weak coordinator = context.coordinator] in
+            coordinator?.parent.completionSymbols() ?? []
+        }
+        tv.autocompleteWhileTyping = autocompleteWhileTyping
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
@@ -97,6 +106,7 @@ struct CodeEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tv = context.coordinator.textView else { return }
         if tv.isEditable != isEditable { tv.isEditable = isEditable }
+        (tv as? NavigableTextView)?.autocompleteWhileTyping = autocompleteWhileTyping
         let textChanged = tv.string != text
         if textChanged { tv.string = text }
         let fontChanged = (tv.font?.pointSize ?? 0) != fontSize
@@ -196,8 +206,14 @@ struct CodeEditor: NSViewRepresentable {
 /// IDE-style "go to definition" without a language server.
 final class NavigableTextView: NSTextView {
     var onCommandClick: ((String, Int) -> Void)?
+    /// Repo-wide declared names, merged with this buffer's own words.
+    var completionSymbols: () -> [String] = { [] }
+    var autocompleteWhileTyping = true
+    /// Set while the last edit was a plain insertion, so completion doesn't pop
+    /// up while deleting.
+    private var lastEditWasInsertion = false
 
-    private static let identifierChars: CharacterSet = {
+    fileprivate static let identifierChars: CharacterSet = {
         var set = CharacterSet.alphanumerics
         set.insert(charactersIn: "_$")
         return set
@@ -243,6 +259,83 @@ final class NavigableTextView: NSTextView {
     private static func isIdentifier(_ unichar: unichar) -> Bool {
         guard let scalar = UnicodeScalar(unichar) else { return false }
         return identifierChars.contains(scalar)
+    }
+
+    // MARK: - Completion
+
+    /// AppKit owns the popup (arrow keys, Esc, insertion); this just supplies
+    /// the candidate list for the partial word under the caret.
+    override func completions(
+        forPartialWordRange charRange: NSRange,
+        indexOfSelectedItem index: UnsafeMutablePointer<Int>?
+    ) -> [String]? {
+        let ns = string as NSString
+        guard charRange.location != NSNotFound, NSMaxRange(charRange) <= ns.length else { return nil }
+        let prefix = ns.substring(with: charRange)
+        guard prefix.count >= 1 else { return nil }
+
+        var seen: Set<String> = [prefix]
+        var ranked: [(word: String, score: Int)] = []
+        // Buffer words first (score 0) — what you're editing is the best guess.
+        for word in bufferWords() where word.hasPrefix(prefix) && seen.insert(word).inserted {
+            ranked.append((word, 0))
+        }
+        for word in completionSymbols() where word.hasPrefix(prefix) && seen.insert(word).inserted {
+            ranked.append((word, 1))
+        }
+        // Then case-insensitive matches, so `av` still finds `AvatarView`.
+        let lowerPrefix = prefix.lowercased()
+        for word in completionSymbols()
+        where word.lowercased().hasPrefix(lowerPrefix) && seen.insert(word).inserted {
+            ranked.append((word, 2))
+        }
+
+        let sorted = ranked.sorted {
+            $0.score == $1.score
+                ? ($0.word.count == $1.word.count ? $0.word < $1.word : $0.word.count < $1.word.count)
+                : $0.score < $1.score
+        }
+        guard !sorted.isEmpty else { return nil }
+        index?.pointee = 0
+        return Array(sorted.prefix(60).map { $0.word })
+    }
+
+    /// Identifiers already present in this buffer.
+    private func bufferWords() -> [String] {
+        let ns = string as NSString
+        var words: [String] = []
+        var current = ""
+        current.reserveCapacity(32)
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length),
+                               options: [.byComposedCharacterSequences]) { substring, _, _, _ in
+            guard let substring, let scalar = substring.unicodeScalars.first else { return }
+            if Self.identifierChars.contains(scalar) {
+                current.append(substring)
+            } else if !current.isEmpty {
+                if current.count > 1, !current.allSatisfy({ $0.isNumber }) { words.append(current) }
+                current = ""
+            }
+        }
+        if current.count > 1 { words.append(current) }
+        return words
+    }
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        lastEditWasInsertion = (replacementString?.isEmpty == false)
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        guard autocompleteWhileTyping, isEditable, lastEditWasInsertion else { return }
+        let ns = string as NSString
+        let caret = selectedRange().location
+        guard caret > 0, caret <= ns.length else { return }
+        // Only while typing inside a word of 2+ characters.
+        guard let range = Self.identifierRange(in: ns, at: caret - 1),
+              NSMaxRange(range) == caret, range.length >= 2 else { return }
+        // Next runloop: completing inside didChangeText re-enters text editing.
+        DispatchQueue.main.async { [weak self] in self?.complete(nil) }
     }
 
     private static func lineNumber(in ns: NSString, at location: Int) -> Int {

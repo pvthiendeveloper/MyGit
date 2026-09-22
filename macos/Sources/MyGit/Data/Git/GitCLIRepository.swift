@@ -23,6 +23,16 @@ struct GitCLIRepository: GitRepository {
         summary.mergeInProgress = (merge?.exitCode == 0)
         let pick = try? await GitRunner.run(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], cwd: repo)
         summary.cherryPickInProgress = (pick?.exitCode == 0)
+        // A stopped rebase has no single ref to verify — git keeps its state in
+        // `rebase-merge` (interactive/merge backend) or `rebase-apply` (am).
+        let gitDir = (try? await GitRunner.runOrThrow(["rev-parse", "--git-path", "rebase-merge"], cwd: repo))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let applyDir = (try? await GitRunner.runOrThrow(["rev-parse", "--git-path", "rebase-apply"], cwd: repo))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        summary.rebaseInProgress = [gitDir, applyDir].compactMap { $0 }.contains {
+            FileManager.default.fileExists(atPath: repo.appendingPathComponent($0).path)
+                || FileManager.default.fileExists(atPath: $0)
+        }
         return summary
     }
 
@@ -67,6 +77,33 @@ struct GitCLIRepository: GitRepository {
         )
         guard result.exitCode == 0 else { return [] }   // 1 = no matches
         return GitCLIRepository.parseGrepLines(result.stdout, limit: 2000)
+    }
+
+    func declaredSymbols(at repo: URL) async throws -> [String] {
+        // One grep for the whole repo: `-o` prints just the matched
+        // "<keyword> <name>" pairs, which is cheap enough to run per repo and
+        // far less output than dumping every line.
+        let keywords = [
+            "class", "struct", "enum", "protocol", "extension", "actor", "interface",
+            "object", "func", "fun", "function", "def", "fn", "typealias", "var",
+            "val", "let", "const",
+        ].joined(separator: "|")
+        let result = try await GitRunner.run(
+            // POSIX ERE — git grep has no \\b, so guard the keyword with a
+            // non-identifier character and let the caller take the last field.
+            ["grep", "-h", "-I", "-o", "-E",
+             "(^|[^A-Za-z0-9_])(\(keywords))[[:space:]]+[A-Za-z_][A-Za-z0-9_]*"],
+            cwd: repo
+        )
+        guard result.exitCode == 0 else { return [] }
+        var seen: Set<String> = []
+        for line in result.stdout.split(separator: "\n") {
+            guard let name = line.split(separator: " ", omittingEmptySubsequences: true).last,
+                  name.count > 1 else { continue }
+            seen.insert(String(name))
+            if seen.count >= 20_000 { break }
+        }
+        return seen.sorted()
     }
 
     /// `<path>:<lineno>:<text>` lines from `git grep -n`.
@@ -317,8 +354,27 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(authPrefix(auth) + ["fetch", "--prune", "origin"], cwd: repo)
     }
 
-    func pull(at repo: URL, auth: AuthOverride?) async throws {
-        _ = try await GitRunner.runOrThrow(authPrefix(auth) + ["pull", "--ff-only"], cwd: repo)
+    func pull(at repo: URL, auth: AuthOverride?, strategy: PullStrategy) async throws {
+        let flags: [String]
+        switch strategy {
+        case .fastForwardOnly: flags = ["pull", "--ff-only"]
+        case .merge:           flags = ["pull", "--no-rebase", "--no-edit"]
+        case .rebase:          flags = ["pull", "--rebase"]
+        }
+        _ = try await GitRunner.runOrThrow(authPrefix(auth) + flags, cwd: repo)
+    }
+
+    func rebaseContinue(at repo: URL) async throws {
+        // Same editor guard as the cherry-pick sequencer.
+        _ = try await GitRunner.runOrThrow(["-c", "core.editor=true", "rebase", "--continue"], cwd: repo)
+    }
+
+    func rebaseSkip(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["rebase", "--skip"], cwd: repo)
+    }
+
+    func rebaseAbort(at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["rebase", "--abort"], cwd: repo)
     }
 
     func push(at repo: URL, args: [String], auth: AuthOverride?) async throws {

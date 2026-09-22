@@ -30,6 +30,12 @@ final class SettingsViewModel: ObservableObject {
         didSet { defaults.set(autoRevealActiveFile, forKey: Keys.autoRevealActiveFile) }
     }
 
+    /// Pop the completion list while typing in the editor. Off means it only
+    /// appears on ⌥Esc (AppKit's own completion shortcut).
+    @Published var autocompleteWhileTyping: Bool {
+        didSet { defaults.set(autocompleteWhileTyping, forKey: Keys.autocompleteWhileTyping) }
+    }
+
     /// Transient connection-test result per provider (not persisted).
     @Published var testStatus: [String: ConnectionTestStatus] = [:]
 
@@ -58,6 +64,7 @@ final class SettingsViewModel: ObservableObject {
         static let provider = "MyGit.ai.provider"
         static let generateBody = "MyGit.ai.generateBody"
         static let autoRevealActiveFile = "MyGit.files.autoRevealActiveFile"
+        static let autocompleteWhileTyping = "MyGit.editor.autocompleteWhileTyping"
         static func model(_ p: AIProvider) -> String { "MyGit.ai.model.\(p.rawValue)" }
         static func baseURL(_ p: AIProvider) -> String { "MyGit.ai.baseURL.\(p.rawValue)" }
         static func modelList(_ p: AIProvider) -> String { "MyGit.ai.modelList.\(p.rawValue)" }
@@ -75,6 +82,7 @@ final class SettingsViewModel: ObservableObject {
         self.generateBody = defaults.bool(forKey: Keys.generateBody)
         // Absent key → on; `bool(forKey:)` alone would default it to off.
         self.autoRevealActiveFile = defaults.object(forKey: Keys.autoRevealActiveFile) as? Bool ?? true
+        self.autocompleteWhileTyping = defaults.object(forKey: Keys.autocompleteWhileTyping) as? Bool ?? true
 
         var m: [String: String] = [:]
         var b: [String: String] = [:]

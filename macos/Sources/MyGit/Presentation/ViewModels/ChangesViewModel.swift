@@ -32,6 +32,7 @@ final class ChangesViewModel: ObservableObject {
     @Published var pendingStash = false
     @Published var pendingAbortMerge = false
     @Published var pendingAbortCherryPick = false
+    @Published var pendingAbortRebase = false
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
@@ -555,6 +556,10 @@ final class ChangesViewModel: ObservableObject {
     func continueCherryPick() async { await runSequencerOp { try await self.git.cherryPickContinue(at: $0) } }
     func skipCherryPick() async { await runSequencerOp { try await self.git.cherryPickSkip(at: $0) } }
     func abortCherryPick() async { await runSequencerOp { try await self.git.cherryPickAbort(at: $0) } }
+
+    func continueRebase() async { await runSequencerOp { try await self.git.rebaseContinue(at: $0) } }
+    func skipRebase() async { await runSequencerOp { try await self.git.rebaseSkip(at: $0) } }
+    func abortRebase() async { await runSequencerOp { try await self.git.rebaseAbort(at: $0) } }
 
     private func runSequencerOp(_ op: @escaping (URL) async throws -> Void) async {
         guard let repo = repoSource(), !main.isBusy else { return }

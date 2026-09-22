@@ -17,6 +17,16 @@ enum CherryPickOutcome {
     case empty
 }
 
+/// How to integrate upstream commits when the branch has diverged.
+enum PullStrategy {
+    /// Refuse anything but a fast-forward (the safe default).
+    case fastForwardOnly
+    /// `git pull --no-rebase` — keeps both sides, adds a merge commit.
+    case merge
+    /// `git pull --rebase` — replays local commits on top of upstream.
+    case rebase
+}
+
 /// One `git grep` hit: a repo-relative path, the 1-based line number, and the
 /// matching line's text (trimmed for preview).
 struct GitGrepMatch: Sendable, Hashable {
@@ -62,7 +72,11 @@ protocol GitRepository: Sendable {
 
     // Remote
     func fetch(at repo: URL, auth: AuthOverride?) async throws
-    func pull(at repo: URL, auth: AuthOverride?) async throws
+    func pull(at repo: URL, auth: AuthOverride?, strategy: PullStrategy) async throws
+    /// Resume/abandon a rebase that stopped on conflicts.
+    func rebaseContinue(at repo: URL) async throws
+    func rebaseSkip(at repo: URL) async throws
+    func rebaseAbort(at repo: URL) async throws
     func push(at repo: URL, args: [String], auth: AuthOverride?) async throws
     /// Short upstream ref of the current branch (e.g. "origin/feature/x"), or
     /// nil when the branch has no configured upstream.
@@ -130,6 +144,9 @@ protocol GitRepository: Sendable {
     /// Every whole-word occurrence of a symbol across tracked files. Backs
     /// ⌘-click "go to definition" / "find usages" in the editor.
     func searchSymbol(_ symbol: String, at repo: URL) async throws -> [GitGrepMatch]
+    /// Declared names across tracked files (types, functions, properties).
+    /// Feeds the editor's completion list.
+    func declaredSymbols(at repo: URL) async throws -> [String]
     func pushedHashes(at repo: URL) async throws -> Set<String>
     /// Refs (branches/tags, short names) that point directly at a commit.
     func refsPointingAt(commit: String, at repo: URL) async throws -> [String]

@@ -61,6 +61,7 @@ struct ConflictsView: View {
         conflicts.first { $0.id == selection }
     }
     private var isCherryPick: Bool { changes.status?.cherryPickInProgress == true }
+    private var isRebase: Bool { changes.status?.rebaseInProgress == true }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -144,12 +145,15 @@ struct ConflictsView: View {
                 .font(.system(size: 40))
                 .foregroundStyle(.green)
             Text("All conflicts resolved").font(.headline)
-            Text(isCherryPick ? "Continue to finish the cherry-pick." : "Commit to finish the merge.")
+            Text(isRebase || isCherryPick
+                 ? "Continue to finish the \(isRebase ? "rebase" : "cherry-pick")."
+                 : "Commit to finish the merge.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            // A cherry-pick finishes through the sequencer, not a merge commit.
-            Button(isCherryPick ? "Continue Cherry-Pick" : "Commit Merge") {
+            // Rebase/cherry-pick finish through the sequencer, not a merge commit.
+            Button(isRebase ? "Continue Rebase" : (isCherryPick ? "Continue Cherry-Pick" : "Commit Merge")) {
                 Task {
-                    if isCherryPick { await changes.continueCherryPick() }
+                    if isRebase { await changes.continueRebase() }
+                    else if isCherryPick { await changes.continueCherryPick() }
                     else { await changes.commitMerge() }
                     onClose()
                 }

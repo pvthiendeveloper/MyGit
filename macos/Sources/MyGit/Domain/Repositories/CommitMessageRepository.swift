@@ -14,6 +14,11 @@ protocol CommitMessageRepository: Sendable {
     /// failure. Does not consume generation tokens.
     func testConnection(config: AIRequestConfig) async throws -> String
 
+    /// Continue the code at the caret. `prefix` is everything before it,
+    /// `suffix` everything after; the result is the insertion only.
+    func completeCode(prefix: String, suffix: String, language: String,
+                      config: AIRequestConfig) async throws -> String
+
     /// Fetch the model IDs the provider exposes for this config. Used to
     /// populate the model picker with real options instead of hardcoded
     /// defaults. Throws on failure; does not consume generation tokens.

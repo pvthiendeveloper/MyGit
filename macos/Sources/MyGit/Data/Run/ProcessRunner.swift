@@ -33,8 +33,20 @@ enum ProcessRunner {
                 let deadline = DispatchWorkItem { if proc.isRunning { proc.terminate() } }
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
 
-                let outData = out.fileHandleForReading.readDataToEndOfFile()
-                let errData = err.fileHandleForReading.readDataToEndOfFile()
+                // Drain both pipes in parallel: xcodebuild is noisy on stderr,
+                // and reading them one after the other deadlocks once the other
+                // pipe's 64K buffer fills.
+                var outData = Data(), errData = Data()
+                let group = DispatchGroup()
+                for (handle, sink) in [(out.fileHandleForReading, 0), (err.fileHandleForReading, 1)] {
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let data = handle.readDataToEndOfFile()
+                        if sink == 0 { outData = data } else { errData = data }
+                        group.leave()
+                    }
+                }
+                group.wait()
                 proc.waitUntilExit()
                 deadline.cancel()
                 cont.resume(returning: Result(

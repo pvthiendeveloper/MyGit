@@ -74,3 +74,28 @@ struct RunDevice: Identifiable, Hashable {
         }
     }
 }
+
+
+/// One Gradle module that produces build variants, as the Build Variants panel
+/// lists it. Application modules are the ones that can be installed on a device.
+struct GradleModule: Identifiable, Hashable {
+    /// Gradle project path without the leading colon ("demoApp",
+    /// "feature:androidDesignComponent"). Empty for a single-module root build.
+    let path: String
+    let variants: [String]
+    let isApplication: Bool
+
+    var id: String { path }
+    var display: String { path.isEmpty ? ":" : ":\(path)" }
+
+    /// `:demoApp:assembleGosaDebug` — builds the APK for a variant.
+    ///
+    /// Assemble + `adb install` rather than Gradle's `install<Variant>` task,
+    /// which is what Android Studio does too. Build scripts routinely branch on
+    /// `gradle.startParameter.taskNames` containing "assemble", so the install
+    /// task can resolve a different dependency graph than the IDE's build.
+    func assembleTask(_ variant: String) -> String {
+        let capitalized = variant.prefix(1).uppercased() + variant.dropFirst()
+        return path.isEmpty ? "assemble\(capitalized)" : ":\(path):assemble\(capitalized)"
+    }
+}

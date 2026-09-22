@@ -25,6 +25,7 @@ struct ToolbarBar: View {
             branchButton
             if isUnpublished { publishButton } else { remoteActionButton }
             Spacer()
+            RunControls()
             AccountBadge()
                 .padding(.horizontal, 12)
                 .frame(maxHeight: .infinity)
@@ -37,6 +38,26 @@ struct ToolbarBar: View {
                 }
         }
         .fixedSize(horizontal: false, vertical: true)
+        .alert(
+            "Branch has diverged",
+            isPresented: Binding(
+                get: { remote.pendingDivergedPull != nil },
+                set: { if !$0 { remote.pendingDivergedPull = nil } }
+            ),
+            presenting: remote.pendingDivergedPull
+        ) { p in
+            Button("Merge") {
+                remote.pendingDivergedPull = nil
+                Task { await remote.pull(strategy: .merge) }
+            }
+            Button("Rebase") {
+                remote.pendingDivergedPull = nil
+                Task { await remote.pull(strategy: .rebase) }
+            }
+            Button("Cancel", role: .cancel) { remote.pendingDivergedPull = nil }
+        } message: { p in
+            Text("'\(p.branch)' has \(p.ahead) local commit\(p.ahead == 1 ? "" : "s") the remote doesn't, and the remote has \(p.behind) you don't, so it can't fast-forward.\n\nMerge keeps both histories with a merge commit. Rebase replays your commits on top of the remote's.")
+        }
         .sheet(isPresented: $branches.showNewBranchSheet) {
             TextInputSheet(
                 title: "New Branch",

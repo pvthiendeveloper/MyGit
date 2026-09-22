@@ -6,6 +6,7 @@ struct MainView: View {
     @EnvironmentObject var remote: RemoteViewModel
     @EnvironmentObject var terminal: TerminalViewModel
     @EnvironmentObject var history: HistoryViewModel
+    @EnvironmentObject var run: RunViewModel
     @State private var remoteURLInput: String = ""
 
     private var sidebarMinWidth: CGFloat {
@@ -49,15 +50,19 @@ struct MainView: View {
 
             if repos.selected == nil {
                 EmptyStateView()
-            } else if terminal.isVisible {
+            } else {
                 VSplitView {
                     repoSplit
                         .frame(minHeight: 200)
-                    TerminalPanelView()
-                        .frame(minHeight: 120, idealHeight: 260, maxHeight: .infinity)
+                    if run.showVariantsPanel {
+                        BuildVariantsPanel()
+                            .frame(minHeight: 120, idealHeight: 200, maxHeight: 320)
+                    }
+                    if terminal.isVisible {
+                        TerminalPanelView()
+                            .frame(minHeight: 120, idealHeight: 260, maxHeight: .infinity)
+                    }
                 }
-            } else {
-                repoSplit
             }
         }
         .alert(

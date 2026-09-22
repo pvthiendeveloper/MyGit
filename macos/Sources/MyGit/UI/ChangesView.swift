@@ -45,23 +45,28 @@ struct ChangesListView: View {
     private var mergeBanner: some View {
         let conflicted = vm.status?.hasConflicts == true
         let cherryPick = vm.status?.cherryPickInProgress == true
-        let what = cherryPick ? "cherry-pick" : "merge"
+        let rebase = vm.status?.rebaseInProgress == true
+        let what = rebase ? "rebase" : (cherryPick ? "cherry-pick" : "merge")
         return HStack(spacing: 8) {
             Image(systemName: conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(conflicted ? .orange : .green)
             VStack(alignment: .leading, spacing: 1) {
-                Text(conflicted
-                     ? (cherryPick ? "Cherry-pick conflicts" : "Merge conflicts")
-                     : "Conflicts resolved")
+                Text(conflicted ? "\(what.capitalized) conflicts" : "Conflicts resolved")
                     .font(.system(size: 12, weight: .semibold))
                 Text(conflicted
                      ? "Pick a side per file with Resolve, or edit + Mark Resolved."
-                     : (cherryPick ? "Continue to finish the cherry-pick." : "Commit to finish the merge."))
+                     : (rebase || cherryPick
+                        ? "Continue to finish the \(what)."
+                        : "Commit to finish the merge."))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
             if !conflicted {
-                if cherryPick {
+                if rebase {
+                    Button("Continue") { Task { await vm.continueRebase() } }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                } else if cherryPick {
                     Button("Continue") { Task { await vm.continueCherryPick() } }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
@@ -81,13 +86,19 @@ struct ChangesListView: View {
             .controlSize(.small)
             .disabled(!conflicted)
             .help("Open the conflicts overview")
-            if cherryPick {
+            if rebase {
+                Button("Skip") { Task { await vm.skipRebase() } }
+                    .controlSize(.small)
+                    .help("Drop this commit from the rebase")
+            } else if cherryPick {
                 Button("Skip") { Task { await vm.skipCherryPick() } }
                     .controlSize(.small)
                     .help("Drop this commit from the cherry-pick")
             }
             Button("Abort") {
-                if cherryPick { vm.pendingAbortCherryPick = true } else { vm.pendingAbortMerge = true }
+                if rebase { vm.pendingAbortRebase = true }
+                else if cherryPick { vm.pendingAbortCherryPick = true }
+                else { vm.pendingAbortMerge = true }
             }
             .controlSize(.small)
             .help("Abort the in-progress \(what)")

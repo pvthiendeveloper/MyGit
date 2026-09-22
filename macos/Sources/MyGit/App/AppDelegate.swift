@@ -145,6 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         newTerminal.keyEquivalentModifierMask = [.control, .shift]
         newTerminal.target = self
         viewMenu.addItem(newTerminal)
+        let variants = NSMenuItem(title: "Build Variants", action: #selector(toggleBuildVariants), keyEquivalent: "b")
+        variants.keyEquivalentModifierMask = [.control, .shift]
+        variants.target = self
+        viewMenu.addItem(variants)
         viewMenu.addItem(.separator())
         let revealFile = NSMenuItem(
             title: "Reveal Active File",
@@ -166,6 +170,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if item.action == #selector(revealActiveFile) {
             return coordinator.activeBundle.editor.activeFileTab != nil
+        }
+        if item.action == #selector(toggleBuildVariants) {
+            let run = coordinator.activeBundle.run
+            item.state = run.showVariantsPanel ? .on : .off
+            return run.kind == .android
         }
         return true
     }
@@ -216,6 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func pushRemote() { Task { await coordinator.remote.push() } }
     @objc private func toggleTerminal() { coordinator.toggleTerminal() }
     @objc private func newTerminal() { coordinator.newTerminal() }
+
+    @objc private func toggleBuildVariants() {
+        coordinator.activeBundle.run.showVariantsPanel.toggle()
+    }
 
     /// Switch to the Files tab and expand the tree down to the file the editor
     /// is showing — the on-demand counterpart of the auto-expand setting.

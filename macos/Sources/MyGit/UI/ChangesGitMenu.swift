@@ -45,6 +45,13 @@ struct ChangesGitMenu: View {
             Button("Abort Merge", role: .destructive) { changes.pendingAbortMerge = true }
         }
 
+        if changes.status?.rebaseInProgress == true {
+            Button("Continue Rebase") { Task { await changes.continueRebase() } }
+                .disabled(changes.status?.hasConflicts == true)
+            Button("Skip Commit") { Task { await changes.skipRebase() } }
+            Button("Abort Rebase", role: .destructive) { changes.pendingAbortRebase = true }
+        }
+
         if changes.status?.cherryPickInProgress == true {
             Button("Continue Cherry-Pick") { Task { await changes.continueCherryPick() } }
                 .disabled(changes.status?.hasConflicts == true)
@@ -130,6 +137,17 @@ struct ChangesGitActionHost: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Discards the merge and restores the working tree to before it started.")
+            }
+            .confirmationDialog(
+                "Abort the in-progress rebase?",
+                isPresented: $vm.pendingAbortRebase
+            ) {
+                Button("Abort Rebase", role: .destructive) {
+                    Task { await vm.abortRebase() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Restores the branch to where it was before the rebase started.")
             }
             .confirmationDialog(
                 "Abort the in-progress cherry-pick?",

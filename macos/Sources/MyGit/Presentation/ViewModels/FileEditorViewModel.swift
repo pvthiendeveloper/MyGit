@@ -9,6 +9,9 @@ final class FileEditorViewModel: ObservableObject {
     @Published var symbolLookup: SymbolLookup?
     /// Symbol currently being resolved, so the UI can show progress.
     @Published private(set) var resolvingSymbol: String?
+    /// Declared names across the repo, used as completion candidates.
+    @Published private(set) var repoSymbols: [String] = []
+    private var symbolsLoaded = false
 
     var activeFileTab: OpenFileTab? {
         guard let id = activeFileTabId else { return nil }
@@ -33,6 +36,16 @@ final class FileEditorViewModel: ObservableObject {
         self.main = main
         self.repoSource = repoSource
         self.onSaved = onSaved
+    }
+
+    // MARK: - Completion
+
+    /// Harvest the repo's declared names once per session (and after a save, so
+    /// new declarations show up). One `git grep` over tracked files.
+    func loadRepoSymbols(force: Bool = false) async {
+        guard let repo = repoSource(), force || !symbolsLoaded else { return }
+        symbolsLoaded = true
+        repoSymbols = (try? await git.declaredSymbols(at: repo.url)) ?? []
     }
 
     // MARK: - ⌘-click navigation
@@ -114,6 +127,8 @@ final class FileEditorViewModel: ObservableObject {
         openFileTabs.removeAll()
         activeFileTabId = nil
         closedPaths.removeAll()
+        repoSymbols = []
+        symbolsLoaded = false
         syncDetailTab()
     }
 
@@ -257,6 +272,8 @@ final class FileEditorViewModel: ObservableObject {
             try fileEditor.write(at: repo.url, path: tab.path, content: tab.content)
             tab.originalContent = tab.content
             await onSaved()
+            // Saved edits may have introduced new declarations.
+            await loadRepoSymbols(force: true)
         } catch {
             main.errorMessage = "Save failed: \(error.localizedDescription)"
         }

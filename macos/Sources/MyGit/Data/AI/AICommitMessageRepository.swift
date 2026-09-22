@@ -71,6 +71,47 @@ struct AICommitMessageRepository: CommitMessageRepository {
         return suggestion
     }
 
+    // MARK: - Inline code completion
+
+    private static let codeRules = """
+    You are an inline code completion engine inside an editor.
+    Continue the code at the <CARET> marker.
+    Rules:
+    - Output ONLY the text to insert at the caret. No explanation, no code fences, no repetition \
+    of the code before the caret.
+    - Keep it short: finish the current expression, statement, or at most a small block.
+    - Match the surrounding style, indentation and language exactly.
+    - If nothing sensible can be added, output nothing.
+    """
+
+    func completeCode(prefix: String, suffix: String, language: String,
+                      config: AIRequestConfig) async throws -> String {
+        guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
+        // Only the neighbourhood of the caret — whole files blow up the prompt
+        // and slow the round trip down.
+        let head = String(prefix.suffix(4000))
+        let tail = String(suffix.prefix(1500))
+        let user = """
+        Language: \(language.isEmpty ? "unknown" : language)
+
+        \(head)<CARET>\(tail)
+        """
+        let raw = try await complete(config: config, system: Self.codeRules, user: user)
+        return Self.stripCodeFence(raw)
+    }
+
+    /// Models like to wrap answers in ``` fences even when told not to.
+    private static func stripCodeFence(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        if lines.first?.trimmingCharacters(in: .whitespaces).hasPrefix("```") == true {
+            lines.removeFirst()
+            if let last = lines.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                lines.removeLast()
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// Dispatch a system+user completion to the configured provider.
     private func complete(config: AIRequestConfig, system: String, user: String) async throws -> String {
         if config.provider.isOpenAICompatible {

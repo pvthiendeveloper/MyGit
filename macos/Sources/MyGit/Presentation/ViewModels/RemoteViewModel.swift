@@ -7,6 +7,17 @@ final class RemoteViewModel: ObservableObject {
     @Published var missingRemoteForBranch: String?
     /// URL of the most recently opened pull request (drives a "View PR" affordance).
     @Published var lastPullRequestURL: URL?
+    /// Set when a pull can't fast-forward because the branch has diverged; the
+    /// toolbar then asks whether to merge or rebase.
+    @Published var pendingDivergedPull: DivergedPull?
+
+    /// The two sides of a diverged branch, for the merge-or-rebase prompt.
+    struct DivergedPull: Identifiable {
+        let id = UUID()
+        let branch: String
+        let ahead: Int
+        let behind: Int
+    }
 
     private let git: GitRepository
     private let account: AccountViewModel
@@ -15,6 +26,8 @@ final class RemoteViewModel: ObservableObject {
     private let repoSource: () -> Repository?
     private let onFinished: () async -> Void
     private let currentBranch: () -> String?
+    /// Invoked when pulling leaves conflicts, so the UI can open the resolver.
+    private var onMergeConflict: (_ ours: String, _ theirs: String) -> Void = { _, _ in }
 
     init(
         git: GitRepository,
@@ -34,6 +47,10 @@ final class RemoteViewModel: ObservableObject {
         self.onFinished = onFinished
     }
 
+    func setOnMergeConflict(_ block: @escaping (_ ours: String, _ theirs: String) -> Void) {
+        onMergeConflict = block
+    }
+
     func fetchOrigin() async {
         await runRemote {
             try await self.git.fetch(at: $0, auth: self.account.currentAuth())
@@ -41,10 +58,46 @@ final class RemoteViewModel: ObservableObject {
         lastFetchedAt = Date()
     }
 
+    /// Fast-forward pull. A diverged branch can't fast-forward, so instead of
+    /// dumping git's hint into an error dialog, ask how to integrate.
     func pull() async {
-        await runRemote {
-            try await self.git.pull(at: $0, auth: self.account.currentAuth())
+        await pull(strategy: .fastForwardOnly)
+    }
+
+    func pull(strategy: PullStrategy) async {
+        guard let repo = repoSource() else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        await Task.yield()
+        do {
+            try await git.pull(at: repo.url, auth: account.currentAuth(), strategy: strategy)
+            await onFinished()
+        } catch {
+            await onFinished()   // refresh so any conflicted state is visible
+            let text = error.localizedDescription
+            if strategy == .fastForwardOnly, Self.isDiverged(text) {
+                let status = try? await git.status(at: repo.url)
+                pendingDivergedPull = DivergedPull(
+                    branch: status?.branch ?? currentBranch() ?? "HEAD",
+                    ahead: status?.ahead ?? 0,
+                    behind: status?.behind ?? 0
+                )
+                return
+            }
+            if let status = try? await git.status(at: repo.url), status.hasConflicts {
+                let upstream = await git.upstreamRef(at: repo.url) ?? "upstream"
+                onMergeConflict(status.branch ?? "HEAD", upstream)
+                return
+            }
+            main.errorMessage = text
         }
+    }
+
+    /// git's wording for "your branch and the remote have both moved on".
+    private static func isDiverged(_ message: String) -> Bool {
+        message.contains("Not possible to fast-forward")
+            || message.contains("Diverging branches can't be fast-forwarded")
+            || message.contains("divergent branches")
     }
 
     func push() async {

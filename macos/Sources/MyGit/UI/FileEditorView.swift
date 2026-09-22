@@ -24,6 +24,7 @@ struct FileEditorContent: View {
     @ObservedObject var tab: OpenFileTab
     @EnvironmentObject var vm: FileEditorViewModel
     @EnvironmentObject var terminal: TerminalViewModel
+    @EnvironmentObject var settings: SettingsViewModel
 
     private var isShellScript: Bool {
         (tab.name as NSString).pathExtension.lowercased() == "sh"
@@ -109,9 +110,12 @@ struct FileEditorContent: View {
                     goto: tab.goto,
                     onCommandClick: { symbol, line in
                         vm.goToDefinition(symbol: symbol, line: line, in: tab)
-                    }
+                    },
+                    completionSymbols: { vm.repoSymbols },
+                    autocompleteWhileTyping: settings.autocompleteWhileTyping
                 )
                 .background(Color(NSColor.textBackgroundColor))
+                .task { await vm.loadRepoSymbols() }
             }
         }
     }
