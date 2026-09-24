@@ -126,7 +126,14 @@ codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" \
 
 echo "▶︎ Killing old instance (if any)…"
 killall "$APP_NAME" 2>/dev/null || true
-sleep 0.3
+# The app quits cleanly on SIGTERM (saves tabs, drops its Claude Code lock
+# file, frees its IDE port). Wait for that so the new instance can reclaim the
+# same port and running Claude sessions reconnect; force it after 5s.
+for _ in $(seq 1 50); do
+  pgrep -x "$APP_NAME" >/dev/null || break
+  sleep 0.1
+done
+killall -9 "$APP_NAME" 2>/dev/null || true
 
 echo "▶︎ Launching $APP"
 open "$APP"

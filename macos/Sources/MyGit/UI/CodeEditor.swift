@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// An editable, monospaced code editor with a left line-number gutter (like
 /// IntelliJ / VS Code) and optional syntax highlighting. An `NSTextView` in an
@@ -22,10 +23,35 @@ struct CodeEditor: NSViewRepresentable {
     /// Extra completion candidates (declared names across the repo). The buffer's
     /// own words are gathered by the text view itself.
     var completionSymbols: () -> [String] = { [] }
+    /// Type-aware completions (full text, UTF-16 caret) from a language
+    /// server; nil keeps plain word completion only.
+    var semanticCompletion: ((String, Int) async -> [CodeCompletionItem]?)?
     /// Pop the completion list automatically while typing an identifier.
     var autocompleteWhileTyping = true
-    /// ⌘⇧P asks this for an AI continuation at the caret (prefix, suffix).
+    /// The AI-continuation shortcut (⌘⇧P by default) asks this for a continuation at the caret (prefix, suffix).
     var aiSuggest: ((String, String) async -> String?)?
+    /// Scroll position to follow, 0…1 of the scrollable height. Nil means this
+    /// pane is driving (see the Markdown split view).
+    var scrollFraction: CGFloat?
+    /// Reports this pane's own scroll position as the user moves it.
+    var onScrollFraction: ((CGFloat) -> Void)?
+    /// Caret moved: (1-based line, whether the user moved it by navigating —
+    /// false for typing and programmatic reveals). Feeds Back/Forward history.
+    var onCaretLine: ((Int, Bool) -> Void)?
+    /// Every selection change (a caret is an empty range), UTF-16 based.
+    var onSelectionChange: ((NSRange) -> Void)?
+    /// "Send to Claude Code" (shortcut / context menu); nil hides the command.
+    var onMention: (() -> Void)?
+    /// Git blame shown in the gutter; nil = annotations off.
+    var blame: [BlameLine]?
+    /// The buffer has unsaved edits, so blame lines may not line up.
+    var blameStale = false
+    /// Gutter right-click ▸ "Annotate with Git Blame"; nil hides the item.
+    var onToggleBlame: (() -> Void)?
+    /// A blame cell was clicked (commit, and the cell in the gutter's coordinates).
+    var onBlameClick: ((BlameLine, NSView, NSRect) -> Void)?
+    /// ⌘F find state whose matches this editor highlights.
+    var find: EditorFindState?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -38,8 +64,12 @@ struct CodeEditor: NSViewRepresentable {
             coordinator?.parent.completionSymbols() ?? []
         }
         tv.autocompleteWhileTyping = autocompleteWhileTyping
+        context.coordinator.wireSemanticCompletion(tv)
         tv.aiSuggest = { [weak coordinator = context.coordinator] prefix, suffix in
             await coordinator?.parent.aiSuggest?(prefix, suffix)
+        }
+        tv.onMention = onMention == nil ? nil : { [weak coordinator = context.coordinator] in
+            coordinator?.parent.onMention?()
         }
         tv.delegate = context.coordinator
         tv.isRichText = false
@@ -74,6 +104,14 @@ struct CodeEditor: NSViewRepresentable {
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
         let gutter = LineNumberGutter(textView: tv, scrollView: scroll, fontSize: fontSize)
+        gutter.blame = blame
+        gutter.onToggleBlame = onToggleBlame == nil ? nil : { [weak coordinator = context.coordinator] in
+            coordinator?.parent.onToggleBlame?()
+        }
+        gutter.onBlameClick = { [weak coordinator = context.coordinator, weak gutter] line, rect in
+            guard let gutter else { return }
+            coordinator?.parent.onBlameClick?(line, gutter, rect)
+        }
         gutter.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()
@@ -97,6 +135,7 @@ struct CodeEditor: NSViewRepresentable {
         context.coordinator.gutter = gutter
         context.coordinator.lastExt = syntaxExt
         context.coordinator.applyHighlight(tv)
+        context.coordinator.bind(find: find)
 
         NotificationCenter.default.addObserver(
             context.coordinator, selector: #selector(Coordinator.viewChanged),
@@ -109,11 +148,22 @@ struct CodeEditor: NSViewRepresentable {
 
     func updateNSView(_ container: NSView, context: Context) {
         context.coordinator.parent = self
+        if let gutter = context.coordinator.gutter {
+            if gutter.blame != blame { gutter.blame = blame }
+            gutter.blameStale = blameStale
+        }
         guard let tv = context.coordinator.textView else { return }
         if tv.isEditable != isEditable { tv.isEditable = isEditable }
-        (tv as? NavigableTextView)?.autocompleteWhileTyping = autocompleteWhileTyping
+        if let tv = tv as? NavigableTextView {
+            tv.autocompleteWhileTyping = autocompleteWhileTyping
+            context.coordinator.wireSemanticCompletion(tv)
+        }
         let textChanged = tv.string != text
-        if textChanged { tv.string = text }
+        if textChanged {
+            context.coordinator.isRevealing = true
+            tv.string = text
+            context.coordinator.isRevealing = false
+        }
         let fontChanged = (tv.font?.pointSize ?? 0) != fontSize
         if fontChanged {
             tv.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
@@ -130,6 +180,8 @@ struct CodeEditor: NSViewRepresentable {
             context.coordinator.appliedGoto = goto.token
             context.coordinator.reveal(line: goto.line, in: tv)
         }
+        if let scrollFraction { context.coordinator.follow(fraction: scrollFraction) }
+        context.coordinator.bind(find: find)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -140,11 +192,96 @@ struct CodeEditor: NSViewRepresentable {
         var lastExt: String?
         var appliedGoto: UUID?
         private var highlightWork: DispatchWorkItem?
+        /// Set while the caret moves because of us or an edit, not navigation.
+        var isRevealing = false
+        private var isEditing = false
+        private weak var boundFind: EditorFindState?
+        private var findSinks: Set<AnyCancellable> = []
+
+        /// Forward to whatever closure the current `parent` holds; only the
+        /// on/off state lives on the text view (the file type can change).
+        func wireSemanticCompletion(_ tv: NavigableTextView) {
+            let enabled = parent.semanticCompletion != nil
+            guard enabled != (tv.semanticCompletion != nil) else { return }
+            tv.semanticCompletion = enabled ? { [weak self] text, caret in
+                await self?.parent.semanticCompletion?(text, caret)
+            } : nil
+        }
+
+        // MARK: Find highlights
+
+        /// Subscribe to a tab's find state: paint every hit, emphasize the
+        /// current one, select + scroll to it on request, refocus on close.
+        @MainActor func bind(find: EditorFindState?) {
+            guard boundFind !== find else { return }
+            findSinks.removeAll()
+            boundFind = find
+            if let tv = textView { paintMatches([], current: -1, in: tv) }
+            guard let find else { return }
+            find.performReplace = { [weak self] range, string in
+                guard let tv = self?.textView,
+                      NSMaxRange(range) <= (tv.string as NSString).length,
+                      tv.shouldChangeText(in: range, replacementString: string) else { return }
+                tv.textStorage?.replaceCharacters(in: range, with: string)
+                tv.didChangeText()
+            }
+            Publishers.CombineLatest(find.$matches, find.$current)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] matches, current in
+                    guard let self, let tv = self.textView else { return }
+                    self.paintMatches(matches, current: current, in: tv)
+                }
+                .store(in: &findSinks)
+            find.$revealToken
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self, weak find] _ in
+                    guard let self, let find, let tv = self.textView,
+                          find.current >= 0, find.current < find.matches.count else { return }
+                    self.revealMatch(find.matches[find.current], in: tv)
+                }
+                .store(in: &findSinks)
+            find.$isVisible
+                .dropFirst()
+                .removeDuplicates()
+                .filter { !$0 }
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let tv = self?.textView else { return }
+                    tv.window?.makeFirstResponder(tv)
+                }
+                .store(in: &findSinks)
+        }
+
+        private func paintMatches(_ matches: [NSRange], current: Int, in tv: NSTextView) {
+            guard let lm = tv.layoutManager else { return }
+            let length = (tv.string as NSString).length
+            // Edits shift painted ranges, so clear the whole buffer each time.
+            lm.removeTemporaryAttribute(.backgroundColor,
+                                        forCharacterRange: NSRange(location: 0, length: length))
+            let hit = NSColor.systemYellow.withAlphaComponent(0.35)
+            let active = NSColor.systemOrange.withAlphaComponent(0.7)
+            for (i, r) in matches.enumerated() where NSMaxRange(r) <= length {
+                lm.addTemporaryAttribute(.backgroundColor, value: i == current ? active : hit,
+                                         forCharacterRange: r)
+            }
+        }
+
+        private func revealMatch(_ range: NSRange, in tv: NSTextView) {
+            guard NSMaxRange(range) <= (tv.string as NSString).length else { return }
+            isRevealing = true
+            tv.setSelectedRange(range)
+            isRevealing = false
+            tv.scrollRangeToVisible(range)
+            gutter?.needsDisplay = true
+        }
 
         init(_ p: CodeEditor) { parent = p }
 
         /// Select a whole line and scroll it to the middle of the view.
         func reveal(line: Int, in tv: NSTextView) {
+            isRevealing = true
+            defer { isRevealing = false }
             let ns = tv.string as NSString
             var index = 0
             var current = 1
@@ -168,7 +305,51 @@ struct CodeEditor: NSViewRepresentable {
             gutter?.needsDisplay = true
         }
 
-        @objc func viewChanged() { gutter?.needsDisplay = true }
+        /// True while we're moving the scroll view ourselves, so the position
+        /// we just applied isn't echoed back to the other pane.
+        private var isFollowing = false
+
+        @objc func viewChanged() {
+            gutter?.needsDisplay = true
+            guard !isFollowing, let report = parent.onScrollFraction,
+                  let clip = scrollView?.contentView, let document = scrollView?.documentView else { return }
+            let scrollable = document.frame.height - clip.bounds.height
+            guard scrollable > 1 else { return }
+            report(max(0, min(1, clip.bounds.origin.y / scrollable)))
+        }
+
+        /// Move this pane to a fraction of its scrollable height.
+        func follow(fraction: CGFloat) {
+            guard let scrollView, let clip = scrollView.contentView as NSClipView?,
+                  let document = scrollView.documentView else { return }
+            let scrollable = document.frame.height - clip.bounds.height
+            guard scrollable > 1 else { return }
+            let target = max(0, min(scrollable, fraction * scrollable))
+            guard abs(clip.bounds.origin.y - target) > 1 else { return }
+            isFollowing = true
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: target))
+            scrollView.reflectScrolledClipView(clip)
+            gutter?.needsDisplay = true
+            // Re-arm after the bounds notification for this scroll has drained.
+            DispatchQueue.main.async { [weak self] in self?.isFollowing = false }
+        }
+
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange,
+                      replacementString: String?) -> Bool {
+            // The selection change that follows an edit (typing, paste) isn't a jump.
+            isEditing = true
+            DispatchQueue.main.async { [weak self] in self?.isEditing = false }
+            return true
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            if let tv = textView { parent.onSelectionChange?(tv.selectedRange()) }
+            guard let report = parent.onCaretLine, let tv = textView else { return }
+            let loc = min(tv.selectedRange().location, (tv.string as NSString).length)
+            var line = 1
+            for unit in tv.string.utf16.prefix(loc) where unit == 10 { line += 1 }
+            report(line, !isRevealing && !isEditing)
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = textView else { return }
@@ -211,14 +392,26 @@ struct CodeEditor: NSViewRepresentable {
 /// IDE-style "go to definition" without a language server.
 final class NavigableTextView: NSTextView {
     var onCommandClick: ((String, Int) -> Void)?
+    /// Hands the selection (or current line) to Claude Code as an @-mention.
+    var onMention: (() -> Void)?
     /// Repo-wide declared names, merged with this buffer's own words.
     var completionSymbols: () -> [String] = { [] }
+    /// (full text, caret) → language-server completions; nil = words only.
+    var semanticCompletion: ((String, Int) async -> [CodeCompletionItem]?)?
     var autocompleteWhileTyping = true
     /// Asks for an AI continuation at the caret; nil disables the shortcut.
     var aiSuggest: ((String, String) async -> String?)?
     /// Set while the last edit was a plain insertion, so completion doesn't pop
     /// up while deleting.
     private var lastEditWasInsertion = false
+    /// Language-server results for the popup, valid only at `caret`.
+    private var semanticResults: (caret: Int, items: [CodeCompletionItem])?
+    private var semanticTask: Task<Void, Never>?
+    /// Bumped on every edit, so a slow server reply for old text is dropped.
+    private var editGeneration = 0
+    /// Our own `super.complete` / completion insertion is in flight.
+    private var isPresentingCompletion = false
+    private var isInsertingCompletion = false
 
     /// Dimmed preview of an AI suggestion, drawn over the text rather than
     /// inserted — inserting it would dirty the file before the user accepts.
@@ -280,20 +473,45 @@ final class NavigableTextView: NSTextView {
         return range
     }
 
-    private static func isIdentifier(_ unichar: unichar) -> Bool {
+    fileprivate static func isIdentifier(_ unichar: unichar) -> Bool {
         guard let scalar = UnicodeScalar(unichar) else { return false }
         return identifierChars.contains(scalar)
     }
 
     // MARK: - AI suggestion (ghost text)
 
-    /// ⌘⇧P asks for a suggestion (routed from `AppDelegate`'s key monitor, since
+    /// The AI-continuation shortcut asks for a suggestion (routed from `AppDelegate`'s key monitor, since
     /// the menu would swallow it first); ⇥ accepts the one on screen; ⎋ drops it.
     func requestAISuggestion() { requestSuggestion() }
 
     /// True while a suggestion is on screen, so the app-level shortcut knows
     /// this view is the one to talk to.
     var hasAISuggestion: Bool { ghostText != nil }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        guard onMention != nil else { return menu }
+        let shortcut = ShortcutSettings.shared.shortcut(for: .sendToClaude)
+        let item = NSMenuItem(title: "Send to Claude Code", action: #selector(mentionInClaude),
+                              keyEquivalent: shortcut?.key ?? "")
+        item.keyEquivalentModifierMask = shortcut?.modifiers ?? []
+        item.target = self
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+        return menu
+    }
+
+    @objc private func mentionInClaude() { onMention?() }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // ⌥⌘K by default, as in the VS Code / JetBrains Claude Code plugins.
+        if onMention != nil, window?.firstResponder === self,
+           ShortcutSettings.shared.shortcut(for: .sendToClaude)?.matches(event) == true {
+            onMention?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func keyDown(with event: NSEvent) {
         if ghostText != nil {
@@ -381,6 +599,12 @@ final class NavigableTextView: NSTextView {
     ) -> [String]? {
         let ns = string as NSString
         guard charRange.location != NSNotFound, NSMaxRange(charRange) <= ns.length else { return nil }
+        if let semantic = semanticResults, semantic.caret == NSMaxRange(charRange) {
+            // The server already filtered and ranked for this prefix.
+            var seen: Set<String> = []
+            index?.pointee = -1
+            return semantic.items.map(\.label).filter { seen.insert($0).inserted }.prefix(200).map { $0 }
+        }
         let prefix = ns.substring(with: charRange)
         guard prefix.count >= 1 else { return nil }
 
@@ -422,7 +646,74 @@ final class NavigableTextView: NSTextView {
         isFinal flag: Bool
     ) {
         guard flag, movement != NSTextMovement.cancel.rawValue else { return }
-        super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: true)
+        isInsertingCompletion = true
+        defer { isInsertingCompletion = false }
+        let semantic = semanticResults
+        semanticResults = nil
+        guard let item = semantic?.items.first(where: { $0.label == word }),
+              NSMaxRange(item.replaceRange) <= (string as NSString).length else {
+            super.insertCompletion(word, forPartialWordRange: charRange, movement: movement, isFinal: true)
+            return
+        }
+        // The server's edit, not the label: `padding(_ insets:)` inserts `padding()`.
+        insertText(item.insertText, replacementRange: item.replaceRange)
+        // A call that takes arguments: park the caret between the parens.
+        if item.insertText.hasSuffix("()"), !item.label.hasSuffix("()") {
+            let caret = selectedRange().location
+            if caret > 0 { setSelectedRange(NSRange(location: caret - 1, length: 0)) }
+        }
+    }
+
+    /// The identifier part left of the caret — empty right after a `.`, so
+    /// member completion works before anything is typed.
+    override var rangeForUserCompletion: NSRange {
+        let caret = selectedRange()
+        let ns = string as NSString
+        guard caret.length == 0, caret.location <= ns.length else { return super.rangeForUserCompletion }
+        var start = caret.location
+        while start > 0, Self.isIdentifier(ns.character(at: start - 1)) { start -= 1 }
+        if start < caret.location { return NSRange(location: start, length: caret.location - start) }
+        if semanticResults?.caret == caret.location { return NSRange(location: caret.location, length: 0) }
+        return super.rangeForUserCompletion
+    }
+
+    /// ⌥⎋ / F5: ask the language server first when there is one.
+    override func complete(_ sender: Any?) {
+        guard semanticCompletion != nil, !isPresentingCompletion else { return super.complete(sender) }
+        requestSemanticCompletion(wordFallback: true)
+    }
+
+    private func presentCompletion() {
+        isPresentingCompletion = true
+        defer { isPresentingCompletion = false }
+        super.complete(nil)
+    }
+
+    /// Ask the server for completions at the caret, then show them — unless
+    /// the text or caret moved meanwhile. `wordFallback` shows buffer/repo
+    /// words when the server has nothing.
+    private func requestSemanticCompletion(wordFallback: Bool) {
+        guard let semanticCompletion else { return }
+        semanticTask?.cancel()
+        let generation = editGeneration
+        let text = string
+        let caret = selectedRange()
+        guard caret.length == 0 else { return }
+        semanticTask = Task { @MainActor [weak self] in
+            // Coalesce fast typing into one request.
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled else { return }
+            let items = await semanticCompletion(text, caret.location)
+            guard let self, !Task.isCancelled, generation == self.editGeneration,
+                  self.selectedRange() == caret, self.window?.firstResponder === self else { return }
+            if let items, !items.isEmpty {
+                self.semanticResults = (caret.location, items)
+            } else {
+                self.semanticResults = nil
+                guard wordFallback else { return }
+            }
+            self.presentCompletion()
+        }
     }
 
     /// Identifiers already present in this buffer.
@@ -453,10 +744,26 @@ final class NavigableTextView: NSTextView {
     override func didChangeText() {
         super.didChangeText()
         dismissSuggestion()
-        guard autocompleteWhileTyping, isEditable, lastEditWasInsertion else { return }
+        editGeneration += 1
+        semanticResults = nil
+        guard autocompleteWhileTyping, isEditable, lastEditWasInsertion, !isInsertingCompletion else {
+            semanticTask?.cancel()
+            return
+        }
         let ns = string as NSString
         let caret = selectedRange().location
         guard caret > 0, caret <= ns.length else { return }
+        if semanticCompletion != nil {
+            // Member access (`.`) or inside an identifier — Xcode-style.
+            if ns.character(at: caret - 1) == 46 {   // "."
+                requestSemanticCompletion(wordFallback: false)
+            } else if let range = Self.identifierRange(in: ns, at: caret - 1), NSMaxRange(range) == caret {
+                requestSemanticCompletion(wordFallback: range.length >= 2)
+            } else {
+                semanticTask?.cancel()
+            }
+            return
+        }
         // Only while typing inside a word of 2+ characters.
         guard let range = Self.identifierRange(in: ns, at: caret - 1),
               NSMaxRange(range) == caret, range.length >= 2 else { return }
@@ -481,6 +788,40 @@ final class LineNumberGutter: NSView {
     private let font: NSFont
     var widthConstraint: NSLayoutConstraint?
 
+    /// Git blame per line (index 0 = line 1); nil hides the annotation column.
+    var blame: [BlameLine]? {
+        didSet {
+            guard blame != oldValue else { return }
+            blameRange = blame.flatMap { lines in
+                let dates = lines.filter { !$0.isUncommitted }.map(\.date)
+                guard let lo = dates.min(), let hi = dates.max() else { return nil }
+                return (lo, hi)
+            }
+            refresh()
+        }
+    }
+    /// Lines no longer match the blame (unsaved edits): keep the column, blank
+    /// the cells, so the text doesn't jump sideways while typing.
+    var blameStale = false {
+        didSet { if blameStale != oldValue { needsDisplay = true } }
+    }
+    /// Right-click ▸ "Annotate with Git Blame".
+    var onToggleBlame: (() -> Void)?
+    /// A blame cell was clicked; the rect is in this view's coordinates.
+    var onBlameClick: ((BlameLine, NSRect) -> Void)?
+
+    private var blameRange: (Date, Date)?
+    /// Rows drawn last pass, for hit-testing clicks and tooltips.
+    private var drawnRows: [(line: Int, rect: NSRect)] = []
+    private static let blameWidth: CGFloat = 150
+    private static let blameDate: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .short
+        f.timeStyle = .none
+        return f
+    }()
+    private var blameColumnWidth: CGFloat { blame == nil ? 0 : Self.blameWidth }
+
     init(textView: NSTextView, scrollView: NSScrollView, fontSize: CGFloat) {
         self.textView = textView
         self.scrollView = scrollView
@@ -498,9 +839,79 @@ final class LineNumberGutter: NSView {
         let lineCount = max(1, (tv.string as NSString).components(separatedBy: "\n").count)
         let digits = "\(lineCount)".count
         let sample = String(repeating: "9", count: digits) as NSString
-        let width = ceil(sample.size(withAttributes: [.font: font]).width) + 14
+        let width = ceil(sample.size(withAttributes: [.font: font]).width) + 14 + blameColumnWidth
         if let c = widthConstraint, abs(c.constant - width) > 0.5 { c.constant = width }
         needsDisplay = true
+    }
+
+    // MARK: Blame interaction
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard onToggleBlame != nil else { return nil }
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Annotate with Git Blame", action: #selector(toggleBlame), keyEquivalent: "")
+        item.target = self
+        item.state = blame == nil ? .off : .on
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func toggleBlame() { onToggleBlame?() }
+
+    private func blameRow(at point: NSPoint) -> (BlameLine, NSRect)? {
+        guard let blame, !blameStale, point.x < blameColumnWidth,
+              let row = drawnRows.first(where: { $0.rect.minY <= point.y && point.y < $0.rect.maxY }),
+              row.line - 1 < blame.count else { return nil }
+        return (blame[row.line - 1], row.rect)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let (line, rect) = blameRow(at: point), !line.isUncommitted {
+            onBlameClick?(line, rect)
+        } else {
+            super.mouseDown(with: event)
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let (line, _) = blameRow(at: point) else { toolTip = nil; return }
+        toolTip = line.isUncommitted
+            ? "Not committed yet"
+            : "\(line.shortHash) · \(line.author) <\(line.email)>\n"
+              + "\(line.date.formatted(date: .abbreviated, time: .shortened))\n\n\(line.summary)"
+    }
+
+    private func drawBlame(_ line: BlameLine, row: NSRect) {
+        let cell = NSRect(x: 0, y: row.minY, width: blameColumnWidth - 4, height: row.height)
+        if !line.isUncommitted {
+            // Newer commits are tinted stronger, like IntelliJ's annotations.
+            var t: CGFloat = 1
+            if let (lo, hi) = blameRange, hi > lo {
+                t = CGFloat(line.date.timeIntervalSince(lo) / hi.timeIntervalSince(lo))
+            }
+            NSColor.systemBlue.withAlphaComponent(0.08 + 0.32 * t).setFill()
+            cell.fill()
+        }
+        let text = line.isUncommitted
+            ? "Not committed"
+            : "\(Self.blameDate.string(from: line.date))  \(line.author)"
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: line.isUncommitted ? NSColor.tertiaryLabelColor : NSColor.secondaryLabelColor,
+            .paragraphStyle: style,
+        ]
+        (text as NSString).draw(in: cell.insetBy(dx: 6, dy: 0), withAttributes: attrs)
     }
 
     var desiredWidth: CGFloat {
@@ -541,6 +952,7 @@ final class LineNumberGutter: NSView {
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font, .foregroundColor: NSColor.secondaryLabelColor]
         let pad: CGFloat = 6
+        drawnRows.removeAll(keepingCapacity: true)
 
         var index = content.lineRange(for: NSRange(location: charRange.location, length: 0)).location
         while index <= NSMaxRange(charRange) {
@@ -548,6 +960,9 @@ final class LineNumberGutter: NSView {
             let fragRect = lm.lineFragmentRect(forGlyphAt: min(glyphIdx, max(0, lm.numberOfGlyphs - 1)),
                                                effectiveRange: nil)
             let y = fragRect.minY + inset - scrollY
+            let row = NSRect(x: 0, y: y, width: bounds.width, height: fragRect.height)
+            drawnRows.append((lineNumber, row))
+            if let blame, !blameStale, lineNumber - 1 < blame.count { drawBlame(blame[lineNumber - 1], row: row) }
             let label = "\(lineNumber)" as NSString
             let size = label.size(withAttributes: attrs)
             label.draw(at: NSPoint(x: bounds.width - size.width - pad, y: y), withAttributes: attrs)

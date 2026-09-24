@@ -30,6 +30,12 @@ final class SettingsViewModel: ObservableObject {
         didSet { defaults.set(autoRevealActiveFile, forKey: Keys.autoRevealActiveFile) }
     }
 
+    /// Write editor changes to disk on their own — a second after typing
+    /// stops, and when MyGit loses focus — instead of waiting for ⌘S.
+    @Published var autoSaveFiles: Bool {
+        didSet { defaults.set(autoSaveFiles, forKey: Keys.autoSaveFiles) }
+    }
+
     /// Pop the completion list while typing in the editor. Off means it only
     /// appears on ⌥Esc (AppKit's own completion shortcut).
     @Published var autocompleteWhileTyping: Bool {
@@ -70,6 +76,7 @@ final class SettingsViewModel: ObservableObject {
         static let provider = "MyGit.ai.provider"
         static let generateBody = "MyGit.ai.generateBody"
         static let autoRevealActiveFile = "MyGit.files.autoRevealActiveFile"
+        static let autoSaveFiles = "MyGit.files.autoSave"
         static let autocompleteWhileTyping = "MyGit.editor.autocompleteWhileTyping"
         static let aiInlineCompletion = "MyGit.editor.aiInlineCompletion"
         static func model(_ p: AIProvider) -> String { "MyGit.ai.model.\(p.rawValue)" }
@@ -89,6 +96,7 @@ final class SettingsViewModel: ObservableObject {
         self.generateBody = defaults.bool(forKey: Keys.generateBody)
         // Absent key → on; `bool(forKey:)` alone would default it to off.
         self.autoRevealActiveFile = defaults.object(forKey: Keys.autoRevealActiveFile) as? Bool ?? true
+        self.autoSaveFiles = defaults.object(forKey: Keys.autoSaveFiles) as? Bool ?? true
         self.autocompleteWhileTyping = defaults.object(forKey: Keys.autocompleteWhileTyping) as? Bool ?? true
         self.aiInlineCompletion = defaults.bool(forKey: Keys.aiInlineCompletion)
 

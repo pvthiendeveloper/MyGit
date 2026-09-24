@@ -26,6 +26,13 @@ struct FileEditorContent: View {
     @EnvironmentObject var terminal: TerminalViewModel
     @EnvironmentObject var settings: SettingsViewModel
 
+    /// Which half of the Markdown split the user is scrolling; the other one
+    /// follows. Without a driver the two panes would fight each other.
+    @State private var scrollDriver: MarkdownPane = .source
+    @State private var scrollFraction: CGFloat = 0
+
+    private enum MarkdownPane { case source, preview }
+
     private var isShellScript: Bool {
         (tab.name as NSString).pathExtension.lowercased() == "sh"
     }
@@ -66,6 +73,19 @@ struct FileEditorContent: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                if tab.isMarkdown, !tab.isBinary {
+                    Picker("", selection: $tab.markdownMode) {
+                        ForEach(MarkdownViewMode.allCases) { mode in
+                            Image(systemName: mode.symbol)
+                                .help(mode.label)
+                                .tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Markdown view mode")
+                }
                 if let symbol = vm.resolvingSymbol {
                     HStack(spacing: 4) {
                         ProgressView().controlSize(.small)
@@ -94,8 +114,18 @@ struct FileEditorContent: View {
 
             Divider()
 
+            if !tab.isLoading, !tab.isBinary {
+                FindBarHost(find: tab.find)
+            }
+
+            if tab.diskConflict != nil {
+                conflictBanner
+            }
+
             if tab.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab.isBinary, let image = tab.image {
+                ImagePreview(image: image)
             } else if tab.isBinary {
                 VStack {
                     Spacer()
@@ -103,7 +133,73 @@ struct FileEditorContent: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tab.isMarkdown {
+                markdownBody
             } else {
+                editorBody
+            }
+        }
+    }
+
+    /// Source / split / preview for Markdown.
+    @ViewBuilder
+    private var markdownBody: some View {
+        switch tab.markdownMode {
+        case .editor:
+            editorBody
+        case .preview:
+            MarkdownPreview(text: tab.content)
+        case .split:
+            HSplitView {
+                editorBody(
+                    scrollFraction: scrollDriver == .preview ? scrollFraction : nil,
+                    onScrollFraction: { fraction in
+                        guard scrollDriver == .source else { return }
+                        scrollFraction = fraction
+                    }
+                )
+                .frame(minWidth: 280)
+                .onHover { if $0 { scrollDriver = .source } }
+
+                MarkdownPreview(
+                    text: tab.content,
+                    scrollFraction: scrollDriver == .source ? scrollFraction : nil,
+                    onScrollFraction: { fraction in
+                        guard scrollDriver == .preview else { return }
+                        scrollFraction = fraction
+                    }
+                )
+                .frame(minWidth: 280)
+                .onHover { if $0 { scrollDriver = .preview } }
+            }
+        }
+    }
+
+    /// Shown while another program's edit to this file is unresolved.
+    private var conflictBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("This file changed on disk while you had unsaved edits. Auto-save is paused.")
+                .font(.system(size: 12))
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button("Compare") { vm.compareWithDisk(tab) }
+            Button("Use Disk Version") { vm.useDiskVersion(tab) }
+            Button("Keep My Version") { vm.keepMyVersion(tab) }
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color.orange.opacity(0.15))
+    }
+
+    private var editorBody: some View { editorBody(scrollFraction: nil, onScrollFraction: nil) }
+
+    private func editorBody(
+        scrollFraction: CGFloat?,
+        onScrollFraction: ((CGFloat) -> Void)?
+    ) -> some View {
+        Group {
                 CodeEditor(
                     text: $tab.content,
                     syntaxExt: (tab.name as NSString).pathExtension,
@@ -112,6 +208,9 @@ struct FileEditorContent: View {
                         vm.goToDefinition(symbol: symbol, line: line, in: tab)
                     },
                     completionSymbols: { vm.repoSymbols },
+                    semanticCompletion: (tab.name as NSString).pathExtension == "swift"
+                        ? { text, caret in await vm.swiftCompletions(for: tab, text: text, caret: caret) }
+                        : nil,
                     autocompleteWhileTyping: settings.autocompleteWhileTyping,
                     aiSuggest: settings.aiInlineCompletion
                         ? { prefix, suffix in
@@ -121,11 +220,25 @@ struct FileEditorContent: View {
                                 language: (tab.name as NSString).pathExtension
                             )
                           }
-                        : nil
+                        : nil,
+                    scrollFraction: scrollFraction,
+                    onScrollFraction: onScrollFraction,
+                    onCaretLine: { line, userInitiated in
+                        vm.caretMoved(in: tab, to: line, userInitiated: userInitiated)
+                    },
+                    onSelectionChange: { range in vm.selectionChanged(in: tab, to: range) },
+                    onMention: { vm.mentionInClaude(tab) },
+                    blame: tab.blame,
+                    // Unsaved edits shift lines; blank the cells until the save reloads blame.
+                    blameStale: tab.isDirty,
+                    onToggleBlame: tab.path.hasPrefix("/") ? nil : { vm.toggleBlame(tab) },
+                    onBlameClick: { line, view, rect in
+                        CommitCardPopover.show(line.commit, relativeTo: rect, of: view)
+                    },
+                    find: tab.find
                 )
                 .background(Color(NSColor.textBackgroundColor))
                 .task { await vm.loadRepoSymbols() }
-            }
         }
     }
 
@@ -136,6 +249,19 @@ struct FileEditorContent: View {
             if tab.isDirty { await vm.saveFileTab(tab) }
             guard let abs = vm.absolutePath(for: tab) else { return }
             terminal.runShellScript(absolutePath: abs, browser: browser)
+        }
+    }
+}
+
+/// Shows the ⌘F bar only while it's open; observing `find` here keeps the rest
+/// of the editor from re-rendering on every keystroke in the search field.
+private struct FindBarHost: View {
+    @ObservedObject var find: EditorFindState
+
+    var body: some View {
+        if find.isVisible {
+            EditorFindBar(find: find)
+            Divider()
         }
     }
 }

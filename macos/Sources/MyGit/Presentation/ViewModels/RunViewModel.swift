@@ -28,6 +28,12 @@ final class RunViewModel: ObservableObject {
     @Published var selectedScheme: String? {
         didSet { persist(Keys.scheme, selectedScheme) }
     }
+    /// User-defined commands the ▶ button can run instead of the app.
+    @Published private(set) var configurations: [RunConfiguration] = []
+    /// Which configuration ▶ runs; nil = the built-in build-and-launch.
+    @Published var selectedConfigurationID: UUID? {
+        didSet { persist(Keys.selectedConfiguration, selectedConfigurationID?.uuidString) }
+    }
 
     private let repoSource: () -> Repository?
     private let main: MainViewModel
@@ -40,6 +46,8 @@ final class RunViewModel: ObservableObject {
         static let scheme = "scheme"
         static let module = "module"
         static let variants = "variants"
+        static let configurations = "configurations"
+        static let selectedConfiguration = "configuration"
     }
 
     init(main: MainViewModel, repoSource: @escaping () -> Repository?, defaults: UserDefaults = .standard) {
@@ -55,6 +63,68 @@ final class RunViewModel: ObservableObject {
            let stored = try? JSONDecoder().decode([String: String].self, from: data) {
             self.activeVariants = stored
         }
+        if let raw = restore(Keys.configurations),
+           let data = raw.data(using: .utf8),
+           let stored = try? JSONDecoder().decode([RunConfiguration].self, from: data) {
+            self.configurations = stored
+        }
+        let selected = restore(Keys.selectedConfiguration).flatMap(UUID.init(uuidString:))
+        self.selectedConfigurationID = configurations.contains { $0.id == selected } ? selected : nil
+    }
+
+    // MARK: - Run configurations
+
+    var selectedConfiguration: RunConfiguration? {
+        configurations.first { $0.id == selectedConfigurationID }
+    }
+
+    /// Toolbar label for the current run target.
+    var configurationLabel: String { selectedConfiguration?.name ?? "App" }
+
+    /// Adds or replaces a configuration (matched by id) and selects it.
+    func save(_ config: RunConfiguration) {
+        if let idx = configurations.firstIndex(where: { $0.id == config.id }) {
+            configurations[idx] = config
+        } else {
+            configurations.append(config)
+        }
+        selectedConfigurationID = config.id
+        persistConfigurations()
+        // Write the script now, so its path is real before the first run.
+        writeScript(for: config)
+    }
+
+    /// Absolute path of a configuration's script file.
+    func scriptPath(for config: RunConfiguration) -> String? {
+        repoSource().map { ProjectToolchain.customScriptURL(for: config, repo: $0.url).path }
+    }
+
+    @discardableResult
+    private func writeScript(for config: RunConfiguration) -> String? {
+        guard let repo = repoSource() else { return nil }
+        return ProjectToolchain.customScript(config, device: selectedDevice, scheme: selectedScheme, repo: repo.url)
+    }
+
+    func delete(_ config: RunConfiguration) {
+        if let repo = repoSource() { ProjectToolchain.removeCustomScript(config, repo: repo.url) }
+        configurations.removeAll { $0.id == config.id }
+        if selectedConfigurationID == config.id { selectedConfigurationID = nil }
+        persistConfigurations()
+    }
+
+    private func persistConfigurations() {
+        guard let data = try? JSONEncoder().encode(configurations),
+              let raw = String(data: data, encoding: .utf8) else { return }
+        persist(Keys.configurations, raw)
+    }
+
+    /// Starter command for the configuration editor (iOS only for now).
+    func template(record: Bool) -> String {
+        guard let repo = repoSource(), kind == .ios else { return "" }
+        // Snapshot tests usually live in their own scheme; the toolbar's scheme
+        // is the app, so name that one directly when recording.
+        let snapshotScheme = record ? schemes.first { $0.localizedCaseInsensitiveContains("snapshot") } : nil
+        return ProjectToolchain.iosTestTemplate(at: repo.url, scheme: snapshotScheme, record: record)
     }
 
     // MARK: - Build variants (Android)
@@ -118,6 +188,7 @@ final class RunViewModel: ObservableObject {
     }
 
     var canRun: Bool {
+        if let config = selectedConfiguration { return !config.command.isEmpty }
         guard kind != .unknown, selectedDevice != nil else { return false }
         return kind == .android || selectedScheme != nil
     }
@@ -165,7 +236,16 @@ final class RunViewModel: ObservableObject {
 
     /// Build + install + launch on the selected device, in the terminal panel.
     func run() {
-        guard let repo = repoSource(), let device = selectedDevice else { return }
+        guard let repo = repoSource() else { return }
+        if let config = selectedConfiguration {
+            guard let script = writeScript(for: config) else {
+                main.errorMessage = "Couldn't write the run script."
+                return
+            }
+            runInTerminal(script)
+            return
+        }
+        guard let device = selectedDevice else { return }
         guard let script = ProjectToolchain.runScript(
             kind: kind,
             device: device,

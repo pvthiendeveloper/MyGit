@@ -56,6 +56,13 @@ struct CommitComposerView: View {
                 }
                 .disabled(vm.commitMode == .amendKeepMessage)
 
+            if vm.commitMode.isEmpty {
+                Text("No files are committed. Staged changes stay staged; leave the summary blank for an empty message.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack(alignment: .center, spacing: 6) {
                 Button(action: triggerCommit) {
                     Text(commitButtonTitle)
@@ -85,6 +92,19 @@ struct CommitComposerView: View {
                         vm.setCommitMode(.commitAndForcePush)
                     } label: {
                         Label("Commit & Force Push", systemImage: vm.commitMode == .commitAndForcePush ? "checkmark" : "")
+                    }
+                    Divider()
+                    Button {
+                        vm.setCommitMode(.emptyCommit)
+                    } label: {
+                        Label("Empty Commit", systemImage: vm.commitMode == .emptyCommit ? "checkmark" : "")
+                    }
+                    .help("Commit with no file changes — re-runs the CI/CD pipeline")
+                    Button {
+                        vm.setCommitMode(.emptyCommitAndPush)
+                    } label: {
+                        Label("Empty Commit & Push",
+                              systemImage: vm.commitMode == .emptyCommitAndPush ? "checkmark" : "")
                     }
                     Divider()
                     Button {
@@ -136,6 +156,10 @@ struct CommitComposerView: View {
             return branch.isEmpty ? "Commit & Push" : "Commit & Push to \(branch)"
         case .commitAndForcePush:
             return branch.isEmpty ? "Commit & Force Push" : "Commit & Force Push to \(branch)"
+        case .emptyCommit:
+            return branch.isEmpty ? "Empty Commit" : "Empty Commit to \(branch)"
+        case .emptyCommitAndPush:
+            return branch.isEmpty ? "Empty Commit & Push" : "Empty Commit & Push to \(branch)"
         case .amendKeepMessage:
             return "Amend (keep message)"
         case .amendUpdateMessage:

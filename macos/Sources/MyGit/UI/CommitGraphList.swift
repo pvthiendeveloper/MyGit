@@ -30,6 +30,7 @@ struct CommitGraphList: View {
                             isSelected: vm.selectedCommit?.id == row.commit.id
                         )
                         .contentShape(Rectangle())
+                        .commitHoverCard(row.commit)
                         .onTapGesture { vm.selectedCommit = row.commit }
                         .onHover { inside in
                             if inside { vm.prefetchMenuInfo(for: row.commit) }

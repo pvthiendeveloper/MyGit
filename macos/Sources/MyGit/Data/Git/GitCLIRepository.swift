@@ -48,7 +48,7 @@ struct GitCLIRepository: GitRepository {
         // (keeps SearchHit ids unique — it's a file finder, not a line finder).
         // grep exits 1 when there are no matches (like `diff`), so use `run`.
         let result = try await GitRunner.run(
-            ["grep", "-n", "-I", "--fixed-strings", "--ignore-case",
+            ["grep", "-n", "-I", "--untracked", "--fixed-strings", "--ignore-case",
              "--max-count=1", "-e", q],
             cwd: repo
         )
@@ -72,7 +72,7 @@ struct GitCLIRepository: GitRepository {
         // Whole-word, case-sensitive, every hit per file (unlike `grep`, which
         // caps at one — here the line numbers are the point).
         let result = try await GitRunner.run(
-            ["grep", "-n", "-I", "--word-regexp", "--fixed-strings", "-e", sym],
+            ["grep", "-n", "-I", "--untracked", "--word-regexp", "--fixed-strings", "-e", sym],
             cwd: repo
         )
         guard result.exitCode == 0 else { return [] }   // 1 = no matches
@@ -91,7 +91,7 @@ struct GitCLIRepository: GitRepository {
         let result = try await GitRunner.run(
             // POSIX ERE — git grep has no \\b, so guard the keyword with a
             // non-identifier character and let the caller take the last field.
-            ["grep", "-h", "-I", "-o", "-E",
+            ["grep", "-h", "-I", "--untracked", "-o", "-E",
              "(^|[^A-Za-z0-9_])(\(keywords))[[:space:]]+[A-Za-z_][A-Za-z0-9_]*"],
             cwd: repo
         )
@@ -135,6 +135,7 @@ struct GitCLIRepository: GitRepository {
 
         switch filter.branchScope {
         case .all: args.append("--all")
+        case .head: args.append("HEAD")
         case .ref(let r): args.append(r)
         }
 
@@ -218,6 +219,31 @@ struct GitCLIRepository: GitRepository {
             _ = try await GitRunner.runOrThrow(["add", "--"] + paths, cwd: repo)
         }
         _ = try await GitRunner.runOrThrow(["commit", "-m", message], cwd: repo)
+    }
+
+    func commitEmpty(message: String, at repo: URL) async throws {
+        // `git commit --allow-empty` still commits whatever is in the index, so
+        // it would sweep up staged work. Build the commit from HEAD's own tree
+        // instead: index and working tree are left exactly as they are.
+        let head = try await GitRunner.run(["rev-parse", "-q", "--verify", "HEAD"], cwd: repo)
+        guard head.exitCode == 0 else {
+            // Unborn branch — no HEAD to copy a tree from.
+            var args = ["commit", "--allow-empty"]
+            if message.isEmpty { args.append("--allow-empty-message") }
+            args += ["-m", message]
+            _ = try await GitRunner.runOrThrow(args, cwd: repo)
+            return
+        }
+        let parent = head.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tree = try await GitRunner.runOrThrow(["rev-parse", "HEAD^{tree}"], cwd: repo)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sha = try await GitRunner.runOrThrow(
+            ["commit-tree", tree, "-p", parent, "-m", message], cwd: repo
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = message.isEmpty ? "(empty)" : message
+        _ = try await GitRunner.runOrThrow(
+            ["update-ref", "-m", "commit (empty): \(subject)", "HEAD", sha, parent], cwd: repo
+        )
     }
 
     func amend(at repo: URL, paths: [String], newMessage: String?) async throws {
@@ -547,6 +573,13 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(["branch", force ? "-D" : "-d", name], cwd: repo)
     }
 
+    func unmergedCommits(of branch: String, at repo: URL) async throws -> [String] {
+        let out = try await GitRunner.runOrThrow(
+            ["log", "--format=%h %s", "HEAD..refs/heads/\(branch)", "--"], cwd: repo
+        )
+        return out.split(separator: "\n").map(String.init)
+    }
+
     func newWorktree(path: URL, from: String, at repo: URL) async throws {
         _ = try await GitRunner.runOrThrow(["worktree", "add", path.path, from], cwd: repo)
     }
@@ -861,5 +894,21 @@ struct GitCLIRepository: GitRepository {
     func readFileAtCommit(commit: String, path: String, at repo: URL) async throws -> String {
         let r = try await GitRunner.run(["show", "\(commit):\(path)"], cwd: repo)
         return r.stdout
+    }
+
+    func blame(path: String, at repo: URL) async throws -> [BlameLine] {
+        // Working tree (no revision), so uncommitted lines show as such and
+        // line numbers match what the editor holds after a save.
+        let out = try await GitRunner.runOrThrow(["blame", "--porcelain", "--", path], cwd: repo)
+        return GitBlameParser.parse(out)
+    }
+
+    func readFileDataAtCommit(commit: String, path: String, at repo: URL) async throws -> Data {
+        let args = ["show", "\(commit):\(path)"]
+        let r = try await GitRunner.run(args, cwd: repo)
+        if r.exitCode != 0 {
+            throw GitError.nonZeroExit(args: args, code: r.exitCode, stderr: r.stderr)
+        }
+        return r.stdoutData
     }
 }

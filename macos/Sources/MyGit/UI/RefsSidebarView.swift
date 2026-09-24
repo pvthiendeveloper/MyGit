@@ -25,6 +25,10 @@ struct RefsSidebarView: View {
         return nil
     }
 
+    private var scope: HistoryFilter.Scope { history.filter.branchScope }
+    /// Branch HEAD points at, for the HEAD row's subtitle.
+    private var currentBranch: String? { branches.branches.first { $0.isCurrent }?.name }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
@@ -41,14 +45,36 @@ struct RefsSidebarView: View {
                     Button { history.filter.branchScope = .all } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.up.circle").font(.system(size: 11))
-                            Text("All branches (HEAD)").font(.system(size: 12, weight: .medium))
+                            Text("All branches").font(.system(size: 12, weight: .medium))
                             Spacer()
                         }
-                        .foregroundStyle(activeRef == nil ? Color.accentColor : .primary)
+                        .foregroundStyle(scope == .all ? Color.accentColor : .primary)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+
+                    // HEAD only: the branch you're on, without every other ref
+                    // cluttering the graph.
+                    Button { history.filter.branchScope = .head } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "location.circle").font(.system(size: 11))
+                            Text("HEAD").font(.system(size: 12, weight: .medium))
+                            if let currentBranch {
+                                Text(currentBranch)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                        }
+                        .foregroundStyle(scope == .head ? Color.accentColor : .primary)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show only the current branch's history")
 
                     section("Local", icon: "internaldrive", isOpen: $localOpen) {
                         branchTree(locals)

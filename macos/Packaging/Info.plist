@@ -28,6 +28,12 @@
 	<string>NSApplication</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Thien Pham. All rights reserved.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MyGit's UI Inspector finds iOS apps running the MyGitInspector agent on this Mac's simulators and on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mygitinspect._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

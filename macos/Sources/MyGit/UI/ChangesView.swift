@@ -8,6 +8,32 @@ struct ChangesListView: View {
     @EnvironmentObject var coordinator: AppCoordinator
 
     private var changes: [FileChange] { vm.status?.changes ?? [] }
+    @AppStorage("MyGit.changes.expanded.changes") private var changesExpanded = true
+    @AppStorage("MyGit.changes.expanded.unversioned") private var unversionedExpanded = true
+    @AppStorage("MyGit.changes.groupByDirectory") private var byDirectory = false
+    @State private var collapsedFolders: Set<String> = []
+
+    private func expandAll() {
+        withAnimation(.easeInOut(duration: 0.12)) {
+            changesExpanded = true
+            unversionedExpanded = true
+            collapsedFolders = []
+        }
+    }
+
+    /// Folds the groups and, in the directory view, every folder inside them,
+    /// so expanding a group again shows just its top level.
+    private func collapseAll() {
+        withAnimation(.easeInOut(duration: 0.12)) {
+            changesExpanded = false
+            unversionedExpanded = false
+            collapsedFolders = byDirectory ? ChangeGroup.allFolderKeys(changes) : []
+        }
+    }
+
+    private func expandedBinding(_ group: ChangeGroup) -> Binding<Bool> {
+        group == .changes ? $changesExpanded : $unversionedExpanded
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,9 +51,21 @@ struct ChangesListView: View {
                 }
             } else {
                 List(selection: $vm.selectedChange) {
-                    ForEach(changes) { change in
-                        ChangeRow(change: change)
-                            .tag(change as FileChange?)
+                    ForEach(ChangeGroup.allCases, id: \.self) { group in
+                        let files = group.filter(changes)
+                        if !files.isEmpty {
+                            ChangeGroupHeader(group: group, changes: files,
+                                              expanded: expandedBinding(group), vm: vm)
+                                .selectionDisabled()
+                            if expandedBinding(group).wrappedValue {
+                                ChangeGroupRows(files: files, byDirectory: byDirectory, vm: vm,
+                                                collapsed: $collapsedFolders, groupKey: group.rawValue) { change, depth, showDir in
+                                    ChangeRow(change: change, showsDirectory: showDir)
+                                        .padding(.leading, 20 + CGFloat(depth) * 16)
+                                        .tag(change as FileChange?)
+                                }
+                            }
+                        }
                     }
                 }
                 .listStyle(.inset)
@@ -120,6 +158,7 @@ struct ChangesListView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
+            ExpandCollapseButtons(expandAll: expandAll, collapseAll: collapseAll)
             Menu {
                 ChangesGitMenu(bundle: coordinator.activeBundle)
             } label: {
@@ -148,6 +187,9 @@ struct ChangeRow: View {
     @EnvironmentObject var vm: ChangesViewModel
     @EnvironmentObject var main: MainViewModel
     let change: FileChange
+    /// False in the directory tree, where the folder rows already say where
+    /// the file is: show just its name.
+    var showsDirectory = true
 
     private var isSelected: Bool { vm.selectedChange == change }
 
@@ -163,7 +205,7 @@ struct ChangeRow: View {
                 .contentShape(Rectangle())
                 .highPriorityGesture(TapGesture().onEnded { vm.toggleStaged(change) })
 
-            Text(change.path)
+            Text(showsDirectory ? change.path : (change.path as NSString).lastPathComponent)
                 .font(.system(size: 12))
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .lineLimit(1)

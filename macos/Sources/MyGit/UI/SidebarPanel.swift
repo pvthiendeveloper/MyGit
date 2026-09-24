@@ -40,6 +40,7 @@ private struct SidebarPanelContent: View {
         if showsPullRequests {
             items.append(SidebarTab(tab: .pullRequests, symbol: "arrow.triangle.pull", title: "Pull Requests"))
         }
+        items.append(SidebarTab(tab: .claude, symbol: "sparkles", title: "Claude Code"))
         return items
     }
 
@@ -72,6 +73,8 @@ private struct SidebarPanelContent: View {
                     WorkspaceHistoryView()
                 case .files:
                     WorkspaceFilesView()
+                case .claude:
+                    ClaudePanelView()
                 case .pullRequests:
                     WorkspacePullRequestsView()
                 }

@@ -5,6 +5,7 @@ import Foundation
 struct HistoryFilter: Equatable {
     enum Scope: Equatable {
         case all                 // --all (every branch)
+        case head                // HEAD only — the branch you're on
         case ref(String)         // a single branch/tag/rev
     }
     enum Sort: Equatable {

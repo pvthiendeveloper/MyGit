@@ -29,6 +29,8 @@ struct GitResult {
     let stdout: String
     let stderr: String
     let exitCode: Int32
+    /// Raw stdout bytes, for binary output (`git show <rev>:<image>`).
+    var stdoutData = Data()
 }
 
 enum GitRunner {
@@ -51,6 +53,9 @@ enum GitRunner {
                 let errPipe = Pipe()
                 proc.standardOutput = outPipe
                 proc.standardError = errPipe
+                // Never inherit the app's stdin: a command that decides to read
+                // it (e.g. `commit-tree` with an empty -m) would hang forever.
+                proc.standardInput = FileHandle.nullDevice
 
                 do {
                     try proc.run()
@@ -66,7 +71,8 @@ enum GitRunner {
                 cont.resume(returning: GitResult(
                     stdout: String(data: outData, encoding: .utf8) ?? "",
                     stderr: String(data: errData, encoding: .utf8) ?? "",
-                    exitCode: proc.terminationStatus
+                    exitCode: proc.terminationStatus,
+                    stdoutData: outData
                 ))
             }
         }

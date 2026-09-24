@@ -99,3 +99,18 @@ struct GradleModule: Identifiable, Hashable {
         return path.isEmpty ? "assemble\(capitalized)" : ":\(path):assemble\(capitalized)"
     }
 }
+
+/// A user-defined run target: a named shell command the ▶ button runs in the
+/// terminal panel instead of the built-in build-and-launch (e.g. recording
+/// snapshot tests). Stored per repo.
+struct RunConfiguration: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var name: String
+    var command: String
+
+    /// Curly quotes (from pasting, or macOS smart quotes) mean nothing to bash.
+    static func straightenQuotes(_ s: String) -> String {
+        s.replacingOccurrences(of: "[‘’‚‛]", with: "'", options: .regularExpression)
+            .replacingOccurrences(of: "[“”„‟]", with: "\"", options: .regularExpression)
+    }
+}

@@ -25,6 +25,11 @@ struct SideBySideDiffTabView: View {
     @State private var excludedHunks: Set<Int> = []
     @State private var useCurrentVersion: Bool = false
 
+    // Image files diff as two pictures side by side instead of text.
+    private var isImageTab: Bool { tab.embedded == nil && ImagePreview.isImage(path: tab.path) }
+    @State private var leftImage: NSImage? = nil
+    @State private var rightImage: NSImage? = nil
+
     // Syntax highlighting: full-file colors sliced per line (left = source, right =
     // working). Recomputed only when the texts change (not on every keystroke).
     @State private var syntaxOn: Bool = true
@@ -82,6 +87,8 @@ struct SideBySideDiffTabView: View {
                     Text(loadError).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if isImageTab {
+                imageCompare
             } else {
                 contentForViewer
             }
@@ -982,6 +989,52 @@ struct SideBySideDiffTabView: View {
         }
     }
 
+    // MARK: - Image compare
+
+    private var imageCompare: some View {
+        HStack(spacing: 0) {
+            imagePane(leftImage)
+            Divider()
+            imagePane(rightImage)
+        }
+    }
+
+    @ViewBuilder
+    private func imagePane(_ image: NSImage?) -> some View {
+        if let image {
+            ImagePreview(image: image)
+        } else {
+            Text("No image")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Loads both sides as images. A side missing at that revision (added or
+    /// deleted file) shows "No image" rather than failing the whole tab.
+    private func loadImages() async {
+        let repoURL = coordinator.activeBundle.repo.url
+        let git = coordinator.container.git
+        let workingURL = repoURL.appendingPathComponent(tab.path)
+        func atCommit(_ rev: String) async -> NSImage? {
+            guard let data = try? await git.readFileDataAtCommit(commit: rev, path: tab.path, at: repoURL)
+            else { return nil }
+            return NSImage(data: data)
+        }
+        let onDisk = { NSImage(contentsOf: workingURL) }
+        switch tab.mode {
+        case .commitVsWorking:
+            leftImage = await atCommit(tab.commitHash)
+            rightImage = onDisk()
+        case .parentVsWorking:
+            leftImage = await atCommit("\(tab.commitHash)^1")
+            rightImage = onDisk()
+        case .commitVsParent:
+            leftImage = await atCommit("\(tab.commitHash)^1")
+            rightImage = useCurrentVersion ? onDisk() : await atCommit(tab.commitHash)
+        }
+    }
+
     private func load() async {
         loading = true
         loadError = nil
@@ -993,6 +1046,10 @@ struct SideBySideDiffTabView: View {
             diskText = e.rightText
             recomputeHunks()
             recomputeSyntax()
+            return
+        }
+        if isImageTab {
+            await loadImages()
             return
         }
         let repoURL = coordinator.activeBundle.repo.url
@@ -1012,6 +1069,10 @@ struct SideBySideDiffTabView: View {
 
     private func reloadForCurrentVersionToggle() async {
         guard tab.mode == .commitVsParent else { return }
+        if isImageTab {
+            await loadImages()
+            return
+        }
         let repoURL = coordinator.activeBundle.repo.url
         do {
             let newRight: String

@@ -5,6 +5,7 @@ enum SettingsItem: Hashable {
     case provider(AIProvider)
     case files
     case editor
+    case shortcuts
 }
 
 /// Settings shell — sidebar (search + collapsible groups) on the left,
@@ -39,6 +40,10 @@ struct SettingsView: View {
                     if matchesSearch("editor autocomplete completion code") {
                         Label("Editor", systemImage: "curlybraces")
                             .tag(SettingsItem.editor)
+                    }
+                    if matchesSearch("keyboard shortcuts keys hotkeys keybindings back forward") {
+                        Label("Keyboard Shortcuts", systemImage: "keyboard")
+                            .tag(SettingsItem.shortcuts)
                     }
                 }
                 .listStyle(.sidebar)
@@ -89,6 +94,8 @@ struct SettingsView: View {
             FilesSettingsView()
         case .editor:
             EditorSettingsView()
+        case .shortcuts:
+            ShortcutsSettingsView()
         case nil:
             Text("Select a setting")
                 .foregroundStyle(.secondary)
@@ -100,12 +107,19 @@ struct SettingsView: View {
 /// File-tree behaviour settings.
 struct FilesSettingsView: View {
     @EnvironmentObject var settings: SettingsViewModel
+    @ObservedObject private var shortcuts = ShortcutSettings.shared
 
     var body: some View {
         Form {
             Section("Navigator") {
                 Toggle("Auto-expand to the active file", isOn: $settings.autoRevealActiveFile)
-                Text("Expands the file tree down to whichever file the editor is showing and selects it. With this off, use View ▸ Reveal Active File (⌘⇧1).")
+                Text("Expands the file tree down to whichever file the editor is showing and selects it. With this off, use View ▸ Reveal Active File\(shortcuts.shortcut(for: .revealActiveFile).map { " (\($0.display))" } ?? "").")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Editor") {
+                Toggle("Save files automatically", isOn: $settings.autoSaveFiles)
+                Text("Writes changes a second after you stop typing, and when you switch to another app. With this off, save with ⌘S.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -118,6 +132,9 @@ struct FilesSettingsView: View {
 /// Code-editor behaviour settings.
 struct EditorSettingsView: View {
     @EnvironmentObject var settings: SettingsViewModel
+    @ObservedObject private var shortcuts = ShortcutSettings.shared
+
+    private var aiKey: String { shortcuts.shortcut(for: .aiSuggest)?.display ?? "its shortcut" }
 
     var body: some View {
         Form {
@@ -128,8 +145,8 @@ struct EditorSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("AI") {
-                Toggle("AI continuation on ⌘⇧P", isOn: $settings.aiInlineCompletion)
-                Text("Asks the active AI provider to continue the code at the caret and shows it dimmed; ⇥ accepts, ⎋ dismisses. The shortcut only fires while editing code — elsewhere ⌘⇧P still means Pull. Uses the same key as commit-message generation and spends tokens per request.")
+                Toggle("AI continuation on \(aiKey)", isOn: $settings.aiInlineCompletion)
+                Text("Asks the active AI provider to continue the code at the caret and shows it dimmed; ⇥ accepts, ⎋ dismisses. The shortcut only fires while editing code, so it may share keys with a menu command (change it in Keyboard Shortcuts). Uses the same key as commit-message generation and spends tokens per request.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

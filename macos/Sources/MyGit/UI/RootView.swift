@@ -15,6 +15,7 @@ struct RootView: View {
             .environmentObject(coordinator.settings)
             .environmentObject(coordinator.search)
             .environmentObject(coordinator.terminal)
+            .environmentObject(coordinator.claude)
             .environmentObject(bundle.changes)
             .environmentObject(bundle.history)
             .environmentObject(bundle.files)

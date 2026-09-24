@@ -3,7 +3,7 @@ import Combine
 
 @MainActor
 final class MainViewModel: ObservableObject {
-    enum Tab: Hashable { case changes, stash, history, files, pullRequests }
+    enum Tab: Hashable { case changes, stash, history, files, pullRequests, claude }
     enum DetailTab: Hashable {
         case content
         case compare

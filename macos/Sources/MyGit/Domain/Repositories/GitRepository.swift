@@ -51,6 +51,9 @@ protocol GitRepository: Sendable {
     // Commit / index
     func commit(at repo: URL, paths: [String], message: String) async throws
     func amend(at repo: URL, paths: [String], newMessage: String?) async throws
+    /// Commit with no changes staged — the usual way to re-trigger a CI/CD
+    /// pipeline. An empty `message` is allowed too.
+    func commitEmpty(message: String, at repo: URL) async throws
     func headExists(at repo: URL) async -> Bool
     func headCommitMessage(at repo: URL) async throws -> String
     func stashPush(message: String?, at repo: URL) async throws
@@ -117,6 +120,9 @@ protocol GitRepository: Sendable {
     func setUpstream(branch: String, upstream: String, at repo: URL) async throws
     func renameBranch(old: String, new: String, at repo: URL) async throws
     func deleteBranch(_ name: String, force: Bool, at repo: URL) async throws
+    /// Commits on `branch` that HEAD doesn't contain (what a force delete loses
+    /// from this branch's point of view), newest first, as one-line summaries.
+    func unmergedCommits(of branch: String, at repo: URL) async throws -> [String]
     func newWorktree(path: URL, from: String, at repo: URL) async throws
     func checkoutRevision(_ rev: String, at repo: URL) async throws
 
@@ -176,4 +182,8 @@ protocol GitRepository: Sendable {
     func cherryPickFileFromCommit(commit: String, path: String, at repo: URL) async throws
     func patchForFile(commit: String, path: String, at repo: URL) async throws -> String
     func readFileAtCommit(commit: String, path: String, at repo: URL) async throws -> String
+    /// Per-line authorship of the working-tree file (`git blame`).
+    func blame(path: String, at repo: URL) async throws -> [BlameLine]
+    /// Raw bytes of a file at a commit (binary-safe).
+    func readFileDataAtCommit(commit: String, path: String, at repo: URL) async throws -> Data
 }

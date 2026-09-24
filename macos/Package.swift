@@ -14,9 +14,15 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0")
     ],
     targets: [
+        // dlopen binding to Xcode's libIndexStore, for semantic ⌘-click lookups.
+        .target(
+            name: "CIndexStore",
+            path: "Sources/CIndexStore"
+        ),
         .executableTarget(
             name: "MyGit",
             dependencies: [
+                "CIndexStore",
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "SwiftTerm", package: "SwiftTerm")
             ],

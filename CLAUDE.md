@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository layout
 
-Single project: `macos/` holds a SwiftPM macOS app (MyGit — a GitHub Desktop-style git client). Root is otherwise empty. All source, build, and packaging live under `macos/`.
+`macos/` holds the SwiftPM macOS app (MyGit — a GitHub Desktop-style git client); all its source, build, and packaging live there. `ios-inspector/` is a small iOS Swift package (`MyGitInspector`) that debug builds of iOS apps embed so MyGit's UI Inspector can read their view hierarchy (see its README). `web/` is a separate web project.
 
 **Detailed guidance lives in `macos/CLAUDE.md`** — read it before editing Swift code. Architecture, auth model, staging model, and conventions are documented there. Do not duplicate that content here.
 

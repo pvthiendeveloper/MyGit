@@ -140,7 +140,44 @@ final class BranchesViewModel: ObservableObject {
     }
 
     func delete(_ branch: GitBranch, force: Bool) async {
-        await runOp { try await self.git.deleteBranch(branch.name, force: force, at: $0) }
+        guard !force, let repo = repoSource() else {
+            await runOp { try await self.git.deleteBranch(branch.name, force: force, at: $0) }
+            return
+        }
+        // `git branch -d` refuses branches with unmerged commits. Instead of
+        // surfacing git's raw refusal, show what would be lost and offer -D.
+        main.isBusy = true
+        do {
+            try await git.deleteBranch(branch.name, force: false, at: repo.url)
+            main.isBusy = false
+            await onFinished()
+        } catch GitError.nonZeroExit(_, _, let stderr) where stderr.contains("not fully merged") {
+            let commits = (try? await git.unmergedCommits(of: branch.name, at: repo.url)) ?? []
+            main.isBusy = false
+            if confirmForceDelete(branch.name, commits: commits) {
+                await runOp { try await self.git.deleteBranch(branch.name, force: true, at: $0) }
+            }
+        } catch {
+            main.isBusy = false
+            main.errorMessage = error.localizedDescription
+            await onFinished()
+        }
+    }
+
+    private func confirmForceDelete(_ name: String, commits: [String]) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(name)” has unmerged commits"
+        let count = commits.count
+        let shown = commits.prefix(8).joined(separator: "\n")
+        let more = count > 8 ? "\n… and \(count - 8) more" : ""
+        alert.informativeText = count == 0
+            ? "Git says the branch isn't fully merged into its upstream. Deleting it anyway may lose commits that exist only on this branch."
+            : "\(count) commit\(count == 1 ? "" : "s") on this branch aren't in the current branch and will be lost unless they exist elsewhere (e.g. pushed to a remote):\n\n\(shown)\(more)"
+        alert.addButton(withTitle: "Force Delete")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons[0].hasDestructiveAction = true
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func pickWorktreeDirectory(for branch: GitBranch) {

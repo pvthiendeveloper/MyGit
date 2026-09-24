@@ -59,8 +59,10 @@ struct MainView: View {
                             .frame(minHeight: 120, idealHeight: 200, maxHeight: 320)
                     }
                     if terminal.isVisible {
+                        // VSplitView opens a new pane at its minimum height and
+                        // ignores idealHeight, so the minimum *is* the default.
                         TerminalPanelView()
-                            .frame(minHeight: 120, idealHeight: 260, maxHeight: .infinity)
+                            .frame(minHeight: 240, idealHeight: 400, maxHeight: .infinity)
                     }
                 }
             }

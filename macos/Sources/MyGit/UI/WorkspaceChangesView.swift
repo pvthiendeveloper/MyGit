@@ -43,6 +43,13 @@ private struct RepoChangesSection: View {
     let bundle: RepoBundle
     @ObservedObject private var changesVM: ChangesViewModel
     @State private var expanded = true
+    @State private var groupExpanded: [ChangeGroup: Bool] = [:]
+    @State private var collapsedFolders: Set<String> = []
+    @AppStorage("MyGit.changes.groupByDirectory") private var byDirectory = false
+
+    private func groupBinding(_ group: ChangeGroup) -> Binding<Bool> {
+        Binding(get: { groupExpanded[group] ?? true }, set: { groupExpanded[group] = $0 })
+    }
 
     init(bundle: RepoBundle) {
         self.bundle = bundle
@@ -64,12 +71,28 @@ private struct RepoChangesSection: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(rowBackground)
             } else {
-                ForEach(changes) { change in
-                    ChangeRow(change: change)
-                        .environmentObject(bundle.changes)
-                        .environmentObject(bundle.editor)
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(rowBackground)
+                ForEach(ChangeGroup.allCases, id: \.self) { group in
+                    let files = group.filter(changes)
+                    if !files.isEmpty {
+                        ChangeGroupHeader(group: group, changes: files,
+                                          expanded: groupBinding(group), vm: changesVM)
+                            .padding(.leading, 8)
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(rowBackground)
+                        if groupBinding(group).wrappedValue {
+                            ChangeGroupRows(files: files, byDirectory: byDirectory, vm: changesVM,
+                                            collapsed: $collapsedFolders, groupKey: group.rawValue) { change, depth, showDir in
+                                ChangeRow(change: change, showsDirectory: showDir)
+                                    .padding(.leading, 20 + CGFloat(depth) * 16)
+                                    .environmentObject(bundle.changes)
+                                    .environmentObject(bundle.editor)
+                                    .listRowSeparator(.hidden)
+                                    .listRowBackground(rowBackground)
+                            }
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(rowBackground)
+                        }
+                    }
                 }
                 CommitComposerView()
                     .environmentObject(bundle.changes)
@@ -130,6 +153,24 @@ private struct RepoChangesSection: View {
                 .background(Capsule().fill(Color.secondary.opacity(0.15)))
 
             Spacer()
+
+            if !changes.isEmpty {
+                ExpandCollapseButtons(
+                    expandAll: {
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            expanded = true
+                            groupExpanded = [:]
+                            collapsedFolders = []
+                        }
+                    },
+                    collapseAll: {
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            for group in ChangeGroup.allCases { groupExpanded[group] = false }
+                            collapsedFolders = byDirectory ? ChangeGroup.allFolderKeys(changes) : []
+                        }
+                    }
+                )
+            }
 
             if changesVM.status?.operationInProgress == true, changesVM.status?.hasConflicts == true {
                 Button {

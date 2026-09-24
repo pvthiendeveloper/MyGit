@@ -10,6 +10,12 @@ enum CommitMode: Equatable {
     case amendUpdateMessage
     case commitAndPush
     case commitAndForcePush
+    /// Commit with no file changes — the usual way to re-run a CI/CD pipeline.
+    /// Staged work is left staged.
+    case emptyCommit
+    case emptyCommitAndPush
+
+    var isEmpty: Bool { self == .emptyCommit || self == .emptyCommitAndPush }
 }
 
 @MainActor
@@ -191,6 +197,9 @@ final class ChangesViewModel: ObservableObject {
         switch commitMode {
         case .commit, .commitAndPush, .commitAndForcePush:
             return hasSummary && !stagedPaths.isEmpty
+        case .emptyCommit, .emptyCommitAndPush:
+            // No summary needed: pipelines often key off the commit existing.
+            return true
         case .amendKeepMessage:
             return canAmend
         case .amendUpdateMessage:
@@ -206,9 +215,38 @@ final class ChangesViewModel: ObservableObject {
         }
     }
 
+    /// Check / uncheck a group of files at once (a "Changes" or
+    /// "Unversioned Files" group header).
+    func setStaged(_ changes: [FileChange], _ on: Bool) {
+        let paths = Set(changes.map(\.path))
+        if on { stagedPaths.formUnion(paths) } else { stagedPaths.subtract(paths) }
+    }
+
     func setAllStaged(_ on: Bool) {
         guard let status else { return }
         stagedPaths = on ? Set(status.changes.map { $0.path }) : []
+    }
+
+    /// Commit with no changes, optionally pushing straight after — pipelines
+    /// usually only react to the push. Falls back to a default subject so the
+    /// history stays readable when the composer is empty.
+    func commitEmpty(message: String, push: Bool) async {
+        guard let repo = repoSource(), !main.isBusy else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            try await git.commitEmpty(
+                message: message.trimmingCharacters(in: .whitespacesAndNewlines),
+                at: repo.url
+            )
+            commitSummary = ""
+            commitDescription = ""
+            commitMode = .commit
+            await onFinished()
+            if push { await pushAfterCommit(false) }
+        } catch {
+            main.errorMessage = error.localizedDescription
+        }
     }
 
     func commit() async {
@@ -220,6 +258,11 @@ final class ChangesViewModel: ObservableObject {
             .map { $0.path }
         let composedMessage = composeMessage()
         let modeAtStart = commitMode
+        if modeAtStart.isEmpty {
+            main.isBusy = false
+            await commitEmpty(message: composedMessage, push: modeAtStart == .emptyCommitAndPush)
+            return
+        }
         do {
             switch modeAtStart {
             case .commit, .commitAndPush, .commitAndForcePush:
@@ -228,6 +271,8 @@ final class ChangesViewModel: ObservableObject {
                 try await git.amend(at: repo.url, paths: toStage, newMessage: nil)
             case .amendUpdateMessage:
                 try await git.amend(at: repo.url, paths: toStage, newMessage: composedMessage)
+            case .emptyCommit, .emptyCommitAndPush:
+                break   // handled above
             }
             commitSummary = ""
             commitDescription = ""

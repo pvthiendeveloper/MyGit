@@ -276,9 +276,20 @@ struct SymbolLookupSheet: View {
         .onTapGesture { selection = hit.id }
     }
 
+    private var sourceNote: String {
+        switch lookup.source {
+        case .index(let updated):
+            guard let updated else { return "References from the Xcode index." }
+            let age = RelativeDateTimeFormatter().localizedString(for: updated, relativeTo: Date())
+            return "References from the Xcode index (updated \(age))."
+        case .grep:
+            return "Text search (no Xcode index for this file) — unrelated names can appear."
+        }
+    }
+
     private var footer: some View {
         HStack {
-            Text("Double-click a line to jump. Backed by `git grep` — unrelated names can appear.")
+            Text("Double-click a line to jump. \(sourceNote)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()

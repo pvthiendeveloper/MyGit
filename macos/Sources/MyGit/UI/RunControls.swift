@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Toolbar controls for Android/iOS repos: pick a target device (and, on iOS, a
-/// scheme), then build + install + launch it. Hidden for every other project.
+/// Toolbar run controls. Android/iOS repos get a device (and, on iOS, scheme)
+/// picker for the built-in build + install + launch; every repo gets the
+/// configuration picker, so ▶ can run a user-defined command instead.
 ///
 /// Built from plain buttons + popovers rather than `Menu`, so the whole cell is
 /// the hit area and the hover highlight matches the branch/fetch buttons —
@@ -14,25 +15,35 @@ struct RunControls: View {
     @State private var hoveredDevice = false
     @State private var hoveredScheme = false
     @State private var hoveredVariant = false
+    @State private var hoveredConfig = false
+    @State private var showConfigs = false
+    /// Configuration open in the editor sheet (new or existing).
+    @State private var editingConfig: RunConfiguration?
 
     var body: some View {
-        if vm.kind != .unknown {
-            HStack(spacing: 0) {
+        HStack(spacing: 0) {
+            if vm.kind != .unknown {
                 separator
                 devicePicker
-                if vm.kind == .ios {
-                    separator
-                    schemePicker
-                }
-                if vm.kind == .android {
-                    separator
-                    variantButton
-                }
-                separator
-                runButton
-                separator
             }
-            .task { await vm.refresh() }
+            if vm.kind == .ios {
+                separator
+                schemePicker
+            }
+            if vm.kind == .android {
+                separator
+                variantButton
+            }
+            separator
+            configurationPicker
+            separator
+            runButton
+            separator
+        }
+        .task { await vm.refresh() }
+        .sheet(item: $editingConfig) { config in
+            RunConfigurationEditor(config: config, isNew: !vm.configurations.contains { $0.id == config.id })
+                .environmentObject(vm)
         }
     }
 
@@ -170,6 +181,145 @@ struct RunControls: View {
         .help("Pick the Gradle module + variant to install")
     }
 
+    // MARK: - Run configuration
+
+    private var configurationPicker: some View {
+        Button { showConfigs.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: vm.selectedConfiguration == nil ? "app.badge" : "terminal")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Run").font(.caption).foregroundStyle(.secondary)
+                    Text(vm.kind == .unknown && vm.selectedConfiguration == nil
+                         ? "No configuration" : vm.configurationLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .layoutPriority(1)
+                Spacer(minLength: 4)
+                DropdownBadge(isOpen: showConfigs)
+            }
+            .padding(.horizontal, 12)
+            .frame(minWidth: 110, maxWidth: 200, maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hoveredConfig = $0 }
+        .background(hoveredConfig ? Color.primary.opacity(0.08) : .clear)
+        .help("What ▶ runs: the app, or one of your commands")
+        .popover(isPresented: $showConfigs, arrowEdge: .bottom) {
+            configurationPopover
+        }
+    }
+
+    private var configurationPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Run Configurations")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 4)
+
+            if vm.kind != .unknown {
+                PopoverRowView(row: PopoverRow(
+                    id: "app",
+                    title: "App",
+                    subtitle: "Build, install and launch",
+                    icon: "app.badge",
+                    isSelected: vm.selectedConfiguration == nil
+                ) {
+                    vm.selectedConfigurationID = nil
+                    showConfigs = false
+                })
+            }
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(vm.configurations) { config in
+                        ConfigRowView(
+                            config: config,
+                            isSelected: config.id == vm.selectedConfigurationID,
+                            onSelect: {
+                                vm.selectedConfigurationID = config.id
+                                showConfigs = false
+                            },
+                            onEdit: {
+                                showConfigs = false
+                                editingConfig = config
+                            },
+                            onDelete: { vm.delete(config) }
+                        )
+                    }
+                }
+            }
+            .frame(maxHeight: 280)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+            Button {
+                showConfigs = false
+                editingConfig = RunConfiguration(name: "", command: vm.template(record: false))
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 11))
+                    Text("Add Configuration…").font(.system(size: 12))
+                    Spacer()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: 300)
+    }
+
+    private struct ConfigRowView: View {
+        let config: RunConfiguration
+        let isSelected: Bool
+        let onSelect: () -> Void
+        let onEdit: () -> Void
+        let onDelete: () -> Void
+        @State private var hovered = false
+
+        var body: some View {
+            HStack(spacing: 8) {
+                Image(systemName: isSelected ? "checkmark" : "terminal")
+                    .font(.system(size: 11))
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(config.name)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text(config.command.split(separator: "\n").first.map(String.init) ?? "")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                if hovered {
+                    Button(action: onEdit) { Image(systemName: "pencil") }
+                        .buttonStyle(.borderless)
+                        .help("Edit")
+                    Button(action: onDelete) { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .help("Delete")
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(hovered ? Color.accentColor.opacity(0.15) : .clear)
+            .onTapGesture(perform: onSelect)
+            .onHover { hovered = $0 }
+            .contextMenu {
+                Button("Edit…", action: onEdit)
+                Button("Delete", role: .destructive, action: onDelete)
+            }
+        }
+    }
+
     // MARK: - Run
 
     private var runButton: some View {
@@ -190,6 +340,7 @@ struct RunControls: View {
     }
 
     private var runHelp: String {
+        if let config = vm.selectedConfiguration { return "Run “\(config.name)” in the terminal" }
         guard let device = vm.selectedDevice else { return "Pick a device first" }
         switch vm.kind {
         case .android: return "Build and install on \(device.name)"
@@ -288,6 +439,155 @@ struct RunControls: View {
             }
             .buttonStyle(.plain)
             .onHover { hovered = $0 }
+        }
+    }
+}
+
+/// Sheet for adding or editing a run configuration: a name and a shell command
+/// run from the repo root in the terminal panel.
+private struct RunConfigurationEditor: View {
+    @EnvironmentObject var vm: RunViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State var config: RunConfiguration
+    let isNew: Bool
+
+    /// Path the script is written to — follows the name as it's typed.
+    private var scriptPath: String? {
+        var preview = config
+        preview.name = config.name.trimmingCharacters(in: .whitespaces)
+        return vm.scriptPath(for: preview)
+    }
+
+    private func scriptPathRow(_ path: String) -> some View {
+        let exists = FileManager.default.fileExists(atPath: path)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Script file").font(.subheadline).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(exists ? path : "\(path)\nWritten when you save or run.")
+                Button { FileActions.copyToPasteboard(path) } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy path")
+                Button { FileActions.reveal(absPath: path) } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!exists)
+                .help(exists ? "Reveal in Finder" : "Not written yet — save first")
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color(NSColor.textBackgroundColor)))
+        }
+    }
+
+    private var canSave: Bool {
+        !config.name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !config.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(isNew ? "New Run Configuration" : "Edit Run Configuration")
+                .font(.headline)
+
+            TextField("Name (e.g. Record Snapshots)", text: $config.name)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Text("Command").font(.subheadline).foregroundStyle(.secondary)
+                Spacer()
+                if vm.kind == .ios {
+                    Menu("Templates") {
+                        Button("xcodebuild test") { config.command = vm.template(record: false) }
+                        Button("xcodebuild test — record snapshots") {
+                            config.command = vm.template(record: true)
+                            if config.name.isEmpty { config.name = "Record Snapshots" }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+            ShellCommandEditor(text: $config.command)
+                .frame(minHeight: 140)
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(NSColor.separatorColor)))
+
+            Text("Runs with bash from the repo root in the terminal panel. Available: $MYGIT_REPO, $MYGIT_SCHEME, $MYGIT_DEVICE_ID, $MYGIT_DEVICE_NAME (from the toolbar pickers).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let path = scriptPath {
+                scriptPathRow(path)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isNew ? "Add" : "Save") {
+                    config.name = config.name.trimmingCharacters(in: .whitespaces)
+                    config.command = RunConfiguration.straightenQuotes(config.command)
+                    vm.save(config)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+/// Plain monospaced text view for shell commands. SwiftUI's `TextEditor`
+/// inherits the system's smart quotes/dashes, which turn `'` into `’` and
+/// break the command, so every substitution is switched off here.
+private struct ShellCommandEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let tv = scroll.documentView as! NSTextView
+        tv.delegate = context.coordinator
+        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.isRichText = false
+        tv.allowsUndo = true
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+        tv.isContinuousSpellCheckingEnabled = false
+        tv.isGrammarCheckingEnabled = false
+        tv.isAutomaticLinkDetectionEnabled = false
+        tv.isAutomaticDataDetectionEnabled = false
+        tv.smartInsertDeleteEnabled = false
+        tv.textContainerInset = NSSize(width: 4, height: 6)
+        tv.string = text
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? NSTextView, tv.string != text else { return }
+        tv.string = text
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+
+        func textDidChange(_ note: Notification) {
+            guard let tv = note.object as? NSTextView else { return }
+            text.wrappedValue = tv.string
         }
     }
 }

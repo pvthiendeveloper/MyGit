@@ -172,16 +172,77 @@ final class FilesViewModel: ObservableObject {
         }
     }
 
+    /// Prompt for a new name and rename `node` on disk, in place. Reports
+    /// `(oldPath, newPath)` (repo-relative) so open editor tabs can follow.
+    func rename(_ node: FileTreeNode, onRenamed: (String, String) -> Void) {
+        guard let repo = repoSource(),
+              let name = promptName(title: "Rename", placeholder: node.name,
+                                    initial: node.name, action: "Rename"),
+              name != node.name else { return }
+        guard !name.contains("/") else {
+            main.errorMessage = "Name can't contain \"/\"."
+            return
+        }
+        let oldPath = node.id
+        let parentPath = (oldPath as NSString).deletingLastPathComponent
+        let newPath = parentPath.isEmpty ? name : "\(parentPath)/\(name)"
+        let source = repo.url.appendingPathComponent(oldPath)
+        let target = repo.url.appendingPathComponent(newPath)
+        // Case-only renames (foo → Foo) hit the same file on a case-insensitive
+        // volume, so only refuse when the target is a genuinely different item.
+        let caseOnly = oldPath.lowercased() == newPath.lowercased()
+        if !caseOnly, FileManager.default.fileExists(atPath: target.path) {
+            main.errorMessage = "\"\(name)\" already exists."
+            return
+        }
+        do {
+            try FileManager.default.moveItem(at: source, to: target)
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return
+        }
+        onRenamed(oldPath, newPath)
+        if selectedPath == oldPath { selectedPath = newPath }
+        Task {
+            if let parent = findNode(id: parentPath, in: fileTreeNodes) {
+                parent.isLoaded = false
+                await loadChildren(of: parent)
+            } else {
+                await refreshFileTree()
+            }
+        }
+    }
+
+    private func findNode(id: String, in nodes: [FileTreeNode]) -> FileTreeNode? {
+        for node in nodes {
+            if node.id == id { return node }
+            if node.isDirectory, id.hasPrefix(node.id + "/"),
+               let hit = findNode(id: id, in: node.children) { return hit }
+        }
+        return nil
+    }
+
     #if canImport(AppKit)
-    private func promptName(title: String, placeholder: String) -> String? {
+    private func promptName(title: String, placeholder: String,
+                            initial: String = "", action: String = "Create") -> String? {
         let alert = NSAlert()
         alert.messageText = title
-        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: action)
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
         field.placeholderString = placeholder
+        field.stringValue = initial
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
+        if !initial.isEmpty {
+            // Pre-select the stem so typing replaces the name, not the extension.
+            let stem = (initial as NSString).deletingPathExtension
+            let length = (stem.isEmpty || stem.hasPrefix(".") && stem == initial)
+                ? (initial as NSString).length : (stem as NSString).length
+            DispatchQueue.main.async {
+                field.currentEditor()?.selectedRange = NSRange(location: 0, length: length)
+            }
+        }
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? nil : name

@@ -5,6 +5,7 @@ import SwiftUI
 /// Branch-target ops (Merge/Rebase/Branches) open the existing toolbar BranchPopover.
 struct ChangesGitMenu: View {
     let bundle: RepoBundle
+    @AppStorage("MyGit.changes.groupByDirectory") private var byDirectory = false
     @EnvironmentObject var main: MainViewModel
     @EnvironmentObject var coordinator: AppCoordinator
     // Observed so the rollback item's count/enabled state tracks the live status.
@@ -70,6 +71,9 @@ struct ChangesGitMenu: View {
         Divider()
 
         Button("Show Git Log") { main.tab = .history }
+        Menu("Group By") {
+            Toggle("Directory", isOn: $byDirectory)
+        }
 
         Divider()
 

@@ -33,36 +33,55 @@ struct DetailPanel: View {
 
     // Tab bar shown when compare or any diff tab is active
     private var detailTabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                detailTabButton(label: tabContentLabel, tab: .content)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    detailTabButton(label: tabContentLabel, tab: .content)
+                        .id(MainViewModel.DetailTab.content)
 
-                if main.comparePair != nil {
-                    Divider().frame(height: 16).padding(.horizontal, 4)
-                    compareTabChip
+                    if main.comparePair != nil {
+                        Divider().frame(height: 16).padding(.horizontal, 4)
+                        compareTabChip.id(MainViewModel.DetailTab.compare)
+                    }
+
+                    ForEach(main.diffTabs) { tab in
+                        Divider().frame(height: 16).padding(.horizontal, 4)
+                        diffTabChip(tab).id(MainViewModel.DetailTab.diff(tab.id))
+                    }
+
+                    ForEach(editor.openFileTabs) { tab in
+                        Divider().frame(height: 16).padding(.horizontal, 4)
+                        EditorTabChip(tab: tab).id(MainViewModel.DetailTab.editor(tab.id))
+                    }
+
+                    ForEach(main.patchTabs) { tab in
+                        Divider().frame(height: 16).padding(.horizontal, 4)
+                        patchTabChip(tab).id(MainViewModel.DetailTab.patch(tab.id))
+                    }
+
+                    Spacer(minLength: 0)
                 }
-
-                ForEach(main.diffTabs) { tab in
-                    Divider().frame(height: 16).padding(.horizontal, 4)
-                    diffTabChip(tab)
-                }
-
-                ForEach(editor.openFileTabs) { tab in
-                    Divider().frame(height: 16).padding(.horizontal, 4)
-                    EditorTabChip(tab: tab)
-                }
-
-                ForEach(main.patchTabs) { tab in
-                    Divider().frame(height: 16).padding(.horizontal, 4)
-                    patchTabChip(tab)
-                }
-
-                Spacer(minLength: 0)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .wheelScrollsHorizontally()
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            // Keep the active tab in view, like an IDE's tab strip — whether it
+            // was opened from the file tree, ⌘-click, Back/Forward or a search.
+            .onChange(of: main.detailTab, initial: true) { _, active in
+                reveal(active, with: proxy)
+            }
+            .onChange(of: editor.openFileTabs.count) { _, _ in
+                reveal(main.detailTab, with: proxy)
+            }
         }
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    /// Next runloop: a just-opened tab's chip isn't laid out yet on this pass.
+    private func reveal(_ tab: MainViewModel.DetailTab, with proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(tab) }
+        }
     }
 
     private var compareTabChip: some View {
@@ -217,6 +236,7 @@ struct DetailPanel: View {
         case .history: return "Commit"
         case .files:   return "Editor"
         case .pullRequests: return "Pull Request"
+        case .claude: return "Editor"
         }
     }
 
@@ -278,7 +298,8 @@ struct DetailPanel: View {
             } else {
                 placeholder("Select a commit to see its diff.")
             }
-        case .files:
+        // Claude's assets open as ordinary editor tabs.
+        case .files, .claude:
             FileEditorView()
         case .pullRequests:
             if pullRequests.isComposing {

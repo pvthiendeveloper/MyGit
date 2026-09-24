@@ -311,9 +311,99 @@ enum ProjectToolchain {
         case .unknown: body = nil
         }
         guard let body else { return nil }
+        return writeScript(body, name: "run-\(repo.lastPathComponent).sh")
+    }
+
+    /// Wrap a user's run configuration in a script: cd into the repo, expose
+    /// the toolbar's picks as `MYGIT_*` variables, then run the command as-is.
+    static func customScript(
+        _ config: RunConfiguration,
+        device: RunDevice?,
+        scheme: String?,
+        repo: URL
+    ) -> String? {
+        let body = """
+        #!/bin/bash
+        cd \(q(repo.path))
+        export MYGIT_REPO=\(q(repo.path))
+        export MYGIT_DEVICE_ID=\(q(device?.id ?? ""))
+        export MYGIT_DEVICE_NAME=\(q(device?.name ?? ""))
+        export MYGIT_SCHEME=\(q(scheme ?? ""))
+        echo \(q("▶ " + config.name))
+
+        """ + RunConfiguration.straightenQuotes(config.command) + "\n"
+        let file = customScriptURL(for: config, repo: repo)
+        removeCustomScript(config, repo: repo)   // drops the file under a previous name
+        return writeScript(body, to: file)
+    }
+
+    /// Where a configuration's script lives: one stable file per configuration
+    /// (not a shared temp file), so it can be opened, copied or run by hand.
+    /// `~/Library/Application Support/MyGit/RunConfigurations/<repo>-<hash>/<name>-<id>.sh`
+    static func customScriptURL(for config: RunConfiguration, repo: URL) -> URL {
+        let slug = config.name
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+            .lowercased()
+        let name = (slug.isEmpty ? "run" : slug) + "-" + idSuffix(config) + ".sh"
+        return customScriptsDirectory(repo: repo).appendingPathComponent(name)
+    }
+
+    /// Delete a configuration's script, whatever name it was last written under.
+    static func removeCustomScript(_ config: RunConfiguration, repo: URL) {
+        let dir = customScriptsDirectory(repo: repo)
+        let suffix = "-" + idSuffix(config) + ".sh"
+        for file in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        where file.hasSuffix(suffix) {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(file))
+        }
+    }
+
+    private static func idSuffix(_ config: RunConfiguration) -> String {
+        String(config.id.uuidString.prefix(8)).lowercased()
+    }
+
+    private static func customScriptsDirectory(repo: URL) -> URL {
+        // FNV-1a of the path keeps two same-named repos apart, stably across launches.
+        var hash: UInt32 = 2_166_136_261
+        for byte in repo.path.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base
+            .appendingPathComponent("MyGit/RunConfigurations", isDirectory: true)
+            .appendingPathComponent("\(repo.lastPathComponent)-\(String(hash, radix: 16))", isDirectory: true)
+    }
+
+    /// Starter command for a new configuration: `xcodebuild test` against this
+    /// repo's workspace/project with the picked scheme and destination.
+    /// `scheme` is written literally when given, else the toolbar's pick.
+    static func iosTestTemplate(at repo: URL, scheme: String?, record: Bool) -> String {
+        let container: String
+        if let workspace = xcodeContainer(at: repo, ext: "xcworkspace") {
+            container = "-workspace \(q(workspace))"
+        } else if let project = xcodeContainer(at: repo, ext: "xcodeproj") {
+            container = "-project \(q(project))"
+        } else {
+            container = "-workspace App.xcworkspace"
+        }
+        var lines = [
+            "xcrun xcodebuild \(container)",
+            "  -scheme " + (scheme.map(q) ?? "\"$MYGIT_SCHEME\""),
+            "  -destination \"id=$MYGIT_DEVICE_ID\"",
+        ]
+        if record { lines.append("  RECORD_SNAPSHOTS=1") }
+        lines.append("  test")
+        return lines.joined(separator: " \\\n")
+    }
+
+    private static func writeScript(_ body: String, name: String) -> String? {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mygit-run", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let file = dir.appendingPathComponent("run-\(repo.lastPathComponent).sh")
+        return writeScript(body, to: dir.appendingPathComponent(name))
+    }
+
+    private static func writeScript(_ body: String, to file: URL) -> String? {
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
         do {
             try body.write(to: file, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: file.path)
@@ -460,7 +550,15 @@ enum ProjectToolchain {
         #!/bin/bash
         set -euo pipefail
         cd \(q(repo.path))
-        DERIVED=".mygit-build"
+        DERIVED=".mygit"
+
+        # Keep build output out of `git status` without touching the repo's
+        # .gitignore — info/exclude is local-only and never committed.
+        EXCLUDE="$(git rev-parse --git-path info/exclude 2>/dev/null || true)"
+        if [ -n "${EXCLUDE}" ] && ! grep -qxF '.mygit/' "${EXCLUDE}" 2>/dev/null; then
+          mkdir -p "$(dirname "${EXCLUDE}")"
+          printf '.mygit/\\n' >> "${EXCLUDE}"
+        fi
 
         echo "▶ building \(scheme) ..."
         xcrun xcodebuild \(container) -scheme \(q(scheme)) -configuration Debug \(sdkFlags) \\

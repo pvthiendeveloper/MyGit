@@ -62,6 +62,7 @@ final class RepoBundle: Identifiable {
         )
         self.editor = editor
         editor.setAIConfigSource { [weak settings] in settings?.requestConfig() }
+        editor.setAutoSaveSource { [weak settings] in settings?.autoSaveFiles ?? false }
 
         let currentBranch: () -> String? = { [weak changes] in changes?.status?.branch }
 
@@ -139,6 +140,8 @@ final class RepoBundle: Identifiable {
     /// a refresh is already running, the next event is remembered and one more
     /// refresh runs after it finishes (no unbounded pile-up of refreshes).
     func refreshFromWatcher() {
+        // Open editor tabs follow edits made by other programs (or ask).
+        editor.checkExternalChanges()
         if isRefreshing { refreshPending = true; return }
         isRefreshing = true
         Task {

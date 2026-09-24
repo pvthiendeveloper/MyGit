@@ -246,6 +246,10 @@ private struct FileRowView: View {
             Button("Open") { editor.openFile(node) }
             Divider()
         }
+        Button("Rename…") {
+            vm.rename(node) { old, new in editor.pathRenamed(from: old, to: new) }
+        }
+        Divider()
         Button("Reveal in Finder") { vm.revealInFinder(node) }
         if !node.isDirectory {
             Button("Open in Default App") { vm.openInDefaultApp(node) }

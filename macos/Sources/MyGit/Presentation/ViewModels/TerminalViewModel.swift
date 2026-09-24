@@ -13,6 +13,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     /// window-title escape sequences when it emits them.
     @Published var title: String
     @Published private(set) var isRunning = true
+    /// Name the user gave the tab. While set, the shell's own title escapes
+    /// no longer relabel it.
+    private(set) var customTitle: String?
 
     /// Local scroll-wheel monitor. SwiftTerm's own wheel handler only scrolls
     /// scrollback, which the alternate screen buffer (Claude Code, vim, less,
@@ -28,7 +31,9 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
         super.init()
         view.processDelegate = self
 
+        // Claude Code started in this shell connects to MyGit as its IDE.
         let env = Terminal.getEnvironmentVariables(termName: "xterm-256color", trueColor: true)
+            + ClaudeIDEServer.shared.terminalEnvironment
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let shellLeaf = (shell as NSString).lastPathComponent
         let dir = FileManager.default.fileExists(atPath: cwd.path) ? cwd.path : nil
@@ -93,8 +98,15 @@ final class TerminalSession: NSObject, ObservableObject, Identifiable, LocalProc
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        guard !title.isEmpty else { return }
+        guard !title.isEmpty, customTitle == nil else { return }
         self.title = title
+    }
+
+    /// Rename the tab; an empty name hands the label back to the shell.
+    func rename(to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        customTitle = trimmed.isEmpty ? nil : trimmed
+        if let customTitle { title = customTitle + (isRunning ? "" : " — exited") }
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -165,8 +177,9 @@ final class TerminalViewModel: ObservableObject {
     }
 
     @discardableResult
-    func newSession(cwd: URL) -> TerminalSession {
+    func newSession(cwd: URL, title: String? = nil) -> TerminalSession {
         let session = TerminalSession(cwd: cwd, index: sessions.count)
+        if let title { session.title = title }
         sessions.append(session)
         activeID = session.id
         isVisible = true
@@ -174,15 +187,18 @@ final class TerminalViewModel: ObservableObject {
     }
 
     /// Runs a shell script in the terminal panel, IntelliJ-style: reveals the
-    /// panel, reuses the active session (or spawns one), and feeds a command that
-    /// runs the script from its own directory in a subshell — so the interactive
-    /// session's own cwd is left untouched. `$SHELL` typing keeps the user's PATH.
+    /// panel and feeds a command that runs the script from its own directory in
+    /// a subshell. `$SHELL` typing keeps the user's PATH.
+    ///
+    /// Each run gets its own tab: a long script would otherwise scribble over
+    /// whatever the active session was doing (and you'd lose its output the
+    /// next time you ran something).
     func runShellScript(absolutePath: String, browser: ScriptBrowser = .systemDefault) {
         let url = URL(fileURLWithPath: absolutePath)
         let dir = url.deletingLastPathComponent()
         let name = url.lastPathComponent
         isVisible = true
-        let session = active ?? newSession(cwd: dir)
+        let session = newSession(cwd: dir, title: name)
         let interpreter = name.hasSuffix(".sh") ? "bash " : ""
         // Scope the browser override to the run's subshell only, so the
         // interactive session's own $BROWSER is left untouched.
@@ -192,12 +208,43 @@ final class TerminalViewModel: ObservableObject {
         DispatchQueue.main.async { session.view.window?.makeFirstResponder(session.view) }
     }
 
+    /// Run a command in a terminal session rooted at `cwd` (a new tab when the
+    /// current one is busy elsewhere is the user's call — this reuses the
+    /// active session, like typing into it).
+    /// `title` labels the new tab; `reuseActive` keeps a command in the current
+    /// session (nothing does that today — runs each get their own tab).
+    func runCommand(_ command: String, cwd: URL, title: String? = nil, reuseActive: Bool = false) {
+        isVisible = true
+        let session = (reuseActive ? active : nil) ?? newSession(cwd: cwd, title: title)
+        session.view.send(txt: "cd \(Self.shellQuote(cwd.path)) && \(command)\n")
+        DispatchQueue.main.async { session.view.window?.makeFirstResponder(session.view) }
+    }
+
     /// Single-quote a path for safe shell interpolation.
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     func select(_ id: UUID) { activeID = id }
+
+    /// Cycle through tabs, wrapping at either end (`offset` is ±1).
+    func selectAdjacent(_ offset: Int) {
+        guard !sessions.isEmpty else { return }
+        let current = sessions.firstIndex { $0.id == activeID } ?? 0
+        let next = (current + offset + sessions.count) % sessions.count
+        activeID = sessions[next].id
+    }
+
+    func closeOthers(keep id: UUID) {
+        sessions.removeAll { $0.id != id }
+        activeID = sessions.first?.id
+    }
+
+    func closeAll() {
+        sessions.removeAll()
+        activeID = nil
+        isVisible = false
+    }
 
     func close(_ id: UUID) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }

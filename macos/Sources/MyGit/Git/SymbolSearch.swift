@@ -54,6 +54,13 @@ enum SymbolClassifier {
 struct SymbolLookup: Identifiable {
     enum Kind: String, Hashable { case definitions, usages }
 
+    /// Where the occurrences came from: Xcode's index (real references to the
+    /// one symbol) or a plain text search by name.
+    enum Source: Hashable {
+        case index(updated: Date?)
+        case grep
+    }
+
     let id = UUID()
     let symbol: String
     let initialKind: Kind
@@ -61,6 +68,7 @@ struct SymbolLookup: Identifiable {
     /// Where the ⌘-click happened, so that file can be listed first.
     let originPath: String
     let originLine: Int
+    var source: Source = .grep
 
     var definitions: [SymbolOccurrence] { occurrences.filter { $0.isDefinition } }
 

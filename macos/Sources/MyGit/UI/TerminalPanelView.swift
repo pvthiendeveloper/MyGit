@@ -23,6 +23,39 @@ struct TerminalPanelView: View {
         .background(Color(NSColor.textBackgroundColor))
     }
 
+    @ViewBuilder
+    private func tabMenu(for session: TerminalSession) -> some View {
+        Button("Rename Session…") { rename(session) }
+        Divider()
+        Button("New Terminal") { terminal.newSession(cwd: coordinator.terminalCWD) }
+        Divider()
+        Button("Close Tab") { terminal.close(session.id) }
+        Button("Close Other Tabs") { terminal.closeOthers(keep: session.id) }
+            .disabled(terminal.sessions.count < 2)
+        Button("Close All Tabs") { terminal.closeAll() }
+        Divider()
+        Button("Select Next Tab") { terminal.selectAdjacent(1) }
+            .disabled(terminal.sessions.count < 2)
+        Button("Select Previous Tab") { terminal.selectAdjacent(-1) }
+            .disabled(terminal.sessions.count < 2)
+        Divider()
+        Button("Hide") { terminal.isVisible = false }
+    }
+
+    private func rename(_ session: TerminalSession) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Session"
+        alert.informativeText = "Leave empty to use the shell's own title."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        field.stringValue = session.customTitle ?? session.title
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        session.rename(to: field.stringValue)
+    }
+
     private var tabBar: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -34,19 +67,22 @@ struct TerminalPanelView: View {
                             onSelect: { terminal.select(session.id) },
                             onClose: { terminal.close(session.id) }
                         )
+                        .contextMenu { tabMenu(for: session) }
                     }
+                    // Right after the last tab, like a browser's new-tab button.
+                    Button {
+                        terminal.newSession(cwd: coordinator.terminalCWD)
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("New Terminal (⌃⇧`)")
                 }
                 .padding(.horizontal, 8)
+                .wheelScrollsHorizontally()
             }
-            Spacer(minLength: 0)
-            Button {
-                terminal.newSession(cwd: coordinator.terminalCWD)
-            } label: {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.borderless)
-            .help("New Terminal (⌃⇧`)")
-            .padding(.horizontal, 6)
 
             Button {
                 terminal.isVisible = false
