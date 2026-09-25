@@ -8,13 +8,17 @@ final class UIInspectorWindow: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let viewModel = UIInspectorViewModel()
 
-    static func open(sourceNavigator: InspectorSourceNavigating?) {
+    static func open(sourceNavigator: InspectorSourceNavigating?, runWithInspector: (() -> Void)? = nil,
+                     ai: CommitMessageRepository? = nil, aiConfig: (() -> AIRequestConfig?)? = nil) {
         if let existing = shared?.window {
             existing.makeKeyAndOrderFront(nil)
             return
         }
         let instance = UIInspectorWindow()
         instance.viewModel.sourceNavigator = sourceNavigator
+        instance.viewModel.runWithInspector = runWithInspector
+        instance.viewModel.ai = ai
+        instance.viewModel.aiConfig = aiConfig
         let hosting = NSHostingController(rootView: UIInspectorView().environmentObject(instance.viewModel))
         let win = NSWindow(contentViewController: hosting)
         win.title = "UI Inspector"
@@ -80,8 +84,21 @@ struct InspectorSourceMenu: View {
     let node: InspectorNode
 
     var body: some View {
+        let stack = vm.sourceStack(for: node.id)
         let types = vm.sourceTypes(for: node.id, limit: 8)
         let text = vm.sourceText(for: node.id)
+        // Exact locations first, when the app was run with source tags.
+        if let first = stack.first {
+            Button("Open \(first.label)") { vm.open(first) }
+            if stack.count > 1 {
+                Menu("Enclosing Views") {
+                    ForEach(stack.dropFirst()) { tag in
+                        Button(tag.label) { vm.open(tag) }
+                    }
+                }
+            }
+            Divider()
+        }
         // Text first: SwiftUI flattens custom views out of its debug data, so
         // a literal ("Accordion") usually leads straight to the code, while
         // type names come from generic lists that may name sibling screens.
@@ -194,6 +211,15 @@ private struct InspectorToolbar: View {
             .disabled(vm.connected == nil || vm.isLoading)
             .help("Capture the current screen again (⌘R)")
 
+            if let run = vm.runWithInspector {
+                Button {
+                    run()
+                } label: {
+                    Label("Run with Inspector", systemImage: "play.circle")
+                }
+                .help("Build and run the active repo with source tags, so every view opens its exact line")
+            }
+
             Toggle("Live", isOn: $vm.autoRefresh)
                 .toggleStyle(.checkbox)
                 .disabled(vm.connected == nil)
@@ -247,6 +273,17 @@ private struct InspectorEmptyState: View {
                 ForEach(vm.services) { service in
                     Button(service.name) { vm.connect(service) }
                 }
+            }
+            if let run = vm.runWithInspector {
+                Button {
+                    run()
+                } label: {
+                    Label("Run Active Repo with Inspector", systemImage: "play.circle.fill")
+                }
+                .controlSize(.large)
+                Text("Builds a source-tagged copy in .mygit/inspect so any view can open its exact line.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Text("Apps appear here once they run the MyGitInspector agent (Debug builds only):")
                 .foregroundStyle(.secondary)
@@ -566,6 +603,7 @@ private struct InspectorAttributes: View {
         if let node = vm.selectedNode {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    SourceStackView(stack: vm.sourceStack(for: node.id))
                     ForEach(vm.detailSections(for: node.id)) { section in
                         DetailSectionView(section: section)
                     }
@@ -583,9 +621,280 @@ private struct InspectorAttributes: View {
     }
 }
 
+/// Where the view is written: the nearest tag on one line, the views around
+/// it folded under "Enclosing". Without tags, a one-line hint.
+private struct SourceStackView: View {
+    @EnvironmentObject var vm: UIInspectorViewModel
+    let stack: [InspectorSourceTag]
+    @AppStorage("MyGit.inspector.sourceExpanded") private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Source")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                if let first = stack.first {
+                    row(first, primary: true)
+                } else {
+                    Text("Run with Inspector for exact lines")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help("Pick “App with Inspector” in the Run configurations (or use Run with Inspector above): the app is built with source tags, so any view opens the line that creates it.")
+                }
+            }
+            if stack.count > 1 {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(stack.dropFirst()) { tag in row(tag, primary: false) }
+                    }
+                    .padding(.top, 2)
+                } label: {
+                    Text("Enclosing (\(stack.count - 1))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 2)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(stack.isEmpty ? 0.04 : 0.08)))
+    }
+
+    /// `HomeView.swift:132` on a single line; the full path is the tooltip.
+    private func row(_ tag: InspectorSourceTag, primary: Bool) -> some View {
+        Button {
+            vm.open(tag)
+        } label: {
+            HStack(spacing: 4) {
+                if primary {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.accentColor)
+                }
+                Text(tag.label)
+                    .font(.system(size: 11, weight: primary ? .semibold : .regular, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(tag.path):\(tag.line):\(tag.column)")
+    }
+}
+
+/// A value's design token: the root (`patternGapGroupTextToGroupText = 4`,
+/// click to open its declaration) — or the possible roots of a branching
+/// function — and, below, how the code got there.
+private struct TokenView: View {
+    @EnvironmentObject var vm: UIInspectorViewModel
+    let token: String
+    let row: InspectorDetailSection.Row
+    @State private var resolution: InspectorTokenResolution?
+    /// What the code alone resolved, before an AI pick (to undo it).
+    @State private var base: InspectorTokenResolution?
+    @State private var picking = false
+    @State private var pickError: String?
+
+    /// What the resolution depends on; a new selection re-resolves.
+    private var key: String {
+        "\(token)|\(row.tokenStack.map(\.id).joined(separator: ","))|\(row.tokenValue ?? "")"
+    }
+
+    var body: some View {
+        content
+            .task(id: key) {
+                pickError = nil
+                // The compiler's index when the app was run with the
+                // inspector; the by-name match otherwise.
+                base = await vm.resolveTokenExactly(token, refs: row.tokenRefs, binding: row.tokenBinding,
+                                                    stack: row.tokenStack, runtimeValue: row.tokenValue)
+                    ?? vm.resolveToken(token, stack: row.tokenStack, runtimeValue: row.tokenValue)
+                resolution = vm.aiPicks[key] ?? base
+            }
+    }
+
+    private var aiPick: (confidence: Double, reason: String)? {
+        if case let .ai(confidence, reason)? = resolution?.pickedBy { return (confidence, reason) }
+        return nil
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            if let chain = resolution?.chain {
+                rootButton(chain.root, prefix: "◆ ")
+                if aiPick != nil, let others = resolution?.alternatives.filter({ $0.path != chain.root.path || $0.line != chain.root.line }),
+                   !others.isEmpty {
+                    Text("  other candidates")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    ForEach(Array(others.enumerated()), id: \.offset) { _, root in
+                        rootButton(root, prefix: "  • ").opacity(0.55)
+                    }
+                }
+            } else if let alternatives = resolution?.alternatives, !alternatives.isEmpty {
+                HStack(spacing: 6) {
+                    Text("◆ one of")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color.accentColor)
+                    if vm.canPickWithAI { pickButton }
+                }
+                ForEach(Array(alternatives.enumerated()), id: \.offset) { _, root in
+                    rootButton(root, prefix: "  • ")
+                }
+                if let pickError {
+                    Text(pickError)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            } else {
+                Text("◆ " + (resolution?.steps.last.map(Self.lastExpression) ?? token))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Color.accentColor)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(4)
+            }
+            if let via = viaDescription, !via.isEmpty {
+                Text("via " + via)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+            }
+            if let resolution, resolution.chain != nil || !resolution.alternatives.isEmpty {
+                basisLabel(resolution)
+            }
+        }
+    }
+
+    /// How sure: the compiler's own binding, a name match, and what picked
+    /// among several roots (the screen value, the app's report, or AI).
+    @ViewBuilder
+    private func basisLabel(_ resolution: InspectorTokenResolution) -> some View {
+        switch resolution.pickedBy {
+        case .screenValue?:
+            Text("✓ the only branch that can show this value")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.green.opacity(0.8))
+                .help("The other branches were ruled out: they can't produce the value on screen (nil, a different literal, or a template that doesn't fit).")
+        case .runtimeBranch?:
+            Text("✓ branch reported by the running app")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.green.opacity(0.8))
+                .help("Run with Inspector instruments multi-return getters; the app recorded which return produced this value.")
+        case let .ai(confidence, reason)?:
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("✨ AI pick · \(Int((confidence * 100).rounded()))%" + (reason.isEmpty ? "" : " — \(reason)"))
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.purple)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Button("Undo") {
+                    vm.aiPicks[key] = nil
+                    self.resolution = base
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 9))
+            }
+            .help("A language model read the code around each branch and what's on screen. It's a suggestion, not proof — Run with Inspector records the real branch.")
+        case nil:
+            Text(resolution.exact ? "✓ compiler index" : "≈ matched by name")
+                .font(.system(size: 9))
+                .foregroundStyle(resolution.exact ? Color.green.opacity(0.8) : Color.orange.opacity(0.8))
+                .help(resolution.exact
+                      ? "Every step was resolved by the compiler (index store of the Run with Inspector build) and the runtime tag stack."
+                      : "No inspector build index for this repo: definitions were matched by name, owner and on-screen value, which can be wrong when names repeat.")
+        }
+    }
+
+    private var pickButton: some View {
+        Button {
+            guard let resolution, !picking else { return }
+            picking = true
+            pickError = nil
+            let key = self.key
+            Task {
+                defer { picking = false }
+                do {
+                    let picked = try await vm.pickWithAI(token: token, resolution: resolution, stack: row.tokenStack,
+                                                         runtimeValue: row.tokenValue, key: key)
+                    if key == self.key { self.resolution = picked }
+                } catch {
+                    pickError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                if picking {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "sparkles")
+                }
+                Text(picking ? "Reading…" : "Pick")
+            }
+            .font(.system(size: 9.5, weight: .medium))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.purple.opacity(0.15), in: Capsule())
+            .foregroundStyle(Color.purple)
+        }
+        .buttonStyle(.plain)
+        .help("Ask the AI provider (Settings ▸ AI) which branch produced this value, from the code and what's on screen.")
+    }
+
+    private func rootButton(_ root: InspectorSymbol, prefix: String) -> some View {
+        Button {
+            _ = vm.sourceNavigator?.open(relativePath: root.path, line: root.line)
+        } label: {
+            // Name first: it's the design token; long values (gradients) are cut.
+            Text(prefix + root.name + (root.literal.map { " = \($0)" } ?? ""))
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(3)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+        }
+        .buttonStyle(.plain)
+        .help("Open \((root.path as NSString).lastPathComponent):\(root.line)")
+    }
+
+    /// `style → labelText(style:) tokenProvider.restingLabelTextStyle →
+    /// SwiftUIInputTokenProviding.restingLabelTextStyle`
+    private var viaDescription: String? {
+        guard let resolution else { return nil }
+        var parts = resolution.steps
+        if let chain = resolution.chain {
+            parts += chain.hops.dropLast().map { ($0.owner.map { "\($0)." } ?? "") + $0.name }
+        }
+        // Nothing learned beyond the token itself.
+        if parts.count <= 1, resolution.chain?.hops.count ?? 0 <= 1, resolution.alternatives.isEmpty { return nil }
+        return parts.joined(separator: " → ")
+    }
+
+    /// "labelText(style:) tokenProvider.x" → "tokenProvider.x".
+    private static func lastExpression(_ step: String) -> String {
+        guard let space = step.firstIndex(of: " "), step.hasPrefix(step[..<space]), step[..<space].hasSuffix(":)") else {
+            return step
+        }
+        return String(step[step.index(after: space)...])
+    }
+}
+
 /// One Figma-style block: a title, then key/value rows whose values wrap
 /// instead of being cut off.
 private struct DetailSectionView: View {
+    @EnvironmentObject var vm: UIInspectorViewModel
     let section: InspectorDetailSection
 
     var body: some View {
@@ -613,11 +922,18 @@ private struct DetailSectionView: View {
                                 .frame(width: 12, height: 12)
                                 .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color.primary.opacity(0.2)))
                         }
-                        Text(row.value)
-                            .font(row.monospaced ? .system(size: 11, design: .monospaced) : .system(size: 12))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .lineLimit(8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            if !row.value.isEmpty {
+                                Text(row.value)
+                                    .font(row.monospaced ? .system(size: 11, design: .monospaced) : .system(size: 12))
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .lineLimit(8)
+                            }
+                            if let token = row.token {
+                                TokenView(token: token, row: row)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

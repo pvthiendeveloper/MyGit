@@ -63,7 +63,19 @@ enum HierarchyCapture {
             }
             windows.append(entry)
         }
-        return ["windows": windows, "info": appInfo()]
+        return ["windows": windows, "info": appInfo(), "branches": branches()]
+    }
+
+    /// What the tagger's branch probes (`__mB`) recorded: `"path:line"` of a
+    /// `return` → the latest values it produced, newest last.
+    private static func branches() -> [String: [String]] {
+        guard let all = Thread.main.threadDictionary["MyGitInspector.branches"] as? NSDictionary else { return [:] }
+        var out: [String: [String]] = [:]
+        for (key, values) in all {
+            guard let key = key as? String, let values = values as? [Any] else { continue }
+            out[key] = values.compactMap { $0 as? String }
+        }
+        return out
     }
 
     // MARK: - Tree
@@ -128,12 +140,33 @@ enum HierarchyCapture {
     // MARK: - SwiftUI
 
     /// SwiftUI's view debug data for one hosting view, appended pre-order.
-    /// Goes through the serialized JSON rather than `_ViewDebug.Data`'s
-    /// internals, which change between OS releases.
+    ///
+    /// Read by walking `_ViewDebug.Data` with `Mirror`, iteratively:
+    /// `_ViewDebug.serializedData` gives up on deep trees (a few hundred
+    /// levels — ordinary for a real app, where every modifier adds one) and
+    /// returns a stub. The serialized path stays as a fallback in case the
+    /// structure ever changes.
     private static func appendSwiftUINodes(of host: SwiftUIDebugDataProviding, in hostView: UIView,
                                            window: UIWindow, parentID: String, to out: inout [[String: Any]]) {
-        guard let json = _ViewDebug.serializedData(host._viewDebugData()),
-              let roots = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]] else { return }
+        let data = host._viewDebugData()
+        if let first = data.first, DebugData.parts(of: first) != nil {
+            appendMirrored(data, hostView: hostView, window: window, parentID: parentID, to: &out)
+            return
+        }
+        guard let json = _ViewDebug.serializedData(data) else {
+            out.append(diagnostic("SwiftUI couldn't serialize this hosting view's debug data (\(data.count) roots)",
+                                  parentID: parentID, frame: hostView.convert(hostView.bounds, to: window)))
+            return
+        }
+        let parsed: Any
+        do {
+            parsed = try JSONSerialization.jsonObject(with: json, options: [.fragmentsAllowed])
+        } catch {
+            out.append(diagnostic("Unreadable SwiftUI debug data (\(json.count) bytes): \(error.localizedDescription)",
+                                  parentID: parentID, frame: hostView.convert(hostView.bounds, to: window)))
+            return
+        }
+        guard let roots = parsed as? [[String: Any]] else { return }
         let hostFrame = hostView.convert(hostView.bounds, to: window)
         var counter = 0
         var stack: [(raw: [String: Any], parent: String, inherited: CGRect, offset: CGPoint)] =
@@ -149,6 +182,69 @@ enum HierarchyCapture {
                 stack.append((child, nodeID, frame, offset))
             }
         }
+    }
+
+    private static func appendMirrored(_ roots: [_ViewDebug.Data], hostView: UIView, window: UIWindow,
+                                       parentID: String, to out: inout [[String: Any]]) {
+        let hostFrame = hostView.convert(hostView.bounds, to: window)
+        var counter = 0
+        var stack: [(data: _ViewDebug.Data, parent: String, inherited: CGRect, offset: CGPoint)] =
+            roots.reversed().map { ($0, parentID, hostFrame, .zero) }
+        while let (data, parent, inherited, inheritedOffset) = stack.popLast() {
+            guard let (props, children) = DebugData.parts(of: data) else { continue }
+            counter += 1
+            let nodeID = "\(parentID).s\(counter)"
+            let type = props[.type] as? Any.Type
+            let readable = type.map(DebugData.readableName) ?? "?"
+            // Positions are in the coordinate space of the nearest transform
+            // (a ScrollView's content); the transform maps it to the host.
+            let offset = props[.transform] == nil
+                ? inheritedOffset
+                : (DebugData.serializedTransform(of: data) ?? props[.transform].flatMap(DebugData.translation) ?? inheritedOffset)
+            var frame = inherited
+            var ownFrame = false
+            if let position = props[.position] as? CGPoint, let size = props[.size] as? CGSize {
+                frame = hostView.convert(CGRect(x: position.x + offset.x, y: position.y + offset.y,
+                                                width: size.width, height: size.height), to: window)
+                ownFrame = true
+            }
+            var node: [String: Any] = [
+                "id": nodeID,
+                "parent": parent,
+                "kind": "swiftui",
+                "class": String(readable.prefix(2000)),
+                "frame": [frame.minX, frame.minY, frame.width, frame.height],
+                "modifier": type.map { $0 is any ViewModifier.Type } ?? false,
+                "ownFrame": ownFrame,
+            ]
+            if let type {
+                let full = String(reflecting: type)
+                node["type"] = String(full.prefix(2000))
+                let names = appTypes(in: full)
+                if !names.isEmpty { node["appTypes"] = names }
+            }
+            if let value = props[.value] {
+                if !wrapperPrefixes.contains(where: { readable.hasPrefix($0) }) {
+                    let flat = DebugData.flatten(value)
+                    if !flat.isEmpty { node["props"] = flat }
+                }
+                if readable == "Text", let text = DebugData.firstString(in: value) {
+                    node["text"] = String(text.prefix(300))
+                }
+            }
+            out.append(node)
+            for child in children.reversed() { stack.append((child, nodeID, frame, offset)) }
+        }
+    }
+
+    /// A visible stand-in when a hosting view's SwiftUI tree can't be read.
+    private static func diagnostic(_ message: String, parentID: String, frame: CGRect) -> [String: Any] {
+        NSLog("[MyGitInspector] %@", message)
+        return [
+            "id": "\(parentID).error", "parent": parentID, "kind": "swiftui",
+            "class": "⚠︎ " + message, "frame": [frame.minX, frame.minY, frame.width, frame.height],
+            "modifier": false, "ownFrame": true,
+        ]
     }
 
     private static func swiftUINode(_ raw: [String: Any], id nodeID: String, parent: String, hostView: UIView,
@@ -227,7 +323,7 @@ enum HierarchyCapture {
     }
 
     /// Wrappers whose value is the whole subtree below them — noise, and big.
-    private static let wrapperPrefixes = [
+    static let wrapperPrefixes = [
         "ModifiedContent", "_ViewModifier_Content", "TupleView", "_ConditionalContent", "Optional<",
         "AnyView", "StaticIf", "_UnaryViewAdaptor", "_ViewList_View", "Group<", "ForEach",
         "NavigationStack", "NavigationView", "TabView", "ScrollView", "List<", "LazyView",

@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if ProcessInfo.processInfo.environment["MYGIT_DEBUG_INSPECTOR"] != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [coordinator] in UIInspectorWindow.open(sourceNavigator: coordinator) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.openInspectorWindow() }
         }
         if let dbg = ProcessInfo.processInfo.environment["MYGIT_DEBUG_DIFF"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [coordinator] in
@@ -92,6 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.persistSessions()
         // Removes the lock file so Claude Code stops offering a dead MyGit.
         ClaudeIDEServer.shared.stop()
+        // The local model server is a child process: don't leave it running.
+        LocalLLMServer.terminateNow()
     }
 
     private func installMainMenu() {
@@ -389,7 +391,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func addRepositoryByPath() { coordinator.repos.promptAddByPath() }
     @objc private func openSearchEverywhere() { coordinator.openSearchEverywhere() }
-    @objc private func openUIInspector() { UIInspectorWindow.open(sourceNavigator: coordinator) }
+    @objc private func openUIInspector() { openInspectorWindow() }
+
+    private func openInspectorWindow() {
+        UIInspectorWindow.open(sourceNavigator: coordinator,
+                               runWithInspector: { [weak coordinator] in coordinator?.activeBundle.run.runWithInspector() },
+                               ai: coordinator.container.commitMessage,
+                               aiConfig: { [weak coordinator] in coordinator?.settings.requestConfig() })
+    }
     @objc private func showChangesTab() { coordinator.main.tab = .changes }
     @objc private func showStashTab() { coordinator.main.tab = .stash }
     @objc private func showHistoryTab() { coordinator.main.tab = .history }

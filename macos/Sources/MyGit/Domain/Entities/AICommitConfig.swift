@@ -6,6 +6,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
     case gemini
     case anthropic
     case custom
+    /// A downloaded GGUF model run on this Mac by llama.cpp (`LocalLLMServer`).
+    case local
 
     var id: String { rawValue }
 
@@ -15,6 +17,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .gemini: return "Google Gemini"
         case .anthropic: return "Anthropic Claude"
         case .custom: return "Custom (OpenAI-compatible)"
+        case .local: return "Local (on this Mac)"
         }
     }
 
@@ -26,6 +29,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
         case .anthropic: return "https://api.anthropic.com/v1"
         case .custom: return "http://localhost:20128/v1"
+        case .local: return ""   // A loopback port picked when the server starts.
         }
     }
 
@@ -39,13 +43,15 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
             return ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
         case .custom:
             return ["cc/claude-opus-4-7", "kr/claude-sonnet-4.5", "glm/glm-5.1", "vertex/gemini-3.1-pro-preview"]
+        case .local:
+            return (LocalModelCatalog.models.filter(\.recommended) + LocalModelCatalog.models.filter { !$0.recommended }).map(\.id)
         }
     }
 
     /// Whether this provider speaks the OpenAI chat-completions wire format.
     var isOpenAICompatible: Bool {
         switch self {
-        case .openai, .custom: return true
+        case .openai, .custom, .local: return true
         case .gemini, .anthropic: return false
         }
     }
@@ -57,6 +63,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .gemini: return "Gemini"
         case .anthropic: return "Anthropic"
         case .custom: return "Custom"
+        case .local: return "Local"
         }
     }
 
@@ -67,6 +74,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .gemini: return "sparkles"
         case .anthropic: return "ant"
         case .custom: return "slider.horizontal.3"
+        case .local: return "desktopcomputer"
         }
     }
 
@@ -77,12 +85,16 @@ enum AIProvider: String, CaseIterable, Identifiable, Sendable {
         case .gemini: return "Key from aistudio.google.com. Stored in your keychain."
         case .anthropic: return "Key from console.anthropic.com. Native Messages API. Stored in your keychain."
         case .custom: return "OpenAI-compatible endpoint (9Router, Ollama, OpenRouter…). Key stored in keychain."
+        case .local: return "Runs a downloaded model with llama.cpp on this Mac. Nothing leaves the machine; no key needed."
         }
     }
 
     /// Keychain account key for this provider's API key. Namespaced so it
     /// never collides with git-host PATs stored in the same keychain service.
     var keychainAccount: String { "ai-key.\(rawValue)" }
+
+    /// Needs an API key (every provider but the on-device one).
+    var needsKey: Bool { self != .local }
 }
 
 /// Resolved request configuration handed to `CommitMessageRepository`.

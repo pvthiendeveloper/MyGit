@@ -10,6 +10,17 @@ protocol InspectorSourceNavigating: AnyObject {
     /// `literal` is searched as-is (quotes included by the caller).
     func occurrences(ofLiteral literal: String) async -> [InspectorSourceHit]
     func open(_ hit: InspectorSourceHit)
+    /// Open a repo-relative path at a line in whichever open repo has it.
+    func open(relativePath: String, line: Int) -> Bool
+    /// The source map "Run with Inspector" wrote for a repo-relative file.
+    func sourceMapURL(forRelativePath path: String) -> URL?
+    /// The property index of the repo holding a repo-relative file.
+    func symbolIndexURL(forRelativePath path: String) -> URL?
+    /// `<repo>/.mygit/inspect` of the repo holding a repo-relative file,
+    /// when "Run with Inspector" has built it (mirror + index store).
+    func inspectDirectory(forRelativePath path: String) -> URL?
+    /// The original (untagged) file for a repo-relative path.
+    func fileURL(forRelativePath path: String) -> URL?
 }
 
 extension AppCoordinator: InspectorSourceNavigating {
@@ -54,6 +65,53 @@ extension AppCoordinator: InspectorSourceNavigating {
         if let window = NSApp.windows.first(where: { $0.title == "MyGit" }) {
             window.makeKeyAndOrderFront(nil)
         }
+    }
+
+    func sourceMapURL(forRelativePath path: String) -> URL? {
+        let fm = FileManager.default
+        let ordered = [activeBundle] + bundles.filter { $0 !== activeBundle }
+        for bundle in ordered {
+            let url = bundle.repo.url.appendingPathComponent(".mygit/inspect/map/\(path).json")
+            if fm.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
+
+    func inspectDirectory(forRelativePath path: String) -> URL? {
+        let fm = FileManager.default
+        let ordered = [activeBundle] + bundles.filter { $0 !== activeBundle }
+        for bundle in ordered where fm.fileExists(atPath: bundle.repo.url.appendingPathComponent(path).path) {
+            let dir = bundle.repo.url.appendingPathComponent(".mygit/inspect")
+            return fm.fileExists(atPath: dir.appendingPathComponent("DerivedData/Index.noindex/DataStore").path) ? dir : nil
+        }
+        return nil
+    }
+
+    func symbolIndexURL(forRelativePath path: String) -> URL? {
+        let fm = FileManager.default
+        let ordered = [activeBundle] + bundles.filter { $0 !== activeBundle }
+        for bundle in ordered where fm.fileExists(atPath: bundle.repo.url.appendingPathComponent(path).path) {
+            let url = bundle.repo.url.appendingPathComponent(".mygit/inspect/map/_symbols.json")
+            return fm.fileExists(atPath: url.path) ? url : nil
+        }
+        return nil
+    }
+
+    func fileURL(forRelativePath path: String) -> URL? {
+        let fm = FileManager.default
+        let ordered = [activeBundle] + bundles.filter { $0 !== activeBundle }
+        return ordered.map { $0.repo.url.appendingPathComponent(path) }.first { fm.fileExists(atPath: $0.path) }
+    }
+
+    func open(relativePath: String, line: Int) -> Bool {
+        let fm = FileManager.default
+        // The active repo first: a workspace may hold several with the same layout.
+        let ordered = [activeBundle] + bundles.filter { $0 !== activeBundle }
+        guard let bundle = ordered.first(where: {
+            fm.fileExists(atPath: $0.repo.url.appendingPathComponent(relativePath).path)
+        }) else { return false }
+        open(InspectorSourceHit(repo: bundle.repo.url, repoName: bundle.name, path: relativePath, line: line, preview: ""))
+        return true
     }
 
     /// `struct Name` / `final class Name` / `extension Name` … as a declaration line.

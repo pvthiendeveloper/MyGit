@@ -109,6 +109,21 @@ for b in "$BIN_DIR"/*.bundle; do
   cp -R "$b" "$APP/Contents/Resources/"
 done
 shopt -u nullglob
+# UI Inspector's "Run with Inspector": the source tagger (SwiftSyntax,
+# built once in release, then incrementally) and its run script ship in
+# Resources.
+TAGGER_PKG="$ROOT/../ios-inspector/Tools/SourceTagger"
+if [[ -d "$TAGGER_PKG" ]]; then
+  echo "▶︎ Building source tagger…"
+  swift build -c release --package-path "$TAGGER_PKG" --product mygit-source-tagger 2>&1 | grep -E "error|warning: unable" || true
+  TAGGER_BIN="$(swift build -c release --package-path "$TAGGER_PKG" --show-bin-path)/mygit-source-tagger"
+  if [[ -x "$TAGGER_BIN" ]]; then
+    cp "$TAGGER_BIN" "$APP/Contents/Resources/mygit-source-tagger"
+    cp "$ROOT/../ios-inspector/Tools/mygit-inspect-run.sh" "$APP/Contents/Resources/mygit-inspect-run.sh"
+  else
+    echo "⚠︎ source tagger didn't build — Run with Inspector will be unavailable" >&2
+  fi
+fi
 cp "$ROOT/Packaging/Info.plist" "$APP/Contents/Info.plist"
 if [[ -f "$ROOT/Packaging/AppIcon.icns" ]]; then
   cp "$ROOT/Packaging/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -118,6 +133,12 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 security unlock-keychain -p "$CERT_PW" "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
 
 echo "▶︎ Code signing as: $CERT_NAME ($SIGN_IDENTITY)"
+# --deep doesn't reach executables in Resources; sign the tagger itself.
+if [[ -f "$APP/Contents/Resources/mygit-source-tagger" ]]; then
+  codesign --force --options runtime --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" \
+    "$APP/Contents/Resources/mygit-source-tagger" 2>/dev/null \
+    || codesign --force --sign - "$APP/Contents/Resources/mygit-source-tagger"
+fi
 codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" \
   --keychain "$KEYCHAIN_PATH" \
   --entitlements "$ROOT/Packaging/MyGit.entitlements" \

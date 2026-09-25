@@ -101,7 +101,7 @@ final class InspectorConnection: @unchecked Sendable {
                 image: w.png.flatMap { Data(base64Encoded: $0) }.flatMap(NSImage.init(data:))
             ))
         }
-        return InspectorSnapshot(windows: windows, info: result.info, takenAt: Date())
+        return InspectorSnapshot(windows: windows, info: result.info, takenAt: Date(), branches: result.branches ?? [:])
     }
 
     /// Outline a frame (window coordinates) on the device itself; nil removes
@@ -125,6 +125,7 @@ final class InspectorConnection: @unchecked Sendable {
         }
         let windows: [Window]
         let info: InspectorAppInfo?
+        let branches: [String: [String]]?
     }
 
     private struct Empty: Decodable {}

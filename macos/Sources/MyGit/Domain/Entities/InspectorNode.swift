@@ -144,6 +144,9 @@ struct InspectorSnapshot {
     let windows: [InspectorWindow]
     let info: InspectorAppInfo?
     let takenAt: Date
+    /// Which `return`s of probed getters/functions ran (Run with Inspector):
+    /// `"path:line"` → the latest values each produced, newest last.
+    var branches: [String: [String]] = [:]
 }
 
 /// An app advertising the inspector agent over Bonjour.
@@ -162,4 +165,101 @@ struct InspectorSourceHit: Identifiable, Hashable {
     let preview: String
 
     var id: String { "\(repo.path):\(path):\(line)" }
+}
+
+/// How a tagged view expression was written (from the source tagger's map):
+/// which arguments read design tokens and which are hardcoded.
+struct InspectorSourceMapEntry: Decodable {
+    struct Argument: Decodable {
+        let label: String?
+        let expr: String
+        let token: Bool
+        /// Where the names it reads are: alternatives of ordered fallbacks.
+        var refs: [[InspectorRef]]?
+        /// For a local (`uiImage`): what it was bound to.
+        var binding: String?
+    }
+
+    /// The function / type the view is written in.
+    struct Scope: Decodable {
+        struct Parameter: Decodable {
+            let name: String
+            let label: String?
+        }
+        var function: String?
+        var parameters: [Parameter]?
+        var type: String?
+    }
+
+    struct Modifier: Decodable {
+        let name: String
+        let args: [Argument]
+    }
+
+    let call: String
+    let args: [Argument]
+    /// Source order: first = innermost.
+    let mods: [Modifier]
+    var scope: Scope?
+}
+
+/// A name read at a place in the original source (1-based line/column).
+struct InspectorRef: Decodable, Hashable {
+    let name: String
+    let line: Int
+    let column: Int
+}
+
+/// A simple-valued property from the tagger's index (`_symbols.json`).
+struct InspectorSymbol: Decodable {
+    let name: String
+    let owner: String?
+    let path: String
+    let line: Int
+    let expr: String
+    let literal: String?
+    /// A function's return value rather than a property.
+    var function: Bool?
+    /// Where the names in `expr` are, when it references something.
+    var refs: [[InspectorRef]]?
+    /// Line of the declared name, when `line` is a `return` inside it.
+    var declLine: Int?
+    /// This `return` reports at runtime when it runs (see `snapshot.branches`).
+    var probed: Bool?
+}
+
+/// A token expression resolved as far as the code allows: parameters
+/// traced to their call sites, then properties to a root value.
+struct InspectorTokenResolution {
+    /// Human-readable steps, first = what the view's line says.
+    let steps: [String]
+    /// The followed chain, when one reached the index.
+    let chain: InspectorTokenChain?
+    /// Several possible roots (a function whose branches return different
+    /// tokens, e.g. `labelColor(role)`), when the value on screen can't pick one.
+    let alternatives: [InspectorSymbol]
+    /// True when every step came from the compiler's index (and the tag
+    /// stack); false for the by-name fallback.
+    var exact = false
+    /// What picked `chain` among several possible roots, when something did.
+    var pickedBy: Pick?
+
+    enum Pick: Equatable {
+        /// The other roots can't produce the value on screen.
+        case screenValue
+        /// The app reported which `return` ran (Run with Inspector).
+        case runtimeBranch
+        /// A language model's reading of the code — a suggestion, not proof.
+        case ai(confidence: Double, reason: String)
+    }
+}
+
+/// A view's token followed to the design token at its root:
+/// `tokenProvider.labelToValueSpacing` → `TymeXSwiftUI.patternGapGroupTextToGroupText` = 4.
+struct InspectorTokenChain {
+    /// Each definition followed, source token first, root last.
+    let hops: [InspectorSymbol]
+    var root: InspectorSymbol { hops[hops.count - 1] }
+    /// The root's literal value, when the chain ended in one.
+    var value: String? { root.literal }
 }

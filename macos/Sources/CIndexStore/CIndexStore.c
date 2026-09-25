@@ -29,6 +29,9 @@ static struct {
     void (*occurrence_get_line_col)(indexstore_occurrence_t, unsigned *, unsigned *);
     string_ref (*symbol_get_usr)(indexstore_symbol_t);
     string_ref (*symbol_get_name)(indexstore_symbol_t);
+    bool (*occurrence_relations_apply)(indexstore_occurrence_t, bool (^)(indexstore_symbol_relation_t));
+    uint64_t (*symbol_relation_get_roles)(indexstore_symbol_relation_t);
+    indexstore_symbol_t (*symbol_relation_get_symbol)(indexstore_symbol_relation_t);
 } api;
 
 bool mygit_indexstore_load(const char *dylib_path, char *error, size_t error_len) {
@@ -64,6 +67,9 @@ bool mygit_indexstore_load(const char *dylib_path, char *error, size_t error_len
     BIND(occurrence_get_line_col, "occurrence_get_line_col")
     BIND(symbol_get_usr, "symbol_get_usr")
     BIND(symbol_get_name, "symbol_get_name")
+    BIND(occurrence_relations_apply, "occurrence_relations_apply")
+    BIND(symbol_relation_get_roles, "symbol_relation_get_roles")
+    BIND(symbol_relation_get_symbol, "symbol_relation_get_symbol")
 #undef BIND
     api.loaded = true;
     return true;
@@ -146,3 +152,16 @@ void mygit_indexstore_occurrence_get_line_col(indexstore_occurrence_t occurrence
 string_ref mygit_indexstore_symbol_get_usr(indexstore_symbol_t symbol) { return api.symbol_get_usr(symbol); }
 
 string_ref mygit_indexstore_symbol_get_name(indexstore_symbol_t symbol) { return api.symbol_get_name(symbol); }
+
+bool mygit_indexstore_occurrence_relations_apply(indexstore_occurrence_t occurrence,
+                                                 bool (^applier)(indexstore_symbol_relation_t)) {
+    return api.occurrence_relations_apply(occurrence, applier);
+}
+
+uint64_t mygit_indexstore_symbol_relation_get_roles(indexstore_symbol_relation_t relation) {
+    return api.symbol_relation_get_roles(relation);
+}
+
+indexstore_symbol_t mygit_indexstore_symbol_relation_get_symbol(indexstore_symbol_relation_t relation) {
+    return api.symbol_relation_get_symbol(relation);
+}

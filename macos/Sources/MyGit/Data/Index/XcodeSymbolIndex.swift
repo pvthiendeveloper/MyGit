@@ -17,6 +17,24 @@ struct IndexedSymbol {
     let indexedAt: Date?
 }
 
+/// A declaration as the index records it (absolute file path).
+struct IndexedDeclaration: Hashable {
+    let usr: String
+    let name: String
+    let file: String
+    let line: Int
+    let column: Int
+}
+
+/// What a reference resolves to, per the compiler.
+struct ResolvedReference {
+    let usr: String
+    let name: String
+    let declarations: [IndexedDeclaration]
+    /// Non-empty for a protocol requirement: everything implementing it.
+    let implementations: [IndexedDeclaration]
+}
+
 /// Semantic ⌘-click lookup backed by the index Xcode writes while building
 /// (DerivedData/<proj>/Index.noindex/DataStore), read through Xcode's own
 /// libIndexStore. Unlike `git grep` this resolves the *symbol* under the
@@ -39,6 +57,10 @@ final class XcodeSymbolIndex: @unchecked Sendable {
         var stamp: Date?
         var recordsByFile: [String: Set<String>] = [:]
         var recordFiles: [String: String] = [:]   // record name → source path
+        /// Built on first `resolveReference`: every declaration by USR, and
+        /// protocol requirements → their implementations (`overrideOf`).
+        var declarations: [String: [IndexedDeclaration]]?
+        var implementations: [String: [IndexedDeclaration]] = [:]
 
         init(handle: indexstore_t) { self.handle = handle }
     }
@@ -144,6 +166,98 @@ final class XcodeSymbolIndex: @unchecked Sendable {
             return true
         }
         return hits
+    }
+
+    // MARK: - References (UI Inspector token chains)
+
+    /// Resolve the symbol a reference at `file:line:column` named `name`
+    /// points to, as the compiler did — the same answer as Xcode's Jump to
+    /// Definition. For a protocol requirement, `implementations` lists every
+    /// declaration that implements it (defaults in extensions, conformers).
+    /// `file` is absolute; `store` is an index store that covers it.
+    func resolveReference(store: URL, file: String, line: Int, column: Int, name: String) async -> ResolvedReference? {
+        await withCheckedContinuation { cont in
+            queue.async {
+                cont.resume(returning: self.resolveReferenceSync(store: store, file: file, line: line, column: column, name: name))
+            }
+        }
+    }
+
+    private func resolveReferenceSync(store: URL, file: String, line: Int, column: Int, name: String) -> ResolvedReference? {
+        guard loadLibrary(), let cache = openStore(store) else { return nil }
+        let path = Self.canonical(file)
+        guard let records = cache.recordsByFile[path] else { return nil }
+
+        // The occurrence on that line with that name, nearest the column
+        // (tags added on the same line can shift columns a little).
+        var best: (usr: String, name: String, distance: Int)?
+        for record in records {
+            guard let reader = mygit_indexstore_record_reader_create(cache.handle, record) else { continue }
+            _ = mygit_indexstore_record_reader_occurrences_apply(reader) { occ in
+                var l: UInt32 = 0, c: UInt32 = 0
+                mygit_indexstore_occurrence_get_line_col(occ, &l, &c)
+                guard Int(l) == line else { return true }
+                let roles = mygit_indexstore_occurrence_get_roles(occ)
+                guard roles & UInt64(MYGIT_INDEXSTORE_ROLE_IMPLICIT) == 0 else { return true }
+                let sym = mygit_indexstore_occurrence_get_symbol(occ)
+                let symName = Self.string(mygit_indexstore_symbol_get_name(sym))
+                guard symName == name || symName.hasPrefix(name + "(") else { return true }
+                let distance = abs(Int(c) - column)
+                if best == nil || distance < best!.distance {
+                    best = (Self.string(mygit_indexstore_symbol_get_usr(sym)), symName, distance)
+                }
+                return true
+            }
+            mygit_indexstore_record_reader_dispose(reader)
+        }
+        guard let target = best else { return nil }
+        let declarations = declarationTable(cache)
+        return ResolvedReference(
+            usr: target.usr,
+            name: target.name,
+            declarations: declarations[target.usr] ?? [],
+            implementations: cache.implementations[target.usr] ?? []
+        )
+    }
+
+    /// One pass over every record: declarations by USR, and which
+    /// declarations implement which requirement.
+    private func declarationTable(_ cache: StoreCache) -> [String: [IndexedDeclaration]] {
+        if let table = cache.declarations { return table }
+        var table: [String: [IndexedDeclaration]] = [:]
+        var implementations: [String: [IndexedDeclaration]] = [:]
+        let declMask = UInt64(MYGIT_INDEXSTORE_ROLE_DECLARATION | MYGIT_INDEXSTORE_ROLE_DEFINITION)
+        for (record, file) in cache.recordFiles {
+            guard let reader = mygit_indexstore_record_reader_create(cache.handle, record) else { continue }
+            _ = mygit_indexstore_record_reader_occurrences_apply(reader) { occ in
+                let roles = mygit_indexstore_occurrence_get_roles(occ)
+                guard roles & declMask != 0, roles & UInt64(MYGIT_INDEXSTORE_ROLE_IMPLICIT) == 0 else { return true }
+                let sym = mygit_indexstore_occurrence_get_symbol(occ)
+                var l: UInt32 = 0, c: UInt32 = 0
+                mygit_indexstore_occurrence_get_line_col(occ, &l, &c)
+                let decl = IndexedDeclaration(usr: Self.string(mygit_indexstore_symbol_get_usr(sym)),
+                                              name: Self.string(mygit_indexstore_symbol_get_name(sym)),
+                                              file: file, line: Int(l), column: Int(c))
+                table[decl.usr, default: []].append(decl)
+                _ = mygit_indexstore_occurrence_relations_apply(occ) { rel in
+                    if mygit_indexstore_symbol_relation_get_roles(rel) & UInt64(MYGIT_INDEXSTORE_ROLE_REL_OVERRIDEOF) != 0 {
+                        let base = Self.string(mygit_indexstore_symbol_get_usr(mygit_indexstore_symbol_relation_get_symbol(rel)))
+                        implementations[base, default: []].append(decl)
+                    }
+                    return true
+                }
+                return true
+            }
+            mygit_indexstore_record_reader_dispose(reader)
+        }
+        // A declaration can appear in several records (targets); keep one per place.
+        for (usr, list) in table { table[usr] = Array(Set(list)).sorted { ($0.file, $0.line) < ($1.file, $1.line) } }
+        for (usr, list) in implementations {
+            implementations[usr] = Array(Set(list)).sorted { ($0.file, $0.line) < ($1.file, $1.line) }
+        }
+        cache.declarations = table
+        cache.implementations = implementations
+        return table
     }
 
     // MARK: - Store

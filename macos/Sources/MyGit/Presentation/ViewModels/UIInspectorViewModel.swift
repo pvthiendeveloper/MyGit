@@ -76,6 +76,56 @@ final class UIInspectorViewModel: ObservableObject {
     @Published private(set) var isSearchingSource = false
     /// Resolves views to code in the repos open in MyGit.
     weak var sourceNavigator: InspectorSourceNavigating?
+    /// Starts the active repo's "Run with Inspector" (nil when unavailable).
+    var runWithInspector: (() -> Void)?
+    /// The AI provider for "pick the branch" (nil hides the button), and its
+    /// current config (nil when no provider is set up).
+    var ai: CommitMessageRepository?
+    var aiConfig: (() -> AIRequestConfig?)?
+    /// AI picks by token key, so reselecting a view doesn't ask again.
+    var aiPicks: [String: InspectorTokenResolution] = [:]
+    /// Source maps by file path, with the modification date they were read at.
+    private var sourceMaps: [String: (date: Date?, map: [String: InspectorSourceMapEntry])] = [:]
+
+    /// Property indexes by URL, with the modification date they were read at.
+    private var symbolIndexes: [URL: (date: Date?, index: [String: [InspectorSymbol]], byFile: [String: [InspectorSymbol]])] = [:]
+
+    /// The repo's property index by name.
+    func symbolIndex(near tag: InspectorSourceTag) -> [String: [InspectorSymbol]] {
+        loadSymbolIndex(near: tag)?.index ?? [:]
+    }
+
+    /// The same index grouped by file.
+    func symbolsByFile(near tag: InspectorSourceTag) -> [String: [InspectorSymbol]] {
+        loadSymbolIndex(near: tag)?.byFile ?? [:]
+    }
+
+    private func loadSymbolIndex(near tag: InspectorSourceTag)
+        -> (date: Date?, index: [String: [InspectorSymbol]], byFile: [String: [InspectorSymbol]])? {
+        guard let url = sourceNavigator?.symbolIndexURL(forRelativePath: tag.path) else { return nil }
+        let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        if let cached = symbolIndexes[url], cached.date == date { return cached }
+        let index = (try? FileManager.default.contents(atPath: url.path)
+            .flatMap { try JSONDecoder().decode([String: [InspectorSymbol]].self, from: $0) }) ?? [:]
+        var byFile: [String: [InspectorSymbol]] = [:]
+        for (_, list) in index {
+            for symbol in list { byFile[symbol.path, default: []].append(symbol) }
+        }
+        let loaded = (date, index, byFile)
+        symbolIndexes[url] = loaded
+        return loaded
+    }
+
+    /// How the tagged expression was written (tokens vs hardcoded values).
+    func sourceEntry(for tag: InspectorSourceTag) -> InspectorSourceMapEntry? {
+        guard let url = sourceNavigator?.sourceMapURL(forRelativePath: tag.path) else { return nil }
+        let date = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        if let cached = sourceMaps[tag.path], cached.date == date { return cached.map[tag.id] }
+        let map = (try? FileManager.default.contents(atPath: url.path)
+            .flatMap { try JSONDecoder().decode([String: InspectorSourceMapEntry].self, from: $0) }) ?? [:]
+        sourceMaps[tag.path] = (date, map)
+        return map[tag.id]
+    }
 
     private let browser = InspectorBrowser()
     private var connection: InspectorConnection?
@@ -95,6 +145,9 @@ final class UIInspectorViewModel: ObservableObject {
     private var rawNodes: [String: InspectorNode] = [:]
     private var rawParentOf: [String: String] = [:]
     private var rawChildrenOf: [String: [String]] = [:]
+    private var tagNodeIDs: [String] = []
+
+    func allTagNodeIDs() -> [String] { tagNodeIDs }
 
     func rawNode(_ id: String) -> InspectorNode? { rawNodes[id] }
     func rawParent(_ id: String) -> String? { rawParentOf[id] }
@@ -230,13 +283,14 @@ final class UIInspectorViewModel: ObservableObject {
 
     private func rebuildTree() {
         nodes = [:]; childrenOf = [:]; parentOf = [:]; rootIDs = []; order = []
-        rawNodes = [:]; rawParentOf = [:]; rawChildrenOf = [:]
+        rawNodes = [:]; rawParentOf = [:]; rawChildrenOf = [:]; tagNodeIDs = []
         if let root = currentWindow?.root {
             rootIDs = visible(root).map { add($0, parent: nil) }
             // Iterative: trees run a few hundred levels deep.
             var stack = [root]
             while let node = stack.popLast() {
                 rawNodes[node.id] = node
+                if node.className == Self.sourceTagClass { tagNodeIDs.append(node.id) }
                 if !node.children.isEmpty {
                     rawChildrenOf[node.id] = node.children.map(\.id)
                     for child in node.children { rawParentOf[child.id] = node.id }
@@ -298,7 +352,8 @@ final class UIInspectorViewModel: ObservableObject {
             let expanded = matches != nil || !collapsed.contains(last.id)
             let row = Row(chain: chain, depth: depth, hasChildren: !kids.isEmpty, isExpanded: expanded,
                           label: chain.count == 1 ? last.className : chain.map(\.shortName).joined(separator: " › "),
-                          detail: Self.detail(for: last))
+                          detail: Self.detail(for: last)
+                              ?? chain.reversed().lazy.compactMap { self.ownSourceTag(for: $0.id) }.first.map { "· \($0.label)" })
             out.append(row)
             width = max(width, Self.width(of: row))
             if expanded { kids.forEach { walk($0, depth: depth + 1) } }
@@ -488,6 +543,17 @@ final class UIInspectorViewModel: ObservableObject {
         }
         runSourceSearch(title: "“\(text)” in code", notFound: "“\(text)” doesn't appear as a string literal in the open repos.") {
             await $0.occurrences(ofLiteral: literal)
+        }
+    }
+
+    /// Jump to a tagged view's line in the repo open in MyGit.
+    func open(_ tag: InspectorSourceTag) {
+        guard let navigator = sourceNavigator else {
+            errorMessage = "Open the app's repository in MyGit to jump to its code."
+            return
+        }
+        if !navigator.open(relativePath: tag.path, line: tag.line) {
+            errorMessage = "\(tag.path) isn't in any repository open in MyGit."
         }
     }
 

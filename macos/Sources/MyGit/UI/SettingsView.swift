@@ -82,12 +82,15 @@ struct SettingsView: View {
             $0.tabTitle.lowercased().contains(q)
                 || $0.displayName.lowercased().contains(q)
                 || "ai".contains(q)
+                || ($0 == .local && "local offline model download llama".contains(q))
         }
     }
 
     @ViewBuilder
     private var content: some View {
         switch selection {
+        case .provider(.local):
+            LocalModelsSettingsView()
         case .provider(let p):
             AICommitSettingsView(provider: p)
         case .files:

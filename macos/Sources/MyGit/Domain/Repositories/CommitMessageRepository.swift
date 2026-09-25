@@ -23,6 +23,10 @@ protocol CommitMessageRepository: Sendable {
     /// populate the model picker with real options instead of hardcoded
     /// defaults. Throws on failure; does not consume generation tokens.
     func listModels(config: AIRequestConfig) async throws -> [String]
+
+    /// A plain system + user completion, for callers that build their own
+    /// prompt and parse the answer (the UI Inspector's branch pick).
+    func ask(system: String, user: String, config: AIRequestConfig) async throws -> String
 }
 
 enum CommitMessageError: LocalizedError {

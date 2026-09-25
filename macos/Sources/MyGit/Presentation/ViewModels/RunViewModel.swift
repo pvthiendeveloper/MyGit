@@ -34,6 +34,11 @@ final class RunViewModel: ObservableObject {
     @Published var selectedConfigurationID: UUID? {
         didSet { persist(Keys.selectedConfiguration, selectedConfigurationID?.uuidString) }
     }
+    /// With no custom configuration: ▶ builds the app with source tags for
+    /// the UI Inspector ("App with Inspector") instead of a plain run.
+    @Published var inspectMode = false {
+        didSet { persist(Keys.inspect, inspectMode ? "1" : nil) }
+    }
 
     private let repoSource: () -> Repository?
     private let main: MainViewModel
@@ -48,6 +53,7 @@ final class RunViewModel: ObservableObject {
         static let variants = "variants"
         static let configurations = "configurations"
         static let selectedConfiguration = "configuration"
+        static let inspect = "inspect"
     }
 
     init(main: MainViewModel, repoSource: @escaping () -> Repository?, defaults: UserDefaults = .standard) {
@@ -57,6 +63,7 @@ final class RunViewModel: ObservableObject {
         self.kind = repoSource().map { ProjectKind.detect(at: $0.url) } ?? .unknown
         self.selectedDeviceID = restore(Keys.device)
         self.selectedScheme = restore(Keys.scheme)
+        self.inspectMode = restore(Keys.inspect) == "1"
         self.activeModulePath = restore(Keys.module)
         if let raw = restore(Keys.variants),
            let data = raw.data(using: .utf8),
@@ -79,7 +86,9 @@ final class RunViewModel: ObservableObject {
     }
 
     /// Toolbar label for the current run target.
-    var configurationLabel: String { selectedConfiguration?.name ?? "App" }
+    var configurationLabel: String {
+        selectedConfiguration?.name ?? (runsWithInspector ? "App + Inspector" : "App")
+    }
 
     /// Adds or replaces a configuration (matched by id) and selects it.
     func save(_ config: RunConfiguration) {
@@ -234,9 +243,16 @@ final class RunViewModel: ObservableObject {
         }
     }
 
+    /// ▶ runs "App with Inspector" rather than the plain app.
+    var runsWithInspector: Bool { selectedConfiguration == nil && inspectMode && kind == .ios }
+
     /// Build + install + launch on the selected device, in the terminal panel.
     func run() {
         guard let repo = repoSource() else { return }
+        if runsWithInspector {
+            runWithInspector()
+            return
+        }
         if let config = selectedConfiguration {
             guard let script = writeScript(for: config) else {
                 main.errorMessage = "Couldn't write the run script."
@@ -258,6 +274,30 @@ final class RunViewModel: ObservableObject {
             return
         }
         runInTerminal(script)
+    }
+
+    var canRunWithInspector: Bool {
+        kind == .ios && selectedDevice != nil && selectedScheme != nil
+    }
+
+    /// Build + run with every SwiftUI view tagged with its source line, so
+    /// the UI Inspector can open the exact code behind a view.
+    func runWithInspector() {
+        guard let repo = repoSource() else { return }
+        guard kind == .ios, let device = selectedDevice, let scheme = selectedScheme else {
+            main.errorMessage = "Run with Inspector needs an iOS project with a scheme and a device picked in the Run bar."
+            return
+        }
+        switch ProjectToolchain.inspectRunScript(device: device, scheme: scheme, repo: repo.url) {
+        case let .success(script):
+            runInTerminal(script)
+        case .failure(.toolsMissing):
+            main.errorMessage = "This MyGit build doesn't include the source tagger. Build MyGit with ./run.sh."
+        case .failure(.scriptNotWritten):
+            main.errorMessage = "Couldn't write the run script."
+        case .failure(.noXcodeProject):
+            main.errorMessage = "No .xcworkspace or .xcodeproj at the top of \(repo.name)."
+        }
     }
 
     private func missingToolchainMessage() -> String {

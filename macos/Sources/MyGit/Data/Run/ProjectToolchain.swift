@@ -589,6 +589,43 @@ enum ProjectToolchain {
         return script
     }
 
+    /// "Run with Inspector": the same build + launch, but from a mirror of
+    /// the repo whose SwiftUI views carry their source locations (see
+    /// `ios-inspector/Tools`). Both tools ship inside MyGit.app.
+    static func inspectRunScript(device: RunDevice, scheme: String, repo: URL) -> Result<String, InspectRunError> {
+        guard let script = Bundle.main.url(forResource: "mygit-inspect-run", withExtension: "sh"),
+              let tagger = Bundle.main.url(forResource: "mygit-source-tagger", withExtension: nil) else {
+            return .failure(.toolsMissing)
+        }
+        let container: String
+        if let workspace = xcodeContainer(at: repo, ext: "xcworkspace") {
+            container = "--workspace \(q(workspace))"
+        } else if let project = xcodeContainer(at: repo, ext: "xcodeproj") {
+            container = "--project \(q(project))"
+        } else {
+            return .failure(.noXcodeProject)
+        }
+        let physical = device.kind == .iosSimulator ? "" : " --physical"
+        // The terminal runner takes a script *file*, like `runScript`'s.
+        let body = """
+        #!/bin/bash
+        cd \(q(repo.path))
+        if ! grep -rqs 'MyGitInspector' --include='*.pbxproj' --include='Package.swift' --include='project.yml' . ; then
+          echo "⚠︎ This project doesn't link the MyGitInspector package — the app will run, but the UI Inspector won't see it."
+        fi
+        exec /bin/bash \(q(script.path)) --repo \(q(repo.path)) --tagger \(q(tagger.path)) \
+          --scheme \(q(scheme)) --device \(q(device.id)) \(container)\(physical)
+        """
+        guard let path = writeScript(body, name: "inspect-\(repo.lastPathComponent).sh") else {
+            return .failure(.scriptNotWritten)
+        }
+        return .success(path)
+    }
+
+    enum InspectRunError: Error {
+        case toolsMissing, noXcodeProject, scriptNotWritten
+    }
+
     private static func q(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }

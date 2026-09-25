@@ -186,7 +186,8 @@ struct RunControls: View {
     private var configurationPicker: some View {
         Button { showConfigs.toggle() } label: {
             HStack(spacing: 8) {
-                Image(systemName: vm.selectedConfiguration == nil ? "app.badge" : "terminal")
+                Image(systemName: vm.selectedConfiguration != nil ? "terminal"
+                      : (vm.runsWithInspector ? "viewfinder" : "app.badge"))
                     .font(.system(size: 14))
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 1) {
@@ -227,9 +228,23 @@ struct RunControls: View {
                     title: "App",
                     subtitle: "Build, install and launch",
                     icon: "app.badge",
-                    isSelected: vm.selectedConfiguration == nil
+                    isSelected: vm.selectedConfiguration == nil && !vm.runsWithInspector
                 ) {
                     vm.selectedConfigurationID = nil
+                    vm.inspectMode = false
+                    showConfigs = false
+                })
+            }
+            if vm.kind == .ios {
+                PopoverRowView(row: PopoverRow(
+                    id: "app-inspector",
+                    title: "App with Inspector",
+                    subtitle: "Source-tagged build: views open their exact line",
+                    icon: "viewfinder",
+                    isSelected: vm.runsWithInspector
+                ) {
+                    vm.selectedConfigurationID = nil
+                    vm.inspectMode = true
                     showConfigs = false
                 })
             }
@@ -344,7 +359,10 @@ struct RunControls: View {
         guard let device = vm.selectedDevice else { return "Pick a device first" }
         switch vm.kind {
         case .android: return "Build and install on \(device.name)"
-        case .ios: return "Build \(vm.selectedScheme ?? "scheme") and run on \(device.name)"
+        case .ios:
+            return vm.runsWithInspector
+                ? "Build \(vm.selectedScheme ?? "scheme") with source tags for the UI Inspector and run on \(device.name)"
+                : "Build \(vm.selectedScheme ?? "scheme") and run on \(device.name)"
         case .unknown: return ""
         }
     }

@@ -186,6 +186,7 @@ final class SettingsViewModel: ObservableObject {
 
     /// Test reachability for `p` using its current (unsaved) field values.
     func testConnection(for p: AIProvider) {
+        if p == .local { return testLocalModel() }
         let key = apiKey(for: p).trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else {
             testStatus[p.rawValue] = .failure("No API key entered.")
@@ -255,9 +256,38 @@ final class SettingsViewModel: ObservableObject {
         resolvedKeys[p.rawValue] = key
     }
 
+    /// Load the chosen local model and ask it for one word, so a broken
+    /// download or runtime shows up here rather than mid-commit.
+    private func testLocalModel() {
+        let p = AIProvider.local
+        guard let cfg = config(for: p) else {
+            testStatus[p.rawValue] = .failure("Pick a model first.")
+            return
+        }
+        testStatus[p.rawValue] = .testing
+        Task { [ai] in
+            do {
+                let started = Date()
+                _ = try await ai.ask(system: "Reply with the single word OK.", user: "Ping", config: cfg)
+                testStatus[p.rawValue] = .success(String(format: "Model loaded and answering (%.1fs)", Date().timeIntervalSince(started)))
+            } catch {
+                testStatus[p.rawValue] = .failure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            }
+        }
+    }
+
     /// Build a request config for the active provider, or nil if no key set.
     func requestConfig() -> AIRequestConfig? {
-        let p = activeProvider
+        config(for: activeProvider)
+    }
+
+    /// A request config for `p`, or nil when it isn't usable (no key/model).
+    func config(for p: AIProvider) -> AIRequestConfig? {
+        guard p.needsKey else {
+            let m = model(for: p)
+            guard LocalModelCatalog.model(id: m) != nil else { return nil }
+            return AIRequestConfig(provider: p, model: m, baseURL: "", apiKey: "local", includeBody: generateBody)
+        }
         let key = resolvedKey(for: p)
         guard !key.isEmpty else { return nil }
         let m = model(for: p).trimmingCharacters(in: .whitespaces)

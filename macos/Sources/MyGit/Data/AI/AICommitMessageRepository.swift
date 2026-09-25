@@ -112,8 +112,20 @@ struct AICommitMessageRepository: CommitMessageRepository {
         return lines.joined(separator: "\n")
     }
 
+    func ask(system: String, user: String, config: AIRequestConfig) async throws -> String {
+        guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
+        return try await complete(config: config, system: system, user: user)
+    }
+
     /// Dispatch a system+user completion to the configured provider.
     private func complete(config: AIRequestConfig, system: String, user: String) async throws -> String {
+        if config.provider == .local {
+            // Starts llama-server with the model on first use.
+            let base = try await LocalLLMServer.shared.baseURL(for: config.model)
+            let local = AIRequestConfig(provider: .local, model: config.model, baseURL: base.absoluteString,
+                                        apiKey: config.apiKey, includeBody: config.includeBody)
+            return Self.stripThinking(try await callOpenAI(config: local, system: system, user: user))
+        }
         if config.provider.isOpenAICompatible {
             return try await callOpenAI(config: config, system: system, user: user)
         } else if config.provider == .anthropic {
@@ -131,6 +143,9 @@ struct AICommitMessageRepository: CommitMessageRepository {
     }
 
     func listModels(config: AIRequestConfig) async throws -> [String] {
+        if config.provider == .local {
+            return LocalModelCatalog.models.filter(LocalAIPaths.isInstalled).map(\.id)
+        }
         guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
         if config.provider.isOpenAICompatible {
             return try await fetchOpenAIModels(config: config)
@@ -342,6 +357,13 @@ struct AICommitMessageRepository: CommitMessageRepository {
     }
 
     // MARK: - Helpers
+
+    /// Reasoning models (Qwen3, gpt-oss) may leave a `<think>…</think>`
+    /// block in the content; the answer is what follows it.
+    static func stripThinking(_ text: String) -> String {
+        guard let end = text.range(of: "</think>") else { return text }
+        return String(text[end.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private static func checkStatus(_ resp: URLResponse, _ data: Data) throws {
         guard let http = resp as? HTTPURLResponse else { return }

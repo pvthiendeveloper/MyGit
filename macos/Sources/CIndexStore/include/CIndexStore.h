@@ -20,6 +20,7 @@ typedef void *indexstore_unit_dependency_t;
 typedef void *indexstore_record_reader_t;
 typedef void *indexstore_symbol_t;
 typedef void *indexstore_occurrence_t;
+typedef void *indexstore_symbol_relation_t;
 
 typedef struct {
     const char *data;
@@ -36,6 +37,10 @@ typedef struct {
 #define MYGIT_INDEXSTORE_ROLE_DEFINITION  (1 << 1)
 #define MYGIT_INDEXSTORE_ROLE_REFERENCE   (1 << 2)
 #define MYGIT_INDEXSTORE_ROLE_IMPLICIT    (1 << 8)
+// Relation roles (on an occurrence's relations).
+#define MYGIT_INDEXSTORE_ROLE_REL_CHILDOF     (1 << 9)
+#define MYGIT_INDEXSTORE_ROLE_REL_OVERRIDEOF  (1 << 11)
+#define MYGIT_INDEXSTORE_ROLE_REL_ACCESSOROF  (1 << 15)
 
 /// Load the library. Returns false (and fills `error`, if given) when the
 /// dylib or one of its symbols is missing. Safe to call repeatedly.
@@ -68,5 +73,12 @@ void mygit_indexstore_occurrence_get_line_col(indexstore_occurrence_t occurrence
                                               unsigned *line, unsigned *column);
 indexstore_string_ref_t mygit_indexstore_symbol_get_usr(indexstore_symbol_t symbol);
 indexstore_string_ref_t mygit_indexstore_symbol_get_name(indexstore_symbol_t symbol);
+
+/// An occurrence's relations: e.g. an implementation's `overrideOf` its
+/// protocol requirement, an accessor's `accessorOf` its property.
+bool mygit_indexstore_occurrence_relations_apply(indexstore_occurrence_t occurrence,
+                                                 bool (^applier)(indexstore_symbol_relation_t relation));
+uint64_t mygit_indexstore_symbol_relation_get_roles(indexstore_symbol_relation_t relation);
+indexstore_symbol_t mygit_indexstore_symbol_relation_get_symbol(indexstore_symbol_relation_t relation);
 
 #endif
