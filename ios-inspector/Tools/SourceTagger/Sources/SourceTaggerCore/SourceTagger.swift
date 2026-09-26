@@ -30,6 +30,10 @@ public enum SourceTagger {
     }
 
     public static let keyName = "__MyGitSourceKey"
+    /// Tags on chains that restyle an incoming view (`content.padding(…)`,
+    /// `configuration.label.background(…)`): read for tokens, never as the
+    /// place a view is written.
+    public static let styleKeyName = "__MyGitStyleKey"
 
     /// Only the property index (for files that can't hold views).
     public static func symbols(source: String, path: String) -> [SymbolEntry] {
@@ -47,7 +51,10 @@ public enum SourceTagger {
     /// - Parameter stripModifiers: modifier names whose calls are removed
     ///   from view chains (`debugLayoutBounds`): debug overlays that would
     ///   clutter the inspected tree. Lines are kept, so tags still match.
-    public static func tag(source: String, path: String, stripModifiers: Set<String> = []) -> Result {
+    /// - Parameter probeTokens: wrap token arguments so the app reports
+    ///   what they evaluated to (see `TokenProbe`).
+    public static func tag(source: String, path: String, stripModifiers: Set<String> = [],
+                           probeTokens: Bool = true) -> Result {
         let tree = Parser.parse(source: source)
         let (symbols, probes) = SymbolIndexBuilder.collect(in: tree, path: path, probe: importsFoundation(tree))
         guard importsSwiftUI(tree) else {
@@ -56,17 +63,19 @@ public enum SourceTagger {
         }
 
         let collector = Collector(converter: SourceLocationConverter(fileName: path, tree: tree),
-                                  path: escaped(path), rawPath: path, stripModifiers: stripModifiers)
+                                  path: escaped(path), rawPath: path, stripModifiers: stripModifiers,
+                                  probeTokens: probeTokens)
         collector.walk(tree)
         if !stripModifiers.isEmpty {
             // Anywhere in the file, not only where tags go: a custom
             // container's closure (`{ amount.debugLayoutBounds(…) }`) counts too.
             StripFinder(names: stripModifiers, collector: collector).walk(tree)
         }
-        let tagCount = collector.insertions.filter { $0.length == 0 && $0.text.hasPrefix(".preference") }.count
+        let tagCount = collector.insertions.filter { $0.length == 0 && $0.text.contains(".preference(key: \(keyName)") }.count
         guard !collector.insertions.isEmpty || !probes.isEmpty else { return Result(output: source, tagCount: 0, symbols: symbols) }
 
-        var trailer = tagCount > 0 ? keyDeclaration : ""
+        var trailer = tagCount > 0 || collector.usesStyleTag ? keyDeclaration : ""
+        if collector.usesTokenProbe { trailer += TokenProbe.declaration }
         if !probes.isEmpty { trailer += BranchProbe.declaration(path: escaped(path)) }
         return Result(output: splice(source, collector.insertions + probes, trailer.isEmpty ? nil : trailer),
                       tagCount: tagCount, sourceMap: collector.sourceMap, symbols: symbols)
@@ -108,6 +117,8 @@ public enum SourceTagger {
     static let keyDeclaration = """
     fileprivate struct \(keyName): SwiftUI.PreferenceKey { static var defaultValue: String? { nil }; \
     static func reduce(value: inout String?, nextValue: () -> String?) {} } // MyGit UI Inspector source tags
+    fileprivate struct \(styleKeyName): SwiftUI.PreferenceKey { static var defaultValue: String? { nil }; \
+    static func reduce(value: inout String?, nextValue: () -> String?) {} } // MyGit UI Inspector style tags
 
     """
 
@@ -185,12 +196,20 @@ final class Collector: SyntaxVisitor {
     private let rawPath: String
     private(set) var insertions: [Insertion] = []
     private(set) var sourceMap: [String: SourceMapEntry] = [:]
+    /// Some tag's arguments are wrapped in `__mT` (see `TokenProbe`).
+    private(set) var usesTokenProbe = false
+    /// Some chain restyles an incoming view and got a style tag.
+    private(set) var usesStyleTag = false
 
     private let stripModifiers: Set<String>
     private var stripped: Set<Int> = []
 
-    init(converter: SourceLocationConverter, path: String, rawPath: String, stripModifiers: Set<String> = []) {
+    private let probeTokens: Bool
+
+    init(converter: SourceLocationConverter, path: String, rawPath: String, stripModifiers: Set<String> = [],
+         probeTokens: Bool = true) {
         self.stripModifiers = stripModifiers
+        self.probeTokens = probeTokens
         self.converter = converter
         self.path = path
         self.rawPath = rawPath
@@ -280,6 +299,17 @@ final class Collector: SyntaxVisitor {
     /// Ordinary code returning a view: tag what's returned (or the single
     /// implicit-return expression) and look inside it.
     private func plainBody(_ items: CodeBlockItemListSyntax) {
+        // Several statements, a view among them, and no `return` anywhere: only
+        // a result builder compiles that — one inherited from a protocol
+        // (`ButtonStyle.makeBody`, `ViewModifier.body(content:)`, …).
+        if items.count > 1, items.contains(where: { $0.expression != nil }) {
+            let finder = ReturnFinder(viewMode: .sourceAccurate)
+            finder.walk(items)
+            if finder.statements.isEmpty {
+                builderItems(items)
+                return
+            }
+        }
         withScope {
             // The function returns a view, so what it returns is one.
             if items.count == 1, let expr = items.first?.expression {
@@ -343,6 +373,20 @@ final class Collector: SyntaxVisitor {
         return out
     }
 
+    /// `case let .icon(image)` / `case .icon(let image)` in `switch trailing`
+    /// → [image: trailing]: the payload comes from the subject, which can
+    /// be traced where a bare `image` can't.
+    private static func caseBindings(_ label: SwitchCaseSyntax.Label, subject: ExprSyntax) -> [String: ExprSyntax] {
+        guard case let .case(caseLabel) = label else { return [:] }
+        var out: [String: ExprSyntax] = [:]
+        func walk(_ node: Syntax) {
+            if let id = node.as(IdentifierPatternSyntax.self) { out[id.identifier.text] = subject }
+            for child in node.children(viewMode: .sourceAccurate) { walk(child) }
+        }
+        for item in caseLabel.caseItems { walk(Syntax(item.pattern)) }
+        return out
+    }
+
     private func builderItems(_ items: CodeBlockItemListSyntax) {
         withScope { builderItemsInScope(items) }
     }
@@ -365,7 +409,9 @@ final class Collector: SyntaxVisitor {
             builderIf(ifExpr)
         } else if let switchExpr = expr.as(SwitchExprSyntax.self) {
             for element in switchExpr.cases {
-                if case let .switchCase(c) = element { builderItems(c.statements) }
+                if case let .switchCase(c) = element {
+                    withScope(Self.caseBindings(c.label, subject: switchExpr.subject)) { builderItemsInScope(c.statements) }
+                }
             }
         } else {
             // Every statement of a view builder has to be a view, so even
@@ -393,12 +439,15 @@ final class Collector: SyntaxVisitor {
         // `content.font(…)` in a ViewModifier, `modifier(…)` / `self.padding()`
         // in `extension View`: the same view, restyled. A tag there would
         // outrank the call site the user wrote, so only look inside.
-        if restylesIncomingView(expr) {
+        // Tagged anyway, with the style key: its padding, background, radius…
+        // are the style's tokens, but it isn't where the view is written.
+        let restyle = restylesIncomingView(expr)
+        guard restyle || Rules.isViewLike(expr) || (trusted && Rules.canCarryTag(expr)) else {
             descend(expr)
             return
         }
-        guard Rules.isViewLike(expr) || (trusted && Rules.canCarryTag(expr)) else {
-            descend(expr)
+        if restyle, !Rules.isPostfixChain(expr) || !expr.is(FunctionCallExprSyntax.self) {
+            descend(expr)       // `content` alone: nothing to record
             return
         }
         let start = converter.location(for: expr.positionAfterSkippingLeadingTrivia)
@@ -408,14 +457,26 @@ final class Collector: SyntaxVisitor {
         if wrap {
             insertions.append(Insertion(offset: expr.positionAfterSkippingLeadingTrivia.utf8Offset, text: "("))
         }
+        let tag = "\(path):\(start.line):\(start.column)"
+        var probed = 0
+        let probe: (ExprSyntax) -> Int? = { arg in
+            guard self.probeTokens, TokenProbe.probeable(arg) else { return nil }
+            probed += 1
+            self.insertions += TokenProbe.edits(for: arg, tag: tag, index: probed)
+            return probed
+        }
         if var entry = SourceMapBuilder.entry(for: expr, converter: converter, bindings: lookupBinding,
-                                              strip: stripModifiers) {
+                                              strip: stripModifiers, probe: probe) {
             entry.scope = currentScope()
             sourceMap["\(rawPath):\(start.line):\(start.column)"] = entry
         }
+        if probed > 0 { usesTokenProbe = true }
+        if restyle { usesStyleTag = true }
+        let value = probed > 0 ? "__mS(\"\(tag)\")" : "\"\(tag)\""
+        let key = restyle ? SourceTagger.styleKeyName : SourceTagger.keyName
         insertions.append(Insertion(
             offset: expr.endPositionBeforeTrailingTrivia.utf8Offset,
-            text: (wrap ? ")" : "") + ".preference(key: \(SourceTagger.keyName).self, value: \"\(path):\(start.line):\(start.column)\")"
+            text: (wrap ? ")" : "") + ".preference(key: \(key).self, value: \(value))"
         ))
         descend(expr)
     }
@@ -437,6 +498,9 @@ final class Collector: SyntaxVisitor {
                 return false
             }
             if let member = current.as(MemberAccessExprSyntax.self), let base = member.base {
+                // `configuration.label` / `.content` in a style's `makeBody`.
+                if base.as(DeclReferenceExprSyntax.self)?.baseName.text == "configuration",
+                   ["label", "content"].contains(member.declName.baseName.text) { return true }
                 current = base
                 continue
             }

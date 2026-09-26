@@ -18,6 +18,8 @@ struct InspectorDetailSection: Identifiable {
         var tokenValue: String?
         /// Where the token's names are in the source (for the compiler's index).
         var tokenRefs: [[InspectorRef]]?
+        /// The argument's number in the tag's runtime record, when probed.
+        var tokenProbe: Int?
         /// When the token is a local: what it was bound to.
         var tokenBinding: String?
         var id: String { key }
@@ -42,7 +44,9 @@ extension UIInspectorViewModel {
         ]
         if let full = node.fullType, full != node.className { identity.append(.init(key: "Full Type", value: full, monospaced: true)) }
         if let vc = node.viewController { identity.append(.init(key: "View Controller", value: vc)) }
-        if let text = chain.views.lazy.compactMap(\.text).first ?? node.text { identity.append(.init(key: "Text", value: text)) }
+        if let text = chain.views.lazy.compactMap(\.text).first ?? node.text ?? hostedText(id) {
+            identity.append(.init(key: "Text", value: text))
+        }
         let textColor = shownTextColor(id, views: chain.views)
         if let textColor { identity.append(.init(key: "Text Color", value: textColor, monospaced: true)) }
         if let a11y = node.accessibilityIdentifier { identity.append(.init(key: "Identifier", value: a11y, monospaced: true)) }
@@ -59,10 +63,10 @@ extension UIInspectorViewModel {
             .init(key: "X", value: Self.fmt(f.minX)), .init(key: "Y", value: Self.fmt(f.minY)),
             .init(key: "Width", value: Self.fmt(f.width) + sizing(chain.modifiers, axis: "Width"),
                   token: Self.frameToken(entry, axis: "Width"), tokenStack: ownStack, tokenValue: Self.fmt(f.width),
-                  tokenRefs: Self.frameRefs(entry, axis: "Width")),
+                  tokenRefs: Self.frameRefs(entry, axis: "Width"), tokenProbe: Self.frameProbe(entry, axis: "Width")),
             .init(key: "Height", value: Self.fmt(f.height) + sizing(chain.modifiers, axis: "Height"),
                   token: Self.frameToken(entry, axis: "Height"), tokenStack: ownStack, tokenValue: Self.fmt(f.height),
-                  tokenRefs: Self.frameRefs(entry, axis: "Height")),
+                  tokenRefs: Self.frameRefs(entry, axis: "Height"), tokenProbe: Self.frameProbe(entry, axis: "Height")),
         ]
         if node.kind == .uikit {
             layout.append(.init(key: "Clips", value: node.clipsToBounds ? "Yes" : "No"))
@@ -153,6 +157,19 @@ extension UIInspectorViewModel {
             current = parent
         }
         return (modifiers, views)
+    }
+
+    /// A hosted UIKit control's text (`TextField` → `UITextField.text`),
+    /// a few levels below a SwiftUI platform-view leaf.
+    func hostedText(_ id: String) -> String? {
+        var level = [id]
+        for _ in 0..<4 where !level.isEmpty {
+            for nodeID in level {
+                if let node = rawNode(nodeID), node.kind == .uikit, let text = node.text, !text.isEmpty { return text }
+            }
+            level = level.flatMap(rawChildren)
+        }
+        return nil
     }
 
     /// The color a Text was drawn in (`#595969FF`), from its resolved string
@@ -254,14 +271,22 @@ extension UIInspectorViewModel {
     }
 
     /// The first frame in a subtree that is the node's own (not inherited).
-    private func geometry(of id: String) -> CGRect? {
+    func geometry(of id: String) -> CGRect? {
         var current: String? = id
         for _ in 0..<40 {
             guard let c = current, let node = rawNode(c) else { return nil }
             if node.hasOwnFrame { return node.frame }
-            current = rawChildren(c).first
+            current = contentChild(c)
         }
         return nil
+    }
+
+    /// Down one level toward the view a node applies to (an overlay's
+    /// content, not the overlay); the first child where it isn't a modifier.
+    func contentChild(_ id: String) -> String? {
+        guard let node = rawNode(id) else { return nil }
+        let kids = rawChildren(id)
+        return Self.contentChild(of: node.className, isModifier: node.isModifier, kids) ?? kids.first
     }
 
     // MARK: - Padding & sizing
@@ -270,22 +295,21 @@ extension UIInspectorViewModel {
                                 stack: [InspectorSourceTag]) -> InspectorDetailSection? {
         let paddings = modifiers.filter { $0.shortName == "_PaddingLayout" }
         guard !paddings.isEmpty else { return nil }
-        // `.padding(…)` calls in source order = runtime paddings innermost first.
-        let sourcePaddings = entry?.mods.filter { $0.name == "padding" } ?? []
         var rows: [InspectorDetailSection.Row] = []
         for (index, p) in paddings.reversed().enumerated() {
             let prefix = paddings.count > 1 ? "#\(index + 1) " : ""
             let edges = p.props["edges"].map(Self.prettyValue) ?? "all"
-            let sourceIndex = paddings.count - 1 - index
-            let tokenArg = sourcePaddings.count == paddings.count
-                ? sourcePaddings[sourceIndex].args.first(where: \.token) : nil
+            // Each padding's own `.padding(…)` call — the view's chain or an outer one.
+            let source = paddingSource(p.id)
+            let tokenArg = source?.mod.args.first(where: \.token)
+            let stack = source?.stack ?? stack
             let token = tokenArg?.expr
             // The padding's inset on its first edge, to match the token's value.
             let inset = ["top", "leading", "bottom", "trailing"].compactMap { p.props["insets.\($0)"] }.first
             rows.append(.init(key: prefix + "Edges", value: edges, token: token, tokenStack: stack, tokenValue: inset,
-                              tokenRefs: tokenArg?.refs, tokenBinding: tokenArg?.binding))
+                              tokenRefs: tokenArg?.refs, tokenProbe: tokenArg?.probe, tokenBinding: tokenArg?.binding))
             // Measured: the padding's box vs its content's.
-            if let content = rawChildren(p.id).first.flatMap({ geometry(of: $0) }) {
+            if let content = contentChild(p.id).flatMap({ geometry(of: $0) }) {
                 let outer = p.frame
                 rows.append(.init(key: prefix + "Top", value: Self.fmt(content.minY - outer.minY)))
                 rows.append(.init(key: prefix + "Leading", value: Self.fmt(content.minX - outer.minX)))
@@ -294,6 +318,75 @@ extension UIInspectorViewModel {
             }
         }
         return .init(title: "Padding", rows: rows)
+    }
+
+    /// The `.padding(…)` call a runtime `_PaddingLayout` came from, and the
+    /// tags to trace its token from. The call belongs to the chain whose tag
+    /// is the first one above the padding (a tag ends every tagged chain);
+    /// the padded view's own tag can be a different chain (`field().padding(…)`
+    /// where `field()` returns a tagged `HStack`).
+    func paddingSource(_ paddingID: String) -> (mod: InspectorSourceMapEntry.Modifier, stack: [InspectorSourceTag])? {
+        guard let (tagID, stack) = chainTag(of: paddingID, owns: { Self.writtenModifiers($0).contains { $0.name == "padding" } }),
+              let entry = stack.first.flatMap({ sourceEntry(for: $0) }) else { return nil }
+        let written = Self.writtenModifiers(entry).filter { $0.name == "padding" }
+        guard !written.isEmpty else { return nil }
+        // That chain's paddings at run time, outermost first.
+        var chain: [String] = []
+        var current = contentChild(tagID)
+        for _ in 0..<60 {
+            guard let c = current, let node = rawNode(c), !Self.isTag(node.className),
+                  node.isModifier || Self.isWrapper(node.className) else { break }
+            if node.className == "_PaddingLayout" { chain.append(c) }
+            current = contentChild(c)
+        }
+        // Source order is innermost first.
+        if written.count == chain.count, let i = chain.firstIndex(of: paddingID) {
+            return (written[written.count - 1 - i], stack)
+        }
+        // Counts differ (a ViewModifier adds its own): the one call with these edges.
+        let edges = rawNode(paddingID)?.props["edges"].map(Self.edgeNames) ?? Self.allEdges
+        let matching = written.filter { Self.edges(of: $0) == edges }
+        return matching.count == 1 ? (matching[0], stack) : nil
+    }
+
+    /// A chain's modifiers in source order. One that starts with a modifier
+    /// call — implicit `self` in `extension View` (`overlay(…).frame(…)`) —
+    /// counts that call as its first.
+    /// `image.resizable()…`: a chain on a value, the value its only argument.
+    static func isValueRooted(_ entry: InspectorSourceMapEntry) -> Bool {
+        entry.args.count == 1 && entry.args[0].label == nil && entry.args[0].expr == entry.call
+    }
+
+    static func writtenModifiers(_ entry: InspectorSourceMapEntry) -> [InspectorSourceMapEntry.Modifier] {
+        let valueRooted = entry.args.count == 1 && entry.args[0].label == nil && entry.args[0].expr == entry.call
+        guard entry.call.first?.isLowercase == true, !valueRooted else { return entry.mods }
+        return [InspectorSourceMapEntry.Modifier(name: entry.call, args: entry.args)] + entry.mods
+    }
+
+    private static let allEdges: Set<String> = ["top", "leading", "bottom", "trailing"]
+
+    /// `[top, bottom]` (the agent's `Edge.Set`) → names.
+    private static func edgeNames(_ raw: String) -> Set<String> {
+        Set(raw.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+    }
+
+    /// The edges a `.padding(…)` call pads: `.vertical`, `[.top, .leading]`, or all.
+    private static func edges(of padding: InspectorSourceMapEntry.Modifier) -> Set<String> {
+        guard let first = padding.args.first, first.label == nil, first.expr.hasPrefix(".") || first.expr.hasPrefix("[") else {
+            return allEdges
+        }
+        var out = Set<String>()
+        for name in first.expr.components(separatedBy: CharacterSet(charactersIn: "[]., ")).filter({ !$0.isEmpty }) {
+            switch name {
+            case "vertical": out.formUnion(["top", "bottom"])
+            case "horizontal": out.formUnion(["leading", "trailing"])
+            case "all": out.formUnion(allEdges)
+            case "top", "leading", "bottom", "trailing": out.insert(name)
+            default: return allEdges    // `.padding(tokens.x)`: a length, not edges
+            }
+        }
+        return out.isEmpty ? allEdges : out
     }
 
     /// The token behind a `.frame(…)` size on this axis, e.g.
@@ -306,6 +399,14 @@ extension UIInspectorViewModel {
         return found.map { "\($0.label!): \($0.expr)" }.joined(separator: ", ")
     }
 
+    /// The runtime record of the axis's `.frame` argument, when there's one.
+    static func frameProbe(_ entry: InspectorSourceMapEntry?, axis: String) -> Int? {
+        let labels = [axis.lowercased(), "min\(axis)", "ideal\(axis)", "max\(axis)"]
+        let found = entry?.mods.filter { $0.name == "frame" }.flatMap(\.args)
+            .filter { $0.token && labels.contains($0.label ?? "") } ?? []
+        return found.count == 1 ? found[0].probe : nil
+    }
+
     /// The `.frame` arguments on this axis, each an alternative.
     static func frameRefs(_ entry: InspectorSourceMapEntry?, axis: String) -> [[InspectorRef]]? {
         let labels = [axis.lowercased(), "min\(axis)", "ideal\(axis)", "max\(axis)"]
@@ -315,40 +416,37 @@ extension UIInspectorViewModel {
         return refs.isEmpty ? nil : refs
     }
 
-    /// Visual modifiers and SwiftUI views whose token arguments are worth
-    /// naming; behavior modifiers (`onChange`, `task`) are left out.
-    private static let tokenModifiers: Set<String> = [
-        "background", "foregroundColor", "foregroundStyle", "fill", "stroke", "strokeBorder", "font",
-        "cornerRadius", "clipShape", "shadow", "opacity", "tint", "border", "overlay", "offset",
-        "lineSpacing", "kerning", "tracking", "fontWeight", "accentColor", "listRowBackground",
-        "scaleEffect", "blur", "tymeXTextStyle",
+    /// Modifiers whose arguments are behavior (closures, bindings to act
+    /// on), not what the view looks like or says; every other argument
+    /// written in the source is listed with what it evaluated to.
+    private static let behaviorModifiers: Set<String> = [
+        "onChange", "onAppear", "onDisappear", "task", "onTapGesture", "onLongPressGesture", "onReceive",
+        "onSubmit", "gesture", "simultaneousGesture", "highPriorityGesture", "sheet", "fullScreenCover",
+        "alert", "confirmationDialog", "popover", "navigationDestination", "onPreferenceChange",
+        "animation", "transaction", "id", "tag", "focused", "preference",
     ]
     private static let textColorModifiers: Set<String> = ["foregroundColor", "foregroundStyle"]
-    private static let tokenCalls: Set<String> = [
-        "Text", "Image", "RoundedRectangle", "Rectangle", "Capsule", "Circle", "Spacer", "Divider", "Color",
-        "Label", "LinearGradient", "RadialGradient",
-    ]
 
     /// Every token the tagged expression reads that isn't shown elsewhere.
     static func tokensSection(_ entry: InspectorSourceMapEntry?, stack: [InspectorSourceTag],
                               text: String? = nil, textColor: String? = nil) -> InspectorDetailSection? {
         guard let entry else { return nil }
         var rows: [InspectorDetailSection.Row] = []
-        if tokenCalls.contains(entry.call) {
-            for arg in entry.args where arg.token {
-                rows.append(.init(key: entry.call + (arg.label.map { "(\($0):)" } ?? "()"), value: "",
-                                  monospaced: true, token: arg.expr, tokenStack: stack,
-                                  tokenValue: entry.call == "Text" ? text : nil, tokenRefs: arg.refs,
-                                  tokenBinding: arg.binding))
-            }
+        // A chain on a value (`image.resizable()…`) has the value as its only argument.
+        let valueRooted = entry.args.count == 1 && entry.args[0].label == nil && entry.args[0].expr == entry.call
+        for arg in entry.args where arg.token {
+            rows.append(.init(key: valueRooted ? arg.expr : entry.call + (arg.label.map { "(\($0):)" } ?? "()"), value: "",
+                              monospaced: true, token: arg.expr, tokenStack: stack,
+                              tokenValue: entry.call == "Text" ? text : nil, tokenRefs: arg.refs,
+                              tokenProbe: arg.probe, tokenBinding: arg.binding))
         }
-        for mod in entry.mods where tokenModifiers.contains(mod.name) || mod.name.hasPrefix("tymeX") {
+        for mod in entry.mods where !behaviorModifiers.contains(mod.name) {
             for arg in mod.args where arg.token {
                 // A Text's color says which color token painted it.
                 let shown = textColorModifiers.contains(mod.name) ? textColor : nil
                 rows.append(.init(key: "." + mod.name + (arg.label.map { "(\($0):)" } ?? ""), value: "",
                                   monospaced: true, token: arg.expr, tokenStack: stack, tokenValue: shown,
-                                  tokenRefs: arg.refs, tokenBinding: arg.binding))
+                                  tokenRefs: arg.refs, tokenProbe: arg.probe, tokenBinding: arg.binding))
             }
         }
         return rows.isEmpty ? nil : .init(title: "Tokens", rows: rows)
@@ -426,13 +524,31 @@ struct InspectorSourceTag: Hashable, Identifiable {
     let path: String   // repo-relative
     let line: Int
     let column: Int
+    /// What this view instance's probed arguments evaluated to, by the
+    /// map's `Argument.probe` (Run with Inspector's `__mT`).
+    var traces: [Int: InspectorTokenTrace] = [:]
 
     var id: String { "\(path):\(line):\(column)" }
     var fileName: String { (path as NSString).lastPathComponent }
     var label: String { "\(fileName):\(line)" }
 
-    /// "Sources/A/HomeView.swift:132:21" (the path itself may hold colons).
-    init?(_ value: String) {
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+
+    /// "Sources/A/HomeView.swift:132:21" (the path itself may hold colons),
+    /// then optionally U+001F and the arguments' runtime record as JSON:
+    /// `{"1": {"v": "#595969FF", "b": ["Tokens.swift:92"]}}`.
+    init?(_ raw: String) {
+        let pieces = raw.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false)
+        let value = String(pieces[0])
+        if pieces.count == 2, let data = pieces[1].data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] {
+            for (key, record) in json {
+                guard let index = Int(key) else { continue }
+                traces[index] = InspectorTokenTrace(value: record["v"] as? String ?? "",
+                                                    branches: record["b"] as? [String] ?? [])
+            }
+        }
         let parts = value.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count >= 3, let line = Int(parts[parts.count - 2]), let column = Int(parts[parts.count - 1]) else {
             return nil
@@ -445,6 +561,35 @@ struct InspectorSourceTag: Hashable, Identifiable {
 
 extension UIInspectorViewModel {
     static let sourceTagClass = "_PreferenceWritingModifier<__MyGitSourceKey>"
+    /// On chains that restyle an incoming view (a style's `makeBody`, a
+    /// `ViewModifier`): tokens only, never where a view is written.
+    static let styleTagClass = "_PreferenceWritingModifier<__MyGitStyleKey>"
+
+    static func isTag(_ className: String) -> Bool { className == sourceTagClass || className == styleTagClass }
+
+    /// The tag of the chain a node belongs to — up through modifiers and
+    /// wrappers to the first tag of either kind — and the tags to trace its
+    /// arguments with (that tag, then the source tags around it).
+    ///
+    /// `owns` says whether a tag's chain wrote what the node is (a padding
+    /// needs a `.padding`); a tag that didn't is passed — `x.clipShape(s)
+    /// .avatarBadge()` puts the badge helper's tag between the clip and its own.
+    func chainTag(of id: String, owns: (InspectorSourceMapEntry) -> Bool = { _ in true })
+        -> (id: String, stack: [InspectorSourceTag])? {
+        var cursor: String? = id
+        for _ in 0..<60 {
+            guard let c = cursor, let node = rawNode(c) else { return nil }
+            if Self.isTag(node.className) {
+                guard let value = node.props["value"], let tag = InspectorSourceTag(value) else { return nil }
+                let stack = node.className == Self.styleTagClass ? [tag] + sourceStack(for: c) : sourceStack(for: c)
+                if let entry = sourceEntry(for: tag), owns(entry) { return (c, stack) }
+            } else if c != id, !node.isModifier, !Self.isWrapper(node.className) {
+                return nil
+            }
+            cursor = rawParent(c)
+        }
+        return nil
+    }
 
     /// The source locations above a node, nearest first — like a call
     /// stack: the `Text(…)` line, then the container it sits in, then the
@@ -488,7 +633,7 @@ extension UIInspectorViewModel {
         var best: (tag: InspectorSourceTag, nodeID: String, area: CGFloat)?
         for id in allTagNodeIDs() {
             guard let node = rawNode(id), let value = node.props["value"], let tag = InspectorSourceTag(value),
-                  let child = rawChildren(id).first, let box = tagGeometry(child),
+                  let child = contentChild(id), let box = tagGeometry(child),
                   box.insetBy(dx: -1, dy: -1).contains(frame) else { continue }
             let area = box.width * box.height
             if best == nil || area < best!.area { best = (tag, id, area) }
@@ -501,7 +646,7 @@ extension UIInspectorViewModel {
         for _ in 0..<40 {
             guard let c = current, let node = rawNode(c) else { return nil }
             if node.hasOwnFrame { return node.frame }
-            current = rawChildren(c).first
+            current = contentChild(c)
         }
         return nil
     }

@@ -225,7 +225,11 @@ enum HierarchyCapture {
             }
             if let value = props[.value] {
                 if !wrapperPrefixes.contains(where: { readable.hasPrefix($0) }) {
-                    let flat = DebugData.flatten(value)
+                    var flat = DebugData.flatten(value)
+                    // A source tag carries its arguments' runtime record: keep it whole.
+                    if readable == sourceTagType || readable == styleTagType, let tag = DebugData.firstString(in: value) {
+                        flat["value"] = String(tag.prefix(16_000))
+                    }
                     if !flat.isEmpty { node["props"] = flat }
                 }
                 if readable == "Text", let text = DebugData.firstString(in: value) {
@@ -323,6 +327,11 @@ enum HierarchyCapture {
     }
 
     /// Wrappers whose value is the whole subtree below them — noise, and big.
+    /// The tagger's `.preference(key: __MyGitSourceKey.self, value: …)`.
+    static let sourceTagType = "_PreferenceWritingModifier<__MyGitSourceKey>"
+    /// Its sibling on chains that restyle an incoming view (`content.padding(…)`).
+    static let styleTagType = "_PreferenceWritingModifier<__MyGitStyleKey>"
+
     static let wrapperPrefixes = [
         "ModifiedContent", "_ViewModifier_Content", "TupleView", "_ConditionalContent", "Optional<",
         "AnyView", "StaticIf", "_UnaryViewAdaptor", "_ViewList_View", "Group<", "ForEach",
@@ -350,7 +359,8 @@ enum HierarchyCapture {
                 case let d as [String: Any]: text = d.isEmpty ? "{}" : d.keys.sorted().joined(separator: "|")
                 default: text = "\(v)"
                 }
-                out[p.isEmpty ? "value" : p.joined(separator: ".")] = String(text.prefix(160))
+                out[p.isEmpty ? "value" : p.joined(separator: ".")] =
+                    String(text.prefix(readableType == sourceTagType || readableType == styleTagType ? 16_000 : 160))
             }
             if depth < 7 {
                 for sub in (attribute["subattributes"] as? [[String: Any]] ?? []).reversed() {

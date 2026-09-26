@@ -7,6 +7,7 @@ import SourceTaggerCore
 
 let usage = """
 usage: mygit-source-tagger --source DIR --dest DIR [--manifest FILE] [--map DIR] [--jobs N] [--plain REL]...
+                           [--unprobed REL]...
                            [--strip-modifier NAME]...
        mygit-source-tagger --print FILE [--path REL]
 """
@@ -15,6 +16,7 @@ var args = Array(CommandLine.arguments.dropFirst())
 var source: String?, dest: String?, manifest: String?, printFile: String?, recordedPath: String?, mapDir: String?
 var jobs = ProcessInfo.processInfo.activeProcessorCount
 var plain = Set<String>()
+var unprobed = Set<String>()
 var strip = Set<String>()
 
 func value(_ flag: String) -> String {
@@ -33,6 +35,7 @@ while !args.isEmpty {
     case "--manifest": manifest = value(flag)
     case "--jobs": jobs = max(1, Int(value(flag)) ?? jobs)
     case "--plain": plain.insert(value(flag))
+    case "--unprobed": unprobed.insert(value(flag))
     case "--map": mapDir = value(flag)
     case "--strip-modifier": strip.insert(value(flag))
     case "--print": printFile = value(flag)
@@ -70,6 +73,7 @@ let options = Mirror.Options(
 )
 var mirrorOptions = options
 mirrorOptions.stripModifiers = strip
+mirrorOptions.unprobed = unprobed
 do {
     let stats = try Mirror(options: mirrorOptions).run()
     print("▶ source tags: \(stats)")

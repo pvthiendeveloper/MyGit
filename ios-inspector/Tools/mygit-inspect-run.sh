@@ -114,8 +114,10 @@ build() {
 }
 
 # A tag the compiler rejects (a custom API the tagger misread) shouldn't
-# block the run: mirror those files untagged and build again.
+# block the run: first build those files without token probes (an argument
+# that won't pass through `__mT`), then, if they still fail, untagged.
 ATTEMPT=1
+UNPROBED=" "
 until build; do
   if [ "$PHYSICAL" = 1 ] && [ ${#TEAM_FLAGS[@]} -eq 0 ] && grep -q 'requires a development team' "$LOG"; then
     TEAM="$(pick_team)"
@@ -130,14 +132,21 @@ until build; do
     exit 1
   fi
   FAILED=$(grep -oE "^$SRC/[^:]+\.swift:[0-9]+:[0-9]+: error:" "$LOG" | sed -E "s#^$SRC/##; s#:[0-9]+:[0-9]+: error:##" | sort -u || true)
-  if [ -z "$FAILED" ] || [ "$ATTEMPT" -ge 3 ] || ! grep -q '__MyGitSourceKey' $(printf "$SRC/%s " $FAILED) 2>/dev/null; then
+  if [ -z "$FAILED" ] || [ "$ATTEMPT" -ge 5 ] || ! grep -q '__MyGitSourceKey' $(printf "$SRC/%s " $FAILED) 2>/dev/null; then
     echo "✘ build failed — full log: $LOG" >&2
     exit 1
   fi
-  echo "▶ building without source tags in:"
-  PLAIN=()
-  while IFS= read -r f; do echo "    $f"; PLAIN+=(--plain "$f"); done <<< "$FAILED"
-  tag "${PLAIN[@]}"
+  FLAGS=()
+  while IFS= read -r f; do
+    if grep -q '__mT(' "$SRC/$f" 2>/dev/null && [ "${UNPROBED#* $f }" = "$UNPROBED" ]; then
+      echo "▶ building without token probes: $f"
+      FLAGS+=(--unprobed "$f"); UNPROBED="$UNPROBED$f "
+    else
+      echo "▶ building without source tags: $f"
+      FLAGS+=(--plain "$f")
+    fi
+  done <<< "$FAILED"
+  tag "${FLAGS[@]}"
   ATTEMPT=$((ATTEMPT + 1))
 done
 

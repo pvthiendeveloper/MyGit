@@ -178,6 +178,10 @@ struct InspectorSourceMapEntry: Decodable {
         var refs: [[InspectorRef]]?
         /// For a local (`uiImage`): what it was bound to.
         var binding: String?
+        /// Its number in the tag's runtime record (see `InspectorSourceTag.traces`).
+        var probe: Int?
+        /// A `cornerRadius:` written inside it, as its own argument (at most one).
+        var radius: [Argument]?
     }
 
     /// The function / type the view is written in.
@@ -226,6 +230,24 @@ struct InspectorSymbol: Decodable {
     var declLine: Int?
     /// This `return` reports at runtime when it runs (see `snapshot.branches`).
     var probed: Bool?
+    /// A stored property without a value: see its initializer arguments.
+    var stored: Bool?
+    /// An initializer argument for stored property `name` of type `initOf`.
+    var initOf: String?
+    /// Line the initializer call starts on (what a `return` probe reports).
+    var callLine: Int?
+
+    /// Whether a runtime trace (`"path:line"` of the `return`s that ran) went through it.
+    func ran(in branches: Set<String>) -> Bool {
+        branches.contains("\(path):\(line)") || callLine.map { branches.contains("\(path):\($0)") } == true
+    }
+}
+
+/// What one probed argument of one view instance evaluated to, and the
+/// probed `return`s (`"path:line"`) it passed through on the way.
+struct InspectorTokenTrace {
+    let value: String
+    let branches: [String]
 }
 
 /// A token expression resolved as far as the code allows: parameters
@@ -249,6 +271,9 @@ struct InspectorTokenResolution {
         case screenValue
         /// The app reported which `return` ran (Run with Inspector).
         case runtimeBranch
+        /// This view's own evaluation of the argument passed through the
+        /// chain's `return` (Run with Inspector's token probes).
+        case traced
         /// A language model's reading of the code — a suggestion, not proof.
         case ai(confidence: Double, reason: String)
     }

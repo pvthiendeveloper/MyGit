@@ -22,6 +22,9 @@ public struct Mirror {
         public var jobs: Int
         /// Repo-relative paths to mirror untagged (e.g. after a build error).
         public var plain: Set<String>
+        /// Repo-relative paths to tag without token probes (their
+        /// arguments didn't compile wrapped in `__mT`).
+        public var unprobed: Set<String> = []
         /// Where per-file source maps go (`<dir>/<rel>.json`); nil = none.
         public var mapDirectory: URL?
         /// Modifier calls removed from view chains (`debugLayoutBounds`).
@@ -48,7 +51,7 @@ public struct Mirror {
     }
 
     /// Bumped whenever tagging output changes, to invalidate old manifests.
-    static let toolVersion = 18
+    static let toolVersion = 28
 
     /// Directories never mirrored.
     static let skippedDirectories: Set<String> = [".git", ".mygit", ".build", "DerivedData", "node_modules", "xcuserdata"]
@@ -60,12 +63,16 @@ public struct Mirror {
         var mtime: Double
         var hash: UInt64
         var outHash: UInt64
+        /// The mirror copy's size and mtime when written: a copy edited in
+        /// place (say, from an Xcode build error) is rewritten.
+        var outSize: Int64? = nil
+        var outMtime: Double? = nil
         var mode: Mode
         /// The file's simple-valued properties (merged into `_symbols.json`).
         var symbols: [SymbolEntry]?
     }
 
-    private enum Mode: String, Codable { case tagged, copied, plain }
+    private enum Mode: String, Codable { case tagged, unprobed, copied, plain }
 
     private struct Manifest: Codable {
         var version: Int
@@ -74,6 +81,8 @@ public struct Mirror {
         var entries: [String: Entry]
         /// Files forced untagged; cleared for a file once its source changes.
         var plain: Set<String>
+        /// Files tagged without token probes; cleared the same way.
+        var unprobed: Set<String>? = nil
     }
 
     let options: Options
@@ -84,6 +93,7 @@ public struct Mirror {
         let started = Date()
         var manifest = loadManifest()
         manifest.plain.formUnion(options.plain)
+        manifest.unprobed = (manifest.unprobed ?? []).union(options.unprobed)
 
         let files = swiftFiles()
         var stats = Stats()
@@ -93,6 +103,7 @@ public struct Mirror {
         defer { results.deallocate() }
         let previous = manifest.entries
         let plainSet = manifest.plain
+        let unprobedSet = manifest.unprobed ?? []
 
         // `jobs` workers pull the next file from a shared counter, so a few
         // huge files don't leave the other cores idle.
@@ -100,7 +111,8 @@ public struct Mirror {
         DispatchQueue.concurrentPerform(iterations: max(1, min(options.jobs, files.count))) { _ in
             while case let i = next.increment(), i < files.count {
                 let rel = files[i]
-                let outcome = process(rel, previous: previous[rel], forcePlain: plainSet.contains(rel))
+                let outcome = process(rel, previous: previous[rel], forcePlain: plainSet.contains(rel),
+                                      unprobed: unprobedSet.contains(rel))
                 (results.baseAddress! + i).initialize(to: (rel, outcome.entry, outcome))
             }
         }
@@ -118,7 +130,7 @@ public struct Mirror {
             if outcome.wrote { stats.written += 1 }
             stats.tags += outcome.tags
             // A changed file gets another chance at tagging.
-            if outcome.sourceChanged { manifest.plain.remove(rel) }
+            if outcome.sourceChanged { manifest.plain.remove(rel); manifest.unprobed?.remove(rel) }
         }
         results.baseAddress!.deinitialize(count: files.count)
 
@@ -131,6 +143,7 @@ public struct Mirror {
         }
         manifest.entries = entries
         manifest.plain = manifest.plain.intersection(present)
+        manifest.unprobed = manifest.unprobed?.intersection(present)
         saveManifest(manifest)
         writeSymbolIndex(entries)
         stats.seconds = Date().timeIntervalSince(started)
@@ -148,15 +161,17 @@ public struct Mirror {
         var sourceChanged = false
     }
 
-    private func process(_ rel: String, previous: Entry?, forcePlain: Bool) -> Outcome {
+    private func process(_ rel: String, previous: Entry?, forcePlain: Bool, unprobed: Bool) -> Outcome {
         let src = options.source.appendingPathComponent(rel)
         let dst = options.dest.appendingPathComponent(rel)
         guard let meta = Self.stat(src.path) else { return Outcome(kind: .failed("unreadable")) }
-        let wantMode: Mode = forcePlain ? .plain : (isVendor(rel) ? .copied : .tagged)
-        let destExists = FileManager.default.fileExists(atPath: dst.path)
+        let wantMode: Mode = forcePlain ? .plain : isVendor(rel) ? .copied : unprobed ? .unprobed : .tagged
+        let destMeta = Self.stat(dst.path)
+        let destExists = destMeta != nil
+        let destUntouched = destMeta.map { $0.size == previous?.outSize && $0.mtime == previous?.outMtime } ?? false
 
         // Fast path: same size and mtime as last time.
-        if let previous, destExists, previous.size == meta.size, previous.mtime == meta.mtime,
+        if let previous, destUntouched, previous.size == meta.size, previous.mtime == meta.mtime,
            previous.mode == wantMode || (wantMode == .tagged && previous.mode == .copied) {
             return Outcome(kind: .unchanged, entry: previous)
         }
@@ -164,7 +179,7 @@ public struct Mirror {
             return Outcome(kind: .failed("unreadable"))
         }
         let hash = Self.fnv1a(data)
-        if let previous, destExists, previous.hash == hash,
+        if let previous, destUntouched, previous.hash == hash,
            previous.mode == wantMode || (wantMode == .tagged && previous.mode == .copied) {
             var entry = previous
             entry.size = meta.size
@@ -177,12 +192,13 @@ public struct Mirror {
         var mode: Mode = wantMode
         var tags = 0
         var symbols: [SymbolEntry]?
-        if wantMode == .tagged {
+        if wantMode == .tagged || wantMode == .unprobed {
             let worth = data.withUnsafeBytes { raw in
                 SourceTagger.mightContainViews(raw.bindMemory(to: UInt8.self))
             }
             if worth, let text = String(data: data, encoding: .utf8) {
-                let result = SourceTagger.tag(source: text, path: rel, stripModifiers: options.stripModifiers)
+                let result = SourceTagger.tag(source: text, path: rel, stripModifiers: options.stripModifiers,
+                                              probeTokens: wantMode == .tagged)
                 symbols = result.symbols
                 tags = result.tagCount
                 // Tags, or only stripped modifiers: either way the rewrite counts.
@@ -220,9 +236,11 @@ public struct Mirror {
                 return Outcome(kind: .failed("write failed: \(error.localizedDescription)"))
             }
         }
-        let entry = Entry(size: meta.size, mtime: meta.mtime, hash: hash, outHash: outHash, mode: mode,
+        let written = Self.stat(dst.path)
+        let entry = Entry(size: meta.size, mtime: meta.mtime, hash: hash, outHash: outHash,
+                          outSize: written?.size, outMtime: written?.mtime, mode: mode,
                           symbols: symbols?.isEmpty == false ? symbols : nil)
-        return Outcome(kind: mode == .tagged ? .tagged : .copied, entry: entry, wrote: wrote, tags: tags,
+        return Outcome(kind: mode == .tagged || mode == .unprobed ? .tagged : .copied, entry: entry, wrote: wrote, tags: tags,
                        sourceChanged: previous?.hash != hash)
     }
 

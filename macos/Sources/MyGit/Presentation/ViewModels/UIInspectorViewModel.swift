@@ -55,6 +55,31 @@ final class UIInspectorViewModel: ObservableObject {
     /// Fold SwiftUI modifiers (`_PaddingLayout`, `AccessibilityAttachmentModifier`…)
     /// into their content, so the outline reads like the code.
     @Published var hideModifiers: Bool { didSet { defaults.set(hideModifiers, forKey: Keys.hideModifiers); rebuildTree() } }
+    /// Only the views written in the source (one row per tagged view, named
+    /// as written), what shows text, and public UIKit views — SwiftUI's
+    /// plumbing and UIKit controls' private parts fold away.
+    @Published var sourceViewsOnly: Bool { didSet { defaults.set(sourceViewsOnly, forKey: Keys.sourceOnly); rebuildTree() } }
+    /// Measure mode: padding strips, stack gaps and rounded corners can be
+    /// hovered and picked in the preview, like views.
+    @Published var measureMode: Bool {
+        didSet {
+            defaults.set(measureMode, forKey: Keys.measure)
+            measures = measureMode ? collectMeasures() : []
+            if !measureMode { hoveredMeasureID = nil; selectedMeasure = nil }
+        }
+    }
+    @Published private(set) var measures: [InspectorMeasure] = []
+    @Published var hoveredMeasureID: String? { didSet { hoveredMeasure.map(loadTokenName) } }
+    /// The measure last clicked; its view is `selectedID`.
+    @Published var selectedMeasure: InspectorMeasure? { didSet { selectedMeasure.map(loadTokenName) } }
+    /// Measure id → the design token behind it ("" = none found), for the
+    /// preview's pill. Filled on first hover/pick.
+    @Published var measureTokenNames: [String: String] = [:]
+    var measureTokenLoads = Set<String>()
+    /// `MYGIT_AUDIT_MEASURES`: screens already audited.
+    var auditedScreens = Set<Int>()
+    var lastAuditSignature: Int?
+    var hoveredMeasure: InspectorMeasure? { hoveredMeasureID.flatMap { id in measures.first { $0.id == id } } }
     @Published var showWireframes: Bool { didSet { defaults.set(showWireframes, forKey: Keys.wireframes) } }
     /// Fold runs of single-child nodes into one `A › B › C` row.
     @Published var compactChains: Bool { didSet { defaults.set(compactChains, forKey: Keys.compact); rebuildRows() } }
@@ -96,6 +121,11 @@ final class UIInspectorViewModel: ObservableObject {
     }
 
     /// The same index grouped by file.
+    /// Properties named `name` in the repo's property index.
+    func symbols(named name: String, near tag: InspectorSourceTag) -> [InspectorSymbol] {
+        loadSymbolIndex(near: tag)?.index[name] ?? []
+    }
+
     func symbolsByFile(near tag: InspectorSourceTag) -> [String: [InspectorSymbol]] {
         loadSymbolIndex(near: tag)?.byFile ?? [:]
     }
@@ -158,6 +188,8 @@ final class UIInspectorViewModel: ObservableObject {
         static let wireframes = "MyGit.inspector.wireframes"
         static let highlight = "MyGit.inspector.highlightOnDevice"
         static let compact = "MyGit.inspector.compactChains"
+        static let sourceOnly = "MyGit.inspector.sourceViewsOnly"
+        static let measure = "MyGit.inspector.measureMode"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -166,6 +198,8 @@ final class UIInspectorViewModel: ObservableObject {
         showWireframes = defaults.object(forKey: Keys.wireframes) as? Bool ?? true
         highlightOnDevice = defaults.object(forKey: Keys.highlight) as? Bool ?? true
         compactChains = defaults.object(forKey: Keys.compact) as? Bool ?? true
+        sourceViewsOnly = defaults.object(forKey: Keys.sourceOnly) as? Bool ?? true
+        measureMode = defaults.object(forKey: Keys.measure) as? Bool ?? false
     }
 
     // MARK: - Discovery & connection
@@ -199,6 +233,8 @@ final class UIInspectorViewModel: ObservableObject {
         self.connection = connection
         connected = service
         refresh()
+        // The audit needs captures to keep coming (see `auditMeasuresIfRequested`).
+        if ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"] != nil { autoRefresh = true }
     }
 
     func disconnect() {
@@ -241,6 +277,7 @@ final class UIInspectorViewModel: ObservableObject {
             rebuildTree()
         }
         if let selectedID, nodes[selectedID] == nil { self.selectedID = nil }
+        auditMeasuresIfRequested()
     }
 
     private func updateAutoRefresh() {
@@ -284,7 +321,9 @@ final class UIInspectorViewModel: ObservableObject {
     private func rebuildTree() {
         nodes = [:]; childrenOf = [:]; parentOf = [:]; rootIDs = []; order = []
         rawNodes = [:]; rawParentOf = [:]; rawChildrenOf = [:]; tagNodeIDs = []
+        sourceNames = [:]
         if let root = currentWindow?.root {
+            if sourceViewsOnly { markSourceViews(root) }
             rootIDs = visible(root).map { add($0, parent: nil) }
             // Iterative: trees run a few hundred levels deep.
             var stack = [root]
@@ -299,20 +338,101 @@ final class UIInspectorViewModel: ObservableObject {
             }
         }
         rebuildRows()
+        if measureMode {
+            measures = collectMeasures()
+            // Keep a picked measure across live captures (same node, same edge).
+            if let picked = selectedMeasure { selectedMeasure = measures.first { $0.id == picked.id } ?? picked }
+        }
     }
 
-    /// With `hideModifiers`, a modifier node is replaced by its children.
+    /// Whether the outline shows this node (it can be selected / revealed).
+    func isShown(_ id: String) -> Bool { nodes[id] != nil }
+
+    /// With `hideModifiers`, a modifier node is replaced by its children;
+    /// with `sourceViewsOnly`, every node that isn't a source view is.
     private func visible(_ node: InspectorNode) -> [InspectorNode] {
+        if sourceViewsOnly {
+            return isSourceView(node) ? [node] : node.children.flatMap(visible)
+        }
         guard hideModifiers, node.kind == .swiftui, node.isModifier else { return [node] }
         return node.children.flatMap(visible)
     }
+
+    /// Source Views mode: tagged view → the name it's written with (`TextField`).
+    private var sourceNames: [String: String] = [:]
+
+    /// The view each tag stands for: below the tag, past modifiers and
+    /// wrappers, the first real view (nested tags — a call site and the
+    /// body it expands to — land on the same one; the innermost name wins).
+    private func markSourceViews(_ root: InspectorNode) {
+        var stack = [root]
+        while let node = stack.popLast() {
+            stack += node.children
+            guard node.className == Self.sourceTagClass, let value = node.props["value"],
+                  let tag = InspectorSourceTag(value) else { continue }
+            var current = node
+            while let next = Self.content(of: current) { current = next }
+            // A node several views branch off stands for them — a custom `Layout`
+            // has no node of its own, its subviews hang off the tag.
+            guard current.children.count > 1 || (!current.isModifier && current.className != Self.sourceTagClass) else { continue }
+            let name = sourceEntry(for: tag)?.call
+            if sourceNames[current.id] == nil || name != nil { sourceNames[current.id] = name ?? current.shortName }
+        }
+    }
+
+    /// The view a modifier / wrapper / tag applies to, or nil where the
+    /// node is itself the view (or several views branch off it).
+    private static func content(of node: InspectorNode) -> InspectorNode? {
+        guard node.isModifier || node.className == sourceTagClass || isWrapper(node.className) else { return nil }
+        return contentChild(of: node.className, isModifier: node.isModifier, node.children)
+    }
+
+    /// `.overlay(X)` / `.background(X)` hold two subtrees — X first, the
+    /// content last (checked on live trees); anything else wraps one child.
+    static func contentChild<T>(of className: String, isModifier: Bool, _ children: [T]) -> T? {
+        if isModifier, decoratingModifiers.contains(where: { className.hasPrefix($0) }) { return children.last }
+        return children.count == 1 ? children[0] : nil
+    }
+
+    private static let decoratingModifiers = [
+        "_OverlayModifier", "_BackgroundModifier", "_OverlayShapeModifier", "_BackgroundShapeModifier",
+        "_OverlayStyleModifier", "_BackgroundStyleModifier",
+    ]
+
+    private func isSourceView(_ node: InspectorNode) -> Bool {
+        switch node.kind {
+        case .swiftui:
+            if sourceNames[node.id] != nil { return true }
+            // Untagged content: what a view says (`Text` inside a `Button`).
+            return !node.isModifier && node.text?.isEmpty == false
+        case .uikit:
+            // Windows, hosting views and public UIKit views; SDK internals
+            // (`_UI…`) and the containers SwiftUI/UIKit wrap them in fold.
+            if node.className.hasPrefix("_UIHostingView") { return true }
+            return !node.className.hasPrefix("_") && !Self.uikitPlumbing.contains { node.className.hasPrefix($0) }
+        }
+    }
+
+    private static let uikitPlumbing = [
+        "UIKitPlatformViewHost", "PlatformContainer", "PlatformGroupContainer", "UITransitionView",
+        "UIViewControllerWrapperView", "UILayoutContainerView", "UINavigationTransitionView", "UIDropShadowView",
+        "HostingView", "UIKitNavigationController", "UIKitPlatformViewHost",
+    ]
+
+    /// System controls draw their own insides (selection, cursor, track…).
+    private static let uikitLeafControls: Set<String> = [
+        "UITextField", "UITextView", "UIButton", "UISwitch", "UISlider", "UILabel", "UIImageView",
+        "UIDatePicker", "UISegmentedControl", "UIStepper", "UIProgressView", "UIActivityIndicatorView",
+        "UISearchTextField", "UIPickerView",
+    ]
 
     @discardableResult
     private func add(_ node: InspectorNode, parent: String?) -> String {
         nodes[node.id] = node
         order.append(node.id)
         if let parent { parentOf[node.id] = parent }
-        let children = node.children.flatMap(visible)
+        let leaf = sourceViewsOnly && node.kind == .uikit && Self.uikitLeafControls.contains(node.className)
+        let children = leaf ? [] : node.children.flatMap(visible)
         if !children.isEmpty { childrenOf[node.id] = children.map { add($0, parent: node.id) } }
         return node.id
     }
@@ -351,7 +471,7 @@ final class UIInspectorViewModel: ObservableObject {
             // Filtering shows every match, whatever was collapsed.
             let expanded = matches != nil || !collapsed.contains(last.id)
             let row = Row(chain: chain, depth: depth, hasChildren: !kids.isEmpty, isExpanded: expanded,
-                          label: chain.count == 1 ? last.className : chain.map(\.shortName).joined(separator: " › "),
+                          label: chain.count == 1 ? label(last, full: true) : chain.map { label($0, full: false) }.joined(separator: " › "),
                           detail: Self.detail(for: last)
                               ?? chain.reversed().lazy.compactMap { self.ownSourceTag(for: $0.id) }.first.map { "· \($0.label)" })
             out.append(row)
@@ -361,6 +481,11 @@ final class UIInspectorViewModel: ObservableObject {
         rootIDs.forEach { walk($0, depth: 0) }
         rows = out
         outlineWidth = width
+    }
+
+    /// As written in the source (Source Views mode), else the runtime type.
+    private func label(_ node: InspectorNode, full: Bool) -> String {
+        sourceNames[node.id] ?? (full ? node.className : node.shortName)
     }
 
     static func detail(for node: InspectorNode) -> String? {
@@ -582,6 +707,7 @@ final class UIInspectorViewModel: ObservableObject {
 
     private func selectionChanged(from old: String?) {
         guard old != selectedID else { return }
+        if selectedMeasure?.ownerID != selectedID { selectedMeasure = nil }
         sendHighlight()
     }
 

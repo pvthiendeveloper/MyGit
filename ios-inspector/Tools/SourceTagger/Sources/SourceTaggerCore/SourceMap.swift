@@ -21,6 +21,13 @@ public struct SourceMapEntry: Codable, Equatable {
         /// When the argument is a local (`uiImage`), what it was bound to
         /// (`UIImage(named: Constants.iconName, …)`); `refs` point into that.
         public var binding: String? = nil
+        /// This argument's number in the tag's runtime record (`__mT`),
+        /// when the tagged build reports what it evaluated to.
+        public var probe: Int? = nil
+        /// A corner radius written inside it (`RoundedRectangle(cornerRadius: r).fill(c)`,
+        /// `x.cornerRadius(r)`): its own expression and refs, since the
+        /// argument's refs lead to the fill first. At most one element.
+        public var radius: [Argument]? = nil
     }
 
     /// The function / type the tagged view is written in, so a bare name
@@ -125,51 +132,95 @@ enum SourceMapBuilder {
     /// `VStack(spacing: s) { … }.padding(p).background(b)` → entry.
     static func entry(for expr: ExprSyntax, converter: SourceLocationConverter? = nil,
                       bindings: (String) -> ExprSyntax? = { _ in nil },
-                      strip: Set<String> = []) -> SourceMapEntry? {
+                      strip: Set<String> = [],
+                      probe: (ExprSyntax) -> Int? = { _ in nil }) -> SourceMapEntry? {
         var mods: [SourceMapEntry.Modifier] = []
         var current = expr
         while true {
-            guard let call = current.as(FunctionCallExprSyntax.self) else { return nil }
+            guard let call = current.as(FunctionCallExprSyntax.self) else {
+                // A chain on a value (`image.resizable()…`, `Self.icon.frame(…)`):
+                // the value is the root, and its only "argument" is itself,
+                // so the token behind it can still be traced.
+                // A value's name starts lowercase (`image`, `Self.icon`); `SwiftUI`, `Color` are types.
+                let name = current.as(DeclReferenceExprSyntax.self)?.baseName.text
+                    ?? current.as(MemberAccessExprSyntax.self).flatMap { $0.base == nil ? nil : $0.declName.baseName.text }
+                guard !mods.isEmpty, name?.first?.isLowercase == true else { return nil }
+                let root = argument(current, label: nil, converter: converter, bindings: bindings, probe: probe)
+                return SourceMapEntry(call: root.expr, args: [root], mods: mods.reversed())
+            }
             var callee = call.calledExpression
             if let generic = callee.as(GenericSpecializationExprSyntax.self) { callee = generic.expression }
-            let args = arguments(of: call, converter: converter, bindings: bindings)
+            // `SwiftUI.Toggle(…)`: a qualified type, not a modifier on `SwiftUI`.
+            if let member = callee.as(MemberAccessExprSyntax.self), member.base != nil,
+               member.declName.baseName.text.first?.isUppercase == true {
+                let args = arguments(of: call, converter: converter, bindings: bindings, probe: probe)
+                return SourceMapEntry(call: member.declName.baseName.text, args: args, mods: mods.reversed())
+            }
             if let member = callee.as(MemberAccessExprSyntax.self), let base = member.base {
                 // Stripped modifiers aren't in the built app, so not in the map.
                 if !strip.contains(member.declName.baseName.text) {
+                    let args = arguments(of: call, converter: converter, bindings: bindings, probe: probe)
                     mods.append(.init(name: member.declName.baseName.text, args: args))
                 }
                 current = base
                 continue
             }
             guard let ref = callee.as(DeclReferenceExprSyntax.self) else { return nil }
+            let args = arguments(of: call, converter: converter, bindings: bindings, probe: probe)
             return SourceMapEntry(call: ref.baseName.text, args: args, mods: mods.reversed())
         }
     }
 
     private static func arguments(of call: FunctionCallExprSyntax, converter: SourceLocationConverter?,
-                                  bindings: (String) -> ExprSyntax?) -> [SourceMapEntry.Argument] {
+                                  bindings: (String) -> ExprSyntax?,
+                                  probe: (ExprSyntax) -> Int?) -> [SourceMapEntry.Argument] {
         call.arguments.compactMap { arg in
             // Closures are content, not values.
             if arg.expression.is(ClosureExprSyntax.self) { return nil }
-            let text = arg.expression.trimmedDescription
-                .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
-            let token = isToken(arg.expression)
-            var argument = SourceMapEntry.Argument(label: arg.label?.text, expr: String(text.prefix(160)), token: token)
-            if token, let converter {
-                // A local (`uiImage`): what it was bound to, not the name.
-                if let ref = arg.expression.as(DeclReferenceExprSyntax.self),
-                   let bound = bindings(ref.baseName.text) {
-                    argument.binding = String(bound.trimmedDescription.split(whereSeparator: \.isNewline)
-                        .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ").prefix(200))
-                    let refs = RefExtractor.refs(bound, converter)
-                    if !refs.isEmpty { argument.refs = refs }
-                } else {
-                    let refs = RefExtractor.refs(arg.expression, converter)
-                    if !refs.isEmpty { argument.refs = refs }
-                }
-            }
-            return argument
+            return argument(arg.expression, label: arg.label?.text, converter: converter, bindings: bindings, probe: probe)
         }
+    }
+
+    private static func argument(_ expr: ExprSyntax, label: String?, converter: SourceLocationConverter?,
+                                 bindings: (String) -> ExprSyntax?,
+                                 probe: (ExprSyntax) -> Int?) -> SourceMapEntry.Argument {
+        let text = expr.trimmedDescription
+            .split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+        let token = isToken(expr)
+        var argument = SourceMapEntry.Argument(label: label, expr: String(text.prefix(160)), token: token)
+        if token, !TokenProbe.callbackLabels.contains(label ?? "") { argument.probe = probe(expr) }
+        if token, label != "cornerRadius", let radius = cornerRadiusExpression(in: expr) {
+            argument.radius = [self.argument(radius, label: "cornerRadius", converter: converter, bindings: bindings,
+                                             probe: { _ in nil })]
+        }
+        if token, let converter {
+            // A local (`uiImage`): what it was bound to, not the name.
+            if let ref = expr.as(DeclReferenceExprSyntax.self), let bound = bindings(ref.baseName.text) {
+                argument.binding = String(bound.trimmedDescription.split(whereSeparator: \.isNewline)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ").prefix(200))
+                let refs = RefExtractor.refs(bound, converter)
+                if !refs.isEmpty { argument.refs = refs }
+            } else {
+                let refs = RefExtractor.refs(expr, converter)
+                if !refs.isEmpty { argument.refs = refs }
+            }
+        }
+        return argument
+    }
+
+    /// The first `cornerRadius:` argument or `.cornerRadius(x)` call inside an expression.
+    private static func cornerRadiusExpression(in expr: ExprSyntax) -> ExprSyntax? {
+        var stack: [Syntax] = [Syntax(expr)]
+        while let node = stack.popLast() {
+            if let call = node.as(FunctionCallExprSyntax.self) {
+                if let arg = call.arguments.first(where: { $0.label?.text == "cornerRadius" }) { return arg.expression }
+                if call.calledExpression.as(MemberAccessExprSyntax.self)?.declName.baseName.text == "cornerRadius",
+                   let only = call.arguments.first { return only.expression }
+            }
+            if node.is(ClosureExprSyntax.self) { continue }
+            stack += node.children(viewMode: .sourceAccurate).reversed()
+        }
+        return nil
     }
 
     /// Types whose static members are plain constants, not design tokens.

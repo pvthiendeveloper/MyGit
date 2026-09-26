@@ -291,6 +291,8 @@ final class RunViewModel: ObservableObject {
         switch ProjectToolchain.inspectRunScript(device: device, scheme: scheme, repo: repo.url) {
         case let .success(script):
             runInTerminal(script)
+            // The inspector is what this run is for: have it waiting.
+            NotificationCenter.default.post(name: .inspectorRunStarted, object: nil)
         case .failure(.toolsMissing):
             main.errorMessage = "This MyGit build doesn't include the source tagger. Build MyGit with ./run.sh."
         case .failure(.scriptNotWritten):
@@ -330,4 +332,9 @@ final class RunViewModel: ObservableObject {
     private func restore(_ suffix: String) -> String? {
         key(suffix).flatMap { defaults.string(forKey: $0) }
     }
+}
+
+extension Notification.Name {
+    /// A "Run with Inspector" build started; the UI Inspector window opens.
+    static let inspectorRunStarted = Notification.Name("MyGit.inspectorRunStarted")
 }

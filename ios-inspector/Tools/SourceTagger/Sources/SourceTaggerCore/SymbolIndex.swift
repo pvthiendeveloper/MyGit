@@ -28,6 +28,14 @@ public struct SymbolEntry: Codable, Equatable {
     /// This `return` reports itself at runtime (`__mB`): the inspector can
     /// tell which branch produced a value.
     public var probed: Bool? = nil
+    /// A stored property without a value (`let verticalPadding: CGFloat`):
+    /// its values are the initializer arguments given for it.
+    public var stored: Bool? = nil
+    /// An initializer argument (`Tokens(verticalPadding: x)`): a value of
+    /// the stored property `name` of type `initOf`.
+    public var initOf: String? = nil
+    /// Where that initializer call starts — the line a `return` probe of it reports.
+    public var callLine: Int? = nil
 }
 
 enum SymbolIndexBuilder {
@@ -38,10 +46,13 @@ enum SymbolIndexBuilder {
     /// The index, and with `probe` the edits that make multi-`return`
     /// getters/functions report which `return` ran (see `BranchProbe`).
     static func collect(in tree: SourceFileSyntax, path: String, probe: Bool) -> (symbols: [SymbolEntry], probes: [Insertion]) {
-        let collector = SymbolCollector(converter: SourceLocationConverter(fileName: path, tree: tree), path: path)
+        let converter = SourceLocationConverter(fileName: path, tree: tree)
+        let collector = SymbolCollector(converter: converter, path: path)
         collector.probe = probe
         collector.walk(tree)
-        return (collector.symbols, collector.probes)
+        let arguments = InitArgumentCollector(converter: converter, path: path)
+        arguments.walk(tree)
+        return (collector.symbols + arguments.symbols, collector.probes)
     }
 }
 
@@ -94,6 +105,14 @@ final class SymbolCollector: SyntaxVisitor {
     override func visit(_ node: VariableDeclSyntax) -> SyntaxVisitorContinueKind {
         for binding in node.bindings {
             guard let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text else { continue }
+            // `let verticalPadding: CGFloat` in a type: set by its initializers.
+            if binding.initializer == nil, binding.accessorBlock == nil, binding.typeAnnotation != nil, let owner = owners.last {
+                let line = converter.location(for: binding.positionAfterSkippingLeadingTrivia).line
+                var entry = SymbolEntry(name: name, owner: owner, path: path, line: line, expr: "", literal: nil)
+                entry.stored = true
+                symbols.append(entry)
+                continue
+            }
             if let value = valueExpression(binding), let simple = Self.simplified(value) {
                 let line = converter.location(for: binding.positionAfterSkippingLeadingTrivia).line
                 var entry = SymbolEntry(name: name, owner: owners.last, path: path, line: line,
@@ -122,13 +141,15 @@ final class SymbolCollector: SyntaxVisitor {
 
     /// Instruments a body's `return`s when it has several; the offsets of
     /// the returned expressions that now report themselves.
+    /// `return`s and implicit `switch`/`if` branches alike.
     private func probeReturns(in body: CodeBlockItemListSyntax) -> Set<Int> {
-        let finder = ReturnFinder(viewMode: .sourceAccurate)
-        finder.walk(body)
-        guard finder.statements.count > 1 else { return [] }
+        let values = Self.returnedValues(of: body)
+        guard values.count > 1 else { return [] }
         var probed: Set<Int> = []
-        for statement in finder.statements {
-            guard let edits = BranchProbe.edits(for: statement, converter), let expr = statement.expression else { continue }
+        for expr in values {
+            let edits = expr.parent?.as(ReturnStmtSyntax.self).flatMap { BranchProbe.edits(for: $0, converter) }
+                ?? BranchProbe.wrapping(expr)
+            guard let edits else { continue }
             probes += edits
             probed.insert(expr.positionAfterSkippingLeadingTrivia.utf8Offset)
         }
@@ -185,12 +206,22 @@ final class SymbolCollector: SyntaxVisitor {
     static func simplified(_ expr: ExprSyntax) -> (text: String, literal: String?)? {
         if let reference = followable(expr) { return reference }
         let text = String(expr.trimmedDescription.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ").prefix(200))
+            .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ").prefix(1000))
         return (text, text)
     }
 
     /// Literals and references (the only things `followable` returns with a
     /// nil `literal` are references to follow).
+    /// `c ? a : b`, folded or as parsed.
+    private static func ternaryBranches(_ expr: ExprSyntax) -> [ExprSyntax]? {
+        if let ternary = expr.as(TernaryExprSyntax.self) { return [ternary.thenExpression, ternary.elseExpression] }
+        if let seq = expr.as(SequenceExprSyntax.self), seq.elements.count == 3,
+           let mid = Array(seq.elements)[1].as(UnresolvedTernaryExprSyntax.self) {
+            return [mid.thenExpression, Array(seq.elements)[2]]
+        }
+        return nil
+    }
+
     private static func followable(_ expr: ExprSyntax) -> (text: String, literal: String?)? {
         if expr.is(IntegerLiteralExprSyntax.self) || expr.is(FloatLiteralExprSyntax.self)
             || expr.is(BooleanLiteralExprSyntax.self) {
@@ -210,6 +241,13 @@ final class SymbolCollector: SyntaxVisitor {
             }
             return (expr.trimmedDescription, nil)
         }
+        // `loading ? tokens.loadingPadding : tokens.padding`: two alternatives
+        // to follow (the refs hold both), not a root.
+        if let branches = ternaryBranches(expr), branches.allSatisfy({ followable($0) != nil }) {
+            let text = expr.trimmedDescription.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+            return (text, branches.allSatisfy({ followable($0)?.literal != nil }) ? text : nil)
+        }
         if let call = expr.as(FunctionCallExprSyntax.self), call.trailingClosure == nil {
             // `CGFloat(TymeXDimens.x)` → follow the argument; `Color(hex: "#FFF")` → a literal.
             let args = call.arguments
@@ -217,6 +255,16 @@ final class SymbolCollector: SyntaxVisitor {
                let ref = call.calledExpression.as(DeclReferenceExprSyntax.self),
                ["CGFloat", "Double", "Float", "Int", "TimeInterval"].contains(ref.baseName.text) {
                 return followable(only.expression)
+            }
+            // `RoundedRectangle(cornerRadius: circleCornerRadius, style: .circular)`:
+            // the shape's design token is its radius, so follow that.
+            if let ref = call.calledExpression.as(DeclReferenceExprSyntax.self),
+               ["RoundedRectangle", "UnevenRoundedRectangle"].contains(ref.baseName.text),
+               let radius = args.first(where: { $0.label?.text == "cornerRadius" }),
+               let inner = followable(radius.expression), inner.literal == nil {
+                let text = expr.trimmedDescription.split(whereSeparator: \.isNewline)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+                return (text, nil)
             }
             // Only type initializers of constants are values (`Color(hex: 0xFFF)`,
             // `.custom("SF", size: 16)`); `rawValue.uppercased()` is logic.
@@ -275,4 +323,61 @@ enum BranchValues {
         }
         return [expr]
     }
+}
+
+/// Every `Type(label: value, …)` call in a file — function bodies and
+/// closures included — as candidate values of `Type.label`: design tokens
+/// are often handed to a tokens struct's memberwise initializer
+/// (`SwiftUIChipStyleTokens(verticalPadding: Tokens.chipVerticalPadding)`).
+final class InitArgumentCollector: SyntaxVisitor {
+    private let converter: SourceLocationConverter
+    private let path: String
+    private(set) var symbols: [SymbolEntry] = []
+
+    init(converter: SourceLocationConverter, path: String) {
+        self.converter = converter
+        self.path = path
+        super.init(viewMode: .sourceAccurate)
+    }
+
+    override func visit(_ node: FunctionCallExprSyntax) -> SyntaxVisitorContinueKind {
+        guard let type = Self.typeName(node.calledExpression), node.arguments.contains(where: { $0.label != nil }) else {
+            return .visitChildren
+        }
+        let callLine = converter.location(for: node.positionAfterSkippingLeadingTrivia).line
+        for arg in node.arguments {
+            guard let label = arg.label?.text, !arg.expression.is(ClosureExprSyntax.self),
+                  let simple = SymbolCollector.simplified(arg.expression) else { continue }
+            let line = converter.location(for: arg.expression.positionAfterSkippingLeadingTrivia).line
+            var entry = SymbolEntry(name: label, owner: type, path: path, line: line, expr: simple.text, literal: simple.literal)
+            let refs = RefExtractor.refs(arg.expression, converter)
+            if !refs.isEmpty { entry.refs = refs }
+            entry.initOf = type
+            entry.callLine = callLine
+            symbols.append(entry)
+        }
+        return .visitChildren
+    }
+
+    /// `Tokens(…)`, `Module.Tokens(…)`: the type's own name; nil for calls.
+    private static func typeName(_ callee: ExprSyntax) -> String? {
+        let name: String?
+        if let ref = callee.as(DeclReferenceExprSyntax.self) {
+            name = ref.baseName.text
+        } else if let member = callee.as(MemberAccessExprSyntax.self), member.base != nil {
+            name = member.declName.baseName.text
+        } else {
+            name = nil
+        }
+        guard let name, name.first?.isUppercase == true, !swiftUIViews.contains(name) else { return nil }
+        return name
+    }
+
+    /// Views and SDK values whose arguments aren't a type's stored properties.
+    private static let swiftUIViews: Set<String> = [
+        "VStack", "HStack", "ZStack", "LazyVStack", "LazyHStack", "Text", "Image", "Button", "Label", "Spacer",
+        "RoundedRectangle", "Rectangle", "Capsule", "Circle", "Color", "Font", "EdgeInsets", "CGSize", "CGPoint",
+        "CGRect", "LinearGradient", "RadialGradient", "ScrollView", "ForEach", "Group", "NavigationView", "Toggle",
+        "TextField", "Picker", "Menu", "GeometryReader", "Divider", "Canvas", "UIImage", "UIColor", "UIFont",
+    ]
 }

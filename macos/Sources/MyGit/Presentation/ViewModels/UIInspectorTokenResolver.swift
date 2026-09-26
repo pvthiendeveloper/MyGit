@@ -14,13 +14,17 @@ import Foundation
 /// scope (`labelText(style:)`'s parameter, `FloatingLabel`'s property).
 extension UIInspectorViewModel {
     /// nil when no inspect build/index is available (caller falls back).
-    func resolveTokenExactly(_ expr: String, refs: [[InspectorRef]]?, binding: String? = nil,
+    func resolveTokenExactly(_ expr: String, refs: [[InspectorRef]]?, binding: String? = nil, probe: Int? = nil,
                              stack: [InspectorSourceTag], runtimeValue: String?) async -> InspectorTokenResolution? {
         guard let first = stack.first, let navigator = sourceNavigator,
               let inspect = navigator.inspectDirectory(forRelativePath: first.path) else { return nil }
         let store = inspect.appendingPathComponent("DerivedData/Index.noindex/DataStore")
         let mirror = XcodeSymbolIndex.canonical(inspect.appendingPathComponent("src").path)
         let symbols = symbolsByFile(near: first)
+
+        // What this view instance's arguments evaluated to, hop by hop.
+        var traced: [InspectorTokenTrace] = []
+        if let probe, let trace = first.traces[probe] { traced.append(trace) }
 
         // 1. Trace a bare name to the argument that supplied it.
         var steps = [expr]
@@ -34,6 +38,9 @@ extension UIInspectorViewModel {
                                                   from: current.level) else { break }
             steps.append("\(supplied.call)(\(supplied.label.map { "\($0):" } ?? "_:")) \(supplied.arg.expr)")
             current = (supplied.arg.expr, supplied.arg.refs, supplied.level)
+            if let probe = supplied.arg.probe, let trace = stack[supplied.level].traces[probe] { traced.append(trace) }
+            // `.icon(icon)`: an enum case wrapping a name — follow the name.
+            if let payload = Self.casePayload(current.expr) { current.expr = payload }
         }
         let file = stack[current.level].path
         guard let alternatives = current.refs, !alternatives.isEmpty else {
@@ -50,12 +57,23 @@ extension UIInspectorViewModel {
             return steps.count > 1 ? InspectorTokenResolution(steps: steps, chain: nil, alternatives: [], exact: true) : nil
         }
 
-        // 3. One root, or the one the screen shows, or every possible root.
+        // 3. One root, or the one this view's evaluation went through, or
+        //    the one the screen shows, or every possible root.
         var roots: [String: [InspectorSymbol]] = [:]
         for chain in complete { roots["\(chain.last!.path):\(chain.last!.line)"] = chain }
         if roots.count == 1, let only = roots.values.first {
             return InspectorTokenResolution(steps: steps, chain: InspectorTokenChain(hops: only), alternatives: [], exact: true)
         }
+        let ran = Set(traced.flatMap(\.branches))
+        if roots.count > 1, !ran.isEmpty {
+            let through = roots.values.filter { chain in chain.contains { $0.ran(in: ran) } }
+            if through.count == 1 {
+                return InspectorTokenResolution(steps: steps, chain: InspectorTokenChain(hops: through[0]), alternatives: [],
+                                                exact: true, pickedBy: .traced)
+            }
+        }
+        // The value the app evaluated, when the screen didn't give one.
+        let runtimeValue = runtimeValue ?? traced.first?.value
         if let runtimeValue {
             let matching = roots.values.filter { chain in
                 let literal = chain.last!.literal!
@@ -87,6 +105,13 @@ extension UIInspectorViewModel {
         // Reached declarations but no value (e.g. a computed chain): show how far.
         let deepest = chains.max { $0.count < $1.count }
         return InspectorTokenResolution(steps: steps, chain: deepest.map(InspectorTokenChain.init(hops:)), alternatives: [], exact: true)
+    }
+
+    /// `.icon(icon)` → `icon`; nil for anything else.
+    static func casePayload(_ expr: String) -> String? {
+        guard let match = expr.range(of: #"^\.\w+\((\w+)\)$"#, options: .regularExpression) else { return nil }
+        let inner = expr[match].drop { $0 != "(" }.dropFirst().dropLast()
+        return isIdentifier(String(inner)) ? String(inner) : nil
     }
 
     /// The argument a caller passed for `name`: a parameter of the tagged
@@ -144,7 +169,11 @@ extension UIInspectorViewModel {
             for decl in inRepo {
                 let relative = String(decl.file.dropFirst(mirror.count + 1))
                 let name = decl.name.split(separator: "(").first.map(String.init) ?? decl.name
-                let values = Self.values(of: name, declaredAt: decl.line, in: relative, symbols: symbols)
+                var values = Self.values(of: name, declaredAt: decl.line, in: relative, symbols: symbols)
+                // `let verticalPadding: CGFloat`: whatever its initializers were given.
+                if values.count == 1, values[0].stored == true, let owner = values[0].owner {
+                    values = Self.initializerArguments(of: owner, name: name, symbols: symbols)
+                }
                 if values.isEmpty {
                     // Declared, value unknown (logic, SDK types): the chain ends here.
                     chains.append([InspectorSymbol(name: name, owner: nil, path: relative, line: decl.line,
@@ -157,7 +186,7 @@ extension UIInspectorViewModel {
                     } else {
                         var deeper: [[InspectorSymbol]] = []
                         for alternative in value.refs ?? [] {
-                            deeper += await follow(alternative, in: relative, store: store, mirror: mirror,
+                            deeper += await follow(alternative, in: value.path, store: store, mirror: mirror,
                                                    symbols: symbols, depth: depth + 1)
                         }
                         chains += deeper.isEmpty ? [[value]] : deeper.map { [value] + $0 }
@@ -174,7 +203,14 @@ extension UIInspectorViewModel {
     /// `declLine` is that line).
     private static func values(of name: String, declaredAt line: Int, in path: String,
                                symbols: [String: [InspectorSymbol]]) -> [InspectorSymbol] {
-        (symbols[path] ?? []).filter { $0.name == name && ($0.declLine ?? $0.line) == line }
+        (symbols[path] ?? []).filter { $0.name == name && $0.initOf == nil && ($0.declLine ?? $0.line) == line }
+    }
+
+    /// `Type(name: value)` calls anywhere in the repo.
+    private static func initializerArguments(of type: String, name: String,
+                                             symbols: [String: [InspectorSymbol]]) -> [InspectorSymbol] {
+        symbols.values.flatMap { $0.filter { $0.initOf == type && $0.name == name } }
+            .sorted { ($0.path, $0.line) < ($1.path, $1.line) }
     }
 
     /// The root whose `return` the app reported running (the tagger's

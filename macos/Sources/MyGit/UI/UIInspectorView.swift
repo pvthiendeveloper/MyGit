@@ -67,11 +67,11 @@ struct UIInspectorView: View {
                     InspectorPreview()
                         .frame(minWidth: 300, maxWidth: .infinity)
                     InspectorAttributes()
-                        .frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
+                        .frame(minWidth: 480, idealWidth: 600, maxWidth: 840)
                 }
             }
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(minWidth: 1100, minHeight: 560)
         .sheet(item: $vm.sourceChoice) { choice in
             SourcePickerSheet(choice: choice)
         }
@@ -208,8 +208,9 @@ private struct InspectorToolbar: View {
                 Label("Capture", systemImage: "arrow.clockwise")
             }
             .keyboardShortcut("r", modifiers: .command)
-            .disabled(vm.connected == nil || vm.isLoading)
-            .help("Capture the current screen again (⌘R)")
+            // Live captures on its own; the button would flicker with every refresh.
+            .disabled(vm.connected == nil || vm.autoRefresh || vm.isLoading)
+            .help(vm.autoRefresh ? "Live is on: the screen is captured continuously" : "Capture the current screen again (⌘R)")
 
             if let run = vm.runWithInspector {
                 Button {
@@ -236,7 +237,13 @@ private struct InspectorToolbar: View {
 
             Spacer()
 
-            if vm.isLoading || vm.isSearchingSource { ProgressView().controlSize(.small) }
+            if vm.autoRefresh && vm.connected != nil {
+                // Live captures back to back: a steady indicator, not a spinner that blinks per capture.
+                LiveDot().help("Live — the screen is captured continuously")
+                if vm.isSearchingSource { ProgressView().controlSize(.small) }
+            } else if vm.isLoading || vm.isSearchingSource {
+                ProgressView().controlSize(.small)
+            }
             if let error = vm.errorMessage, vm.snapshot != nil {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -244,7 +251,14 @@ private struct InspectorToolbar: View {
                     .help(error)
             }
 
+            Toggle("Spacing", isOn: $vm.measureMode)
+                .toggleStyle(.checkbox)
+                .help("Hover and click paddings, gaps between stack items and rounded corners in the preview to see their values and tokens (highlighted in pink)")
+            Toggle("Source Views", isOn: $vm.sourceViewsOnly)
+                .toggleStyle(.checkbox)
+                .help("Only the views written in your code (named as written), text, and public UIKit views — SwiftUI plumbing and system controls' private parts are folded away. Needs Run with Inspector.")
             Toggle("Hide Modifiers", isOn: $vm.hideModifiers)
+                .disabled(vm.sourceViewsOnly)
                 .toggleStyle(.checkbox)
                 .help("Fold SwiftUI modifiers (padding, accessibility, layout wrappers) into their content")
             Toggle("Compact Chains", isOn: $vm.compactChains)
@@ -492,6 +506,17 @@ private struct OutlineRow: View {
 private struct InspectorPreview: View {
     @EnvironmentObject var vm: UIInspectorViewModel
     @State private var zoom: CGFloat = 1
+    /// Zoom when the current pinch began.
+    @State private var pinchBase: CGFloat?
+    @State private var pointerInside = false
+    @State private var scrollMonitor: Any?
+    /// For zooming around the pointer: the visible area, where it's scrolled
+    /// to, and where the pointer is in it.
+    @State private var viewport: CGSize = .zero
+    @State private var scrollOffset: CGPoint = .zero
+    @State private var pointer: CGPoint?
+    @State private var position = ScrollPosition(point: .zero)
+    private static let zoomRange: ClosedRange<CGFloat> = 0.5...4
 
     var body: some View {
         VStack(spacing: 0) {
@@ -505,6 +530,26 @@ private struct InspectorPreview: View {
                             .padding(20)
                             .frame(minWidth: geo.size.width, minHeight: geo.size.height)
                     }
+                    .scrollPosition($position)
+                    .onScrollGeometryChange(for: CGPoint.self, of: { $0.contentOffset }) { _, offset in
+                        scrollOffset = offset
+                    }
+                    // Trackpad pinch, around where it started.
+                    .simultaneousGesture(
+                        MagnifyGesture()
+                            .onChanged { value in
+                                let base = pinchBase ?? zoom
+                                pinchBase = base
+                                setZoom(base * value.magnification, around: value.startLocation)
+                            }
+                            .onEnded { _ in pinchBase = nil }
+                    )
+                    .onHover { pointerInside = $0 }
+                    .onContinuousHover { phase in
+                        if case let .active(location) = phase { pointer = location } else { pointer = nil }
+                    }
+                    .onAppear { viewport = geo.size }
+                    .onChange(of: geo.size) { _, size in viewport = size }
                 }
             }
             Divider()
@@ -512,7 +557,7 @@ private struct InspectorPreview: View {
                 breadcrumb
                 Spacer()
                 Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
-                Slider(value: $zoom, in: 0.5...4)
+                Slider(value: $zoom, in: Self.zoomRange)
                     .frame(width: 120)
                 Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
                 Button("Fit") { zoom = 1 }
@@ -522,6 +567,49 @@ private struct InspectorPreview: View {
             .padding(.vertical, 6)
         }
         .background(Color(NSColor.underPageBackgroundColor))
+        .onAppear { installScrollZoom() }
+        .onDisappear {
+            if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
+            scrollMonitor = nil
+        }
+    }
+
+    private static func clamp(_ z: CGFloat) -> CGFloat { min(max(z, zoomRange.lowerBound), zoomRange.upperBound) }
+
+    /// Zoom so the point under `anchor` (viewport coordinates) stays under it.
+    private func setZoom(_ requested: CGFloat, around anchor: CGPoint?) {
+        let newZoom = Self.clamp(requested)
+        guard let window = vm.currentWindow?.size, let anchor, viewport.width > 0 else { zoom = newZoom; return }
+        let fit = min((viewport.width - 40) / max(window.width, 1), (viewport.height - 40) / max(window.height, 1))
+        let oldScale = max(0.05, fit * zoom), newScale = max(0.05, fit * newZoom)
+        // Where the canvas starts in the scroll content: padding, plus centering while it's smaller than the view.
+        func origin(_ scale: CGFloat) -> CGPoint {
+            CGPoint(x: max(0, (viewport.width - window.width * scale - 40) / 2) + 20,
+                    y: max(0, (viewport.height - window.height * scale - 40) / 2) + 20)
+        }
+        let o0 = origin(oldScale), o1 = origin(newScale)
+        let point = CGPoint(x: (scrollOffset.x + anchor.x - o0.x) / oldScale, y: (scrollOffset.y + anchor.y - o0.y) / oldScale)
+        let content = CGSize(width: max(viewport.width, window.width * newScale + 40),
+                             height: max(viewport.height, window.height * newScale + 40))
+        let target = CGPoint(
+            x: min(max(0, o1.x + point.x * newScale - anchor.x), content.width - viewport.width),
+            y: min(max(0, o1.y + point.y * newScale - anchor.y), content.height - viewport.height))
+        zoom = newZoom
+        // After the content has grown to the new size.
+        DispatchQueue.main.async { position.scrollTo(point: target) }
+    }
+
+    /// ⌘ + scroll (wheel, or two fingers on a trackpad) over the preview zooms;
+    /// SwiftUI doesn't expose scroll events with modifiers, so an AppKit monitor.
+    private func installScrollZoom() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            guard pointerInside, event.modifierFlags.contains(.command) else { return event }
+            let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 200 : event.scrollingDeltaY / 20
+            guard delta != 0 else { return nil }
+            setZoom(zoom * (1 + delta), around: pointer)
+            return nil   // Consumed: don't also scroll the canvas.
+        }
     }
 
     private func canvas(_ window: InspectorWindow, scale: CGFloat) -> some View {
@@ -549,8 +637,15 @@ private struct InspectorPreview: View {
                 }
                 if let selected = vm.selectedNode {
                     let r = rect(selected.frame)
-                    context.fill(Path(r), with: .color(.accentColor.opacity(0.18)))
-                    context.stroke(Path(r), with: .color(.accentColor), lineWidth: 1.5)
+                    context.fill(Path(r), with: .color(.accentColor.opacity(vm.selectedMeasure == nil ? 0.18 : 0.06)))
+                    context.stroke(Path(r), with: .color(.accentColor), lineWidth: vm.selectedMeasure == nil ? 1.5 : 0.75)
+                }
+                // Measures: pink, so they never read as a view.
+                if let picked = vm.selectedMeasure {
+                    drawMeasure(picked, in: &context, rect: rect(picked.rect), strong: true, scale: scale, canvas: size)
+                }
+                if let hovered = vm.hoveredMeasure, hovered.id != vm.selectedMeasure?.id {
+                    drawMeasure(hovered, in: &context, rect: rect(hovered.rect), strong: false, scale: scale, canvas: size)
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -562,13 +657,23 @@ private struct InspectorPreview: View {
         .onContinuousHover { phase in
             switch phase {
             case let .active(location):
-                vm.hoveredID = vm.node(at: CGPoint(x: location.x / scale, y: location.y / scale))?.id
+                let point = CGPoint(x: location.x / scale, y: location.y / scale)
+                // Also the zoom anchor, in the scroll view's coordinates.
+                pointer = CGPoint(x: max(0, (viewport.width - size.width - 40) / 2) + 20 + location.x - scrollOffset.x,
+                                  y: max(0, (viewport.height - size.height - 40) / 2) + 20 + location.y - scrollOffset.y)
+                let measure = vm.measureMode ? vm.measure(at: point) : nil
+                vm.hoveredMeasureID = measure?.id
+                vm.hoveredID = measure == nil ? vm.node(at: point)?.id : nil
             case .ended:
                 vm.hoveredID = nil
+                vm.hoveredMeasureID = nil
             }
         }
         .onTapGesture { location in
-            if let node = vm.node(at: CGPoint(x: location.x / scale, y: location.y / scale)) {
+            let point = CGPoint(x: location.x / scale, y: location.y / scale)
+            if vm.measureMode, let measure = vm.measure(at: point) {
+                vm.select(measure)
+            } else if let node = vm.node(at: point) {
                 vm.reveal(node.id)
             }
         }
@@ -577,6 +682,53 @@ private struct InspectorPreview: View {
                 InspectorSourceMenu(node: node)
             }
         }
+    }
+
+    /// A measure's region, filled pink, with its value in a pill; the token
+    /// behind it goes in a second pill outside the highlighted view, so it
+    /// never covers what's being inspected.
+    private func drawMeasure(_ m: InspectorMeasure, in context: inout GraphicsContext, rect r: CGRect,
+                             strong: Bool, scale: CGFloat, canvas: CGSize) {
+        let pink = Color(red: 0.93, green: 0.2, blue: 0.55)
+        context.fill(Path(r), with: .color(pink.opacity(strong ? 0.45 : 0.3)))
+        context.stroke(Path(r), with: .color(pink), lineWidth: strong ? 1.5 : 1)
+
+        func pill(_ text: String, centeredAt center: CGPoint) -> CGRect {
+            let label = context.resolve(Text(text)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(.white))
+            let size = label.measure(in: CGSize(width: 600, height: 40))
+            let box = CGRect(x: center.x - size.width / 2 - 4, y: center.y - size.height / 2 - 1,
+                             width: size.width + 8, height: size.height + 2)
+            context.fill(Path(roundedRect: box, cornerRadius: box.height / 2), with: .color(pink))
+            context.draw(label, at: CGPoint(x: box.midX, y: box.midY))
+            return box
+        }
+        let valuePill = pill(UIInspectorViewModel.fmt(m.value), centeredAt: CGPoint(x: r.midX, y: r.midY))
+
+        guard let token = vm.measureTokenNames[m.id], !token.isEmpty else { return }
+        // Clear of the view the measure belongs to and of the hovered/selected views.
+        var avoid = r
+        for id in [m.ownerID, vm.selectedID, vm.hoveredID].compactMap({ $0 }) {
+            if let f = vm.rawNode(id)?.frame {
+                avoid = avoid.union(CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale))
+            }
+        }
+        let label = context.resolve(Text(token)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(.white))
+        let size = label.measure(in: CGSize(width: 600, height: 40))
+        let height = size.height + 2
+        let below = avoid.maxY + 6 + height / 2
+        let y = below + height / 2 <= canvas.height ? below : max(height / 2, avoid.minY - 6 - height / 2)
+        let halfWidth = size.width / 2 + 4
+        let x = min(max(r.midX, halfWidth), max(halfWidth, canvas.width - halfWidth))
+        let tokenPill = pill(token, centeredAt: CGPoint(x: x, y: y))
+        // Leader from the value to its token.
+        var leader = Path()
+        leader.move(to: CGPoint(x: valuePill.midX, y: y > valuePill.midY ? valuePill.maxY : valuePill.minY))
+        leader.addLine(to: CGPoint(x: tokenPill.midX, y: y > valuePill.midY ? tokenPill.minY : tokenPill.maxY))
+        context.stroke(leader, with: .color(pink.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
     }
 
     private var breadcrumb: some View {
@@ -603,6 +755,9 @@ private struct InspectorAttributes: View {
         if let node = vm.selectedNode {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let measure = vm.selectedMeasure, measure.ownerID == node.id {
+                        DetailSectionView(section: vm.measureSection(measure))
+                    }
                     SourceStackView(stack: vm.sourceStack(for: node.id))
                     ForEach(vm.detailSections(for: node.id)) { section in
                         DetailSectionView(section: section)
@@ -704,7 +859,9 @@ private struct TokenView: View {
 
     /// What the resolution depends on; a new selection re-resolves.
     private var key: String {
-        "\(token)|\(row.tokenStack.map(\.id).joined(separator: ","))|\(row.tokenValue ?? "")"
+        "\(token)|\(row.tokenStack.map(\.id).joined(separator: ","))|\(row.tokenValue ?? "")|"
+            + row.tokenStack.map { $0.traces.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value.value)\($0.value.branches)" }
+                .joined(separator: ";") }.joined(separator: ",")
     }
 
     var body: some View {
@@ -713,11 +870,19 @@ private struct TokenView: View {
                 pickError = nil
                 // The compiler's index when the app was run with the
                 // inspector; the by-name match otherwise.
-                base = await vm.resolveTokenExactly(token, refs: row.tokenRefs, binding: row.tokenBinding,
+                base = await vm.resolveTokenExactly(token, refs: row.tokenRefs, binding: row.tokenBinding, probe: row.tokenProbe,
                                                     stack: row.tokenStack, runtimeValue: row.tokenValue)
                     ?? vm.resolveToken(token, stack: row.tokenStack, runtimeValue: row.tokenValue)
                 resolution = vm.aiPicks[key] ?? base
             }
+    }
+
+    /// The runtime record of this argument on the selected view instance.
+    private var evaluated: String? {
+        guard let probe = row.tokenProbe, let value = row.tokenStack.first?.traces[probe]?.value, !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 
     private var aiPick: (confidence: Double, reason: String)? {
@@ -763,6 +928,17 @@ private struct TokenView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(4)
             }
+            if let evaluated {
+                // What this view's argument actually evaluated to — for content
+                // (`Text(message)`) the root above is code, this is the value.
+                Text("= " + evaluated)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .help("Recorded by the running app (Run with Inspector) when it evaluated this argument.")
+            }
             if let via = viaDescription, !via.isEmpty {
                 Text("via " + via)
                     .font(.system(size: 9.5, design: .monospaced))
@@ -787,6 +963,11 @@ private struct TokenView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(Color.green.opacity(0.8))
                 .help("The other branches were ruled out: they can't produce the value on screen (nil, a different literal, or a template that doesn't fit).")
+        case .traced?:
+            Text("✓ traced in the running app")
+                .font(.system(size: 9))
+                .foregroundStyle(Color.green.opacity(0.8))
+                .help("Run with Inspector recorded this view's own evaluation of the argument, including which return statements it went through.")
         case .runtimeBranch?:
             Text("✓ branch reported by the running app")
                 .font(.system(size: 9))
@@ -951,5 +1132,31 @@ private struct DetailSectionView: View {
         guard s.count == 8, let v = UInt32(s, radix: 16) else { return nil }
         return NSColor(srgbRed: CGFloat(v >> 24 & 0xFF) / 255, green: CGFloat(v >> 16 & 0xFF) / 255,
                        blue: CGFloat(v >> 8 & 0xFF) / 255, alpha: CGFloat(v & 0xFF) / 255)
+    }
+}
+
+/// A live-stream style "on air" dot: a green dot that breathes, with a soft
+/// ring swelling out of it.
+private struct LiveDot: View {
+    @State private var breathing = false
+    @State private var ring = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.green.opacity(0.45))
+                .scaleEffect(ring ? 2.4 : 1)
+                .opacity(ring ? 0 : 0.8)
+            Circle()
+                .fill(Color.green)
+                .opacity(breathing ? 0.55 : 1)
+        }
+        .frame(width: 8, height: 8)
+        .frame(width: 20, height: 20)
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { ring = true }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { breathing = true }
+        }
+        .accessibilityLabel("Live")
     }
 }

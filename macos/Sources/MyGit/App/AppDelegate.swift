@@ -75,7 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        if ProcessInfo.processInfo.environment["MYGIT_DEBUG_INSPECTOR"] != nil {
+        NotificationCenter.default.addObserver(forName: .inspectorRunStarted, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openInspectorWindow() }
+        }
+        if ProcessInfo.processInfo.environment["MYGIT_DEBUG_INSPECTOR"] != nil
+            || ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.openInspectorWindow() }
         }
         if let dbg = ProcessInfo.processInfo.environment["MYGIT_DEBUG_DIFF"] {

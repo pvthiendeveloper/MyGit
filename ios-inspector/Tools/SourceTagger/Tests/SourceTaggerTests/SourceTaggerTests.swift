@@ -124,7 +124,7 @@ final class SourceTaggerTests: XCTestCase {
             var header: some View { Label("h", systemImage: "x") }
         }
         """)
-        for needle in [#"Text("on").preference"#, #"Text("off").preference"#, "Row(i: i).preference",
+        for needle in [#"Text("on").preference"#, #"Text("off").preference"#, #"Row(i: __mT(i, "App/V.swift:"#,
                        "EmptyView().preference", #"Text("a").preference"#, #"Text("b").preference"#,
                        #"return Text("\(x)").preference"#, #"Label("h", systemImage: "x").preference"#] {
             XCTAssertTrue(r.output.contains(needle), needle)
@@ -247,7 +247,7 @@ final class SourceTaggerTests: XCTestCase {
             }
         }
         """)
-        XCTAssertTrue(r.output.contains(#"labelText(style: tokens.resting).preference(key: __MyGitSourceKey.self, value: "App/V.swift:5:13")"#))
+        XCTAssertTrue(r.output.contains(#"labelText(style: __mT(tokens.resting, "App/V.swift:5:13", 1)).preference(key: __MyGitSourceKey.self, value: __mS("App/V.swift:5:13"))"#))
         XCTAssertTrue(r.output.contains(#"(flag ? AnyView(Text("a")) : AnyView(Text("b"))).preference"#))
         XCTAssertEqual(r.sourceMap["App/V.swift:5:13"]?.call, "labelText")
         XCTAssertEqual(r.sourceMap["App/V.swift:5:13"]?.args.first?.label, "style")
@@ -430,14 +430,52 @@ final class SourceTaggerTests: XCTestCase {
         // Returned expressions keep their column (the index is looked up there).
         XCTAssertEqual(out[7].range(of: "value.isEmpty")?.lowerBound.utf16Offset(in: out[7]),
                        lines[7].range(of: "value.isEmpty")?.lowerBound.utf16Offset(in: lines[7]))
-        // `{ return nil }` has no room: untouched. Single returns aren't probed.
-        XCTAssertEqual(out[6], lines[6])
+        // `{ return nil }` has no room: wrapped where it stands. Single returns aren't probed.
+        XCTAssertEqual(String(out[6]), "        if flag { return __mB(nil) }")
         XCTAssertEqual(out[10], lines[10])
         XCTAssertTrue(r.output.contains("fileprivate func __mB<T>"))
         XCTAssertTrue(r.output.contains(#"let key = "App/V.swift:\(l)""#))
         let probed = r.symbols.filter { $0.name == "message" }.map { ($0.line, $0.probed == true) }
         XCTAssertEqual(probed.map(\.0), [5, 7, 8])
-        XCTAssertEqual(probed.map(\.1), [true, false, true])
+        XCTAssertEqual(probed.map(\.1), [true, true, true])
+    }
+
+    func testTokenArgumentsReportWhatTheyEvaluatedTo() {
+        let src = """
+        import SwiftUI
+        struct V: View {
+            var body: some View {
+                Text(label)
+                    .foregroundColor(tokens.labelColor(role))
+                    .padding(8)
+                    .frame(width: $w, alignment: .leading)
+            }
+        }
+        enum Tokens {
+            func labelColor(_ role: Role) -> Color {
+                switch role {
+                case .subtle: return .gray
+                case .error: return .red
+                }
+            }
+        }
+        """
+        let r = tag(src)
+        let out = r.output.split(separator: "\n", omittingEmptySubsequences: false)
+        let lines = src.split(separator: "\n", omittingEmptySubsequences: false)
+        XCTAssertEqual(out.count - 1 > lines.count, true, "helpers appended")
+        XCTAssertTrue(out[3].contains(#"Text(__mT(label, "App/V.swift:4:9", 2))"#), String(out[3]))
+        XCTAssertTrue(out[4].contains(#".foregroundColor(__mT(tokens.labelColor(role), "App/V.swift:4:9", 1))"#), String(out[4]))
+        XCTAssertEqual(out[5], lines[5], "literals aren't probed")
+        XCTAssertEqual(out[6], lines[6] + #".preference(key: __MyGitSourceKey.self, value: __mS("App/V.swift:4:9"))"#,
+                       "bindings and implicit members aren't probed")
+        XCTAssertTrue(out[12].contains("case .subtle: return __mB(.gray)"), "`case` returns are probed in place")
+        XCTAssertTrue(r.output.contains("fileprivate func __mT<T>"))
+        XCTAssertTrue(r.output.contains("fileprivate func __mS("))
+        let entry = r.sourceMap["App/V.swift:4:9"]
+        XCTAssertEqual(entry?.args.first?.probe, 2)
+        XCTAssertEqual(entry?.mods.first { $0.name == "foregroundColor" }?.args.first?.probe, 1)
+        XCTAssertEqual(entry?.mods.first { $0.name == "padding" }?.args.first?.probe, nil)
     }
 
     func testViewBuildersAndOpaqueReturnsAreNotProbed() {
