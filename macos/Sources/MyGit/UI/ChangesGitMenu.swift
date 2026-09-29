@@ -212,6 +212,27 @@ struct ChangesGitActionHost: ViewModifier {
                      : "Discard all local changes to \(change.path)?")
             }
             .alert(
+                (vm.pendingGroupRollback ?? []).allSatisfy(\.isUntracked) ? "Delete files?" : "Rollback changes?",
+                isPresented: Binding(
+                    get: { vm.pendingGroupRollback != nil },
+                    set: { if !$0 { vm.pendingGroupRollback = nil } }
+                ),
+                presenting: vm.pendingGroupRollback
+            ) { changes in
+                Button(changes.allSatisfy(\.isUntracked) ? "Delete" : "Rollback", role: .destructive) {
+                    Task { await vm.confirmRollback(changes) }
+                }
+                Button("Cancel", role: .cancel) { vm.pendingGroupRollback = nil }
+            } message: { changes in
+                let tracked = changes.filter { !$0.isUntracked }.count
+                let untracked = changes.count - tracked
+                let names = changes.prefix(6).map { "• \($0.path)" }.joined(separator: "\n")
+                    + (changes.count > 6 ? "\n… and \(changes.count - 6) more" : "")
+                Text([tracked > 0 ? "Discard local changes in \(tracked) file\(tracked == 1 ? "" : "s")" : nil,
+                      untracked > 0 ? "delete \(untracked) unversioned file\(untracked == 1 ? "" : "s")" : nil]
+                        .compactMap { $0 }.joined(separator: " and ") + ". This cannot be undone.\n\n" + names)
+            }
+            .alert(
                 "Delete file?",
                 isPresented: Binding(
                     get: { vm.pendingDelete != nil },

@@ -106,6 +106,20 @@ final class InspectorConnection: @unchecked Sendable {
 
     /// Outline a frame (window coordinates) on the device itself; nil removes
     /// the outline. Frames rather than ids, so SwiftUI nodes work too.
+    /// One window's pixels as JPEG, for the live preview while interacting.
+    func frame(window: Int, scale: Double, quality: Double = 0.6) async throws -> NSImage? {
+        let result = try await request("frame", ["window": window, "scale": scale, "quality": quality], as: FrameResult.self)
+        return Data(base64Encoded: result.jpg).flatMap(NSImage.init(data:))
+    }
+
+    private struct FrameResult: Decodable { let jpg: String }
+
+    /// Drive the app: `tap`, `longPress`, `drag`, `type`, `scroll`, `back`
+    /// (see the agent's `InteractionDriver`); points in window coordinates.
+    func interact(_ method: String, _ params: [String: Any]) async throws {
+        _ = try await request(method, params, as: Empty.self)
+    }
+
     func highlight(_ target: (frame: CGRect, window: Int)?) async throws {
         var params: [String: Any] = [:]
         if let target {

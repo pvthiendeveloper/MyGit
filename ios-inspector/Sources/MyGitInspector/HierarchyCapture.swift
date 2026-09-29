@@ -80,7 +80,7 @@ enum HierarchyCapture {
 
     // MARK: - Tree
 
-    private static func allWindows() -> [UIWindow] {
+    static func allWindows() -> [UIWindow] {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
@@ -438,13 +438,32 @@ enum HierarchyCapture {
 
     // MARK: - Screenshot
 
+    /// Just the pixels of one window, as JPEG — for a live preview while
+    /// MyGit drives the app (a full capture is the whole tree plus a PNG).
+    static func frame(windowIndex: Int, scale: CGFloat, quality: CGFloat) -> [String: Any]? {
+        let windows = allWindows()
+        guard windows.indices.contains(windowIndex) else { return nil }
+        let window = windows[windowIndex]
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = true
+        format.preferredRange = .standard
+        let image = UIGraphicsImageRenderer(bounds: window.bounds, format: format).image { _ in
+            drawWithoutHighlight(window)
+        }
+        guard let data = image.jpegData(compressionQuality: quality) else { return nil }
+        return ["jpg": data.base64EncodedString(), "size": [window.bounds.width, window.bounds.height]]
+    }
+
     private static func screenshot(of window: UIWindow, scale: CGFloat) -> Data? {
         let format = UIGraphicsImageRendererFormat()
         format.scale = scale
         format.opaque = false
+        // sRGB, like the screen shows it and Figma specifies it (the default wide range reads washed out).
+        format.preferredRange = .standard
         let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
         let image = renderer.image { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            drawWithoutHighlight(window)
         }
         return image.pngData()
     }
@@ -464,6 +483,19 @@ enum HierarchyCapture {
         overlay.layer.borderWidth = 1
         windows[windowIndex].addSubview(overlay)
         highlightView = overlay
+    }
+
+    /// The window as it looks to the user, minus MyGit's own selection outline:
+    /// hidden, and one fresh frame rendered, only while an outline is showing.
+    private static func drawWithoutHighlight(_ window: UIWindow) {
+        guard let overlay = highlightView, let parent = overlay.superview, overlay.window === window else {
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
+            return
+        }
+        overlay.removeFromSuperview()
+        CATransaction.flush()
+        window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        parent.addSubview(overlay)
     }
 
     private static func removeHighlight() {

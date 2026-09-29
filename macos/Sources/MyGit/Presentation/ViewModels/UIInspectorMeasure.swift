@@ -1,4 +1,4 @@
-import Foundation
+import SwiftUI
 
 /// A piece of spacing on screen the inspector can point at, like Figma's
 /// measure mode: a padding strip, the gap between two stack items, or a
@@ -45,7 +45,19 @@ extension UIInspectorViewModel {
                 if corners.insert(key).inserted { out += cornerMeasures(node, radius: radius) }
             }
         }
-        return out
+        return Self.withoutDuplicates(out)
+    }
+
+    /// A stack and the stack built inside it (or a same-size wrapper) give the
+    /// same gap twice: keep one per kind, region and value.
+    private static func withoutDuplicates(_ measures: [InspectorMeasure]) -> [InspectorMeasure] {
+        var seen = Set<String>()
+        return measures.filter { m in
+            let r = m.rect
+            let key = "\(m.kind.rawValue)|\(Int((r.minX * 2).rounded()))|\(Int((r.minY * 2).rounded()))|"
+                + "\(Int((r.width * 2).rounded()))|\(Int((r.height * 2).rounded()))|\(Int((m.value * 2).rounded()))"
+            return seen.insert(key).inserted
+        }
     }
 
     private func paddingMeasures(_ p: InspectorNode) -> [InspectorMeasure] {
@@ -123,7 +135,7 @@ extension UIInspectorViewModel {
 
     /// The outline row for the view a modifier applies to: down its content
     /// to the first node the outline shows, else up to the nearest one.
-    private func visibleOwner(below id: String) -> String {
+    func visibleOwner(below id: String) -> String {
         var current: String? = id
         for _ in 0..<40 {
             guard let c = current else { break }
@@ -198,7 +210,7 @@ extension UIInspectorViewModel {
     }
 
     /// A padding's measured inset per edge.
-    private func paddingInsets(_ paddingID: String) -> [String: CGFloat] {
+    func paddingInsets(_ paddingID: String) -> [String: CGFloat] {
         guard let p = rawNode(paddingID), let content = contentChild(paddingID).flatMap({ geometry(of: $0) }) else { return [:] }
         let outer = p.frame
         return ["top": content.minY - outer.minY, "bottom": outer.maxY - content.maxY,
@@ -237,20 +249,31 @@ extension UIInspectorViewModel {
         guard measureTokenNames[m.id] == nil, measureTokenLoads.insert(m.id).inserted else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
-            var name = ""
-            if let token = measureToken(m) {
-                let value = Self.fmt(m.value)
-                let resolution = await resolveTokenExactly(token.arg.expr, refs: token.arg.refs, binding: token.arg.binding,
-                                                           probe: token.arg.probe, stack: token.stack, runtimeValue: value)
-                    ?? resolveToken(token.arg.expr, stack: token.stack, runtimeValue: value)
-                // The root when one was reached, else what the source wrote.
-                name = measureRoot(m, resolution, near: token.stack.first)?.name ?? token.arg.expr
-            } else if let style = systemStyle(around: m.nodeID) {
-                name = "SwiftUI \(style)"
-            }
+            let name = await tokenName(for: m)
             measureTokenLoads.remove(m.id)
             measureTokenNames[m.id] = name
         }
+    }
+
+    /// The name a measure's pill shows: its root token, what the source
+    /// wrote, a SwiftUI style — or "" (hardcoded / nothing). Cached.
+    func tokenName(for m: InspectorMeasure) async -> String {
+        if let cached = measureTokenNames[m.id] { return cached }
+        var name = ""
+        if let token = measureToken(m) {
+            let value = Self.fmt(m.value)
+            let resolution = await resolveTokenExactly(token.arg.expr, refs: token.arg.refs, binding: token.arg.binding,
+                                                       probe: token.arg.probe, stack: token.stack, runtimeValue: value)
+                ?? resolveToken(token.arg.expr, stack: token.stack, runtimeValue: value)
+            // The root when one was reached, else what the source wrote.
+            name = measureRoot(m, resolution, near: token.stack.first)?.name ?? token.arg.expr
+        } else if let style = systemStyle(around: m.nodeID) {
+            name = "SwiftUI \(style)"
+        } else if usesDefaultSpacing(m) {
+            name = "SwiftUI default spacing"
+        }
+        measureTokenNames[m.id] = name
+        return name
     }
 
     /// A SwiftUI built-in style the node is drawn by (`.buttonStyle(.bordered)`
@@ -270,6 +293,15 @@ extension UIInspectorViewModel {
         return nil
     }
 
+    /// A gap in a stack written without `spacing:` — SwiftUI's own default
+    /// (about 8 pt), not a token and not zero.
+    func usesDefaultSpacing(_ m: InspectorMeasure) -> Bool {
+        guard m.kind == .gap,
+              let entry = (chainTag(of: m.nodeID)?.stack ?? sourceStack(for: m.nodeID)).first.flatMap({ sourceEntry(for: $0) }),
+              Self.stackAxis(entry.call) != nil else { return false }
+        return !entry.args.contains { $0.label == "spacing" }
+    }
+
     // MARK: - Details
 
     /// The attributes panel's block for a picked measure, with the token behind it.
@@ -278,6 +310,8 @@ extension UIInspectorViewModel {
         let token = measureToken(m)
         if token == nil, let style = systemStyle(around: m.nodeID) {
             rows.append(.init(key: "Drawn by", value: "SwiftUI \(style) (built in, no source)"))
+        } else if token == nil, usesDefaultSpacing(m) {
+            rows.append(.init(key: "Source", value: "SwiftUI default spacing — the stack has no spacing: argument (write spacing: 0 for none)"))
         }
         rows.append(.init(key: "Value", value: Self.fmt(m.value), token: token?.arg.expr, tokenStack: token?.stack ?? [],
                           tokenValue: Self.fmt(m.value), tokenRefs: token?.arg.refs, tokenProbe: token?.arg.probe,
@@ -287,7 +321,7 @@ extension UIInspectorViewModel {
 
     /// The source argument that set it: the matching `.padding(…)` of the
     /// padded view, the stack's `spacing:`, the shape's `cornerRadius`.
-    private func measureToken(_ m: InspectorMeasure) -> (arg: InspectorSourceMapEntry.Argument, stack: [InspectorSourceTag])? {
+    func measureToken(_ m: InspectorMeasure) -> (arg: InspectorSourceMapEntry.Argument, stack: [InspectorSourceTag])? {
         switch m.kind {
         case .padding:
             guard let source = paddingSource(m.nodeID), let arg = source.mod.args.first(where: \.token) else { return nil }
@@ -331,7 +365,9 @@ extension UIInspectorViewModel {
     /// measure's token the way the preview does and append one JSON line per
     /// measure to the file — the token found, or why there's none.
     func auditMeasuresIfRequested() {
-        guard let path = ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"], let root = currentWindow?.root else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["MYGIT_AUDIT_MEASURES"] ?? env["MYGIT_REDLINES"] ?? env["MYGIT_FIGMA_FAKE"] ?? env["MYGIT_SPEC"] ?? env["MYGIT_3D"],
+              let root = currentWindow?.root else { return }
         // One audit per screen: identified by the tags on it.
         var tags = Set<String>()
         var stack = [root]
@@ -344,6 +380,52 @@ extension UIInspectorViewModel {
         guard signature == lastAuditSignature else { lastAuditSignature = signature; return }
         guard !auditedScreens.contains(signature) else { return }
         auditedScreens.insert(signature)
+        if let fake = env["MYGIT_FIGMA_FAKE"], let data = FileManager.default.contents(atPath: fake),
+           let node = try? JSONDecoder().decode(FigmaNode.self, from: data), let window = currentWindow {
+            figmaNode = node
+            figmaArea = CGRect(origin: .zero, size: window.size)
+            compareWithFigma()
+            let text = figmaFindings.map { "\($0.ok ? "OK" : "MISMATCH")\t\($0.title)\t\($0.detail)" }.joined(separator: "\n") + "\n"
+            try? text.write(toFile: fake + ".out", atomically: true, encoding: .utf8)
+            return
+        }
+        if let png = env["MYGIT_3D"] {
+            // MYGIT_3D_RANGE=lo-hi narrows the layers; the render is 1200×900.
+            if let spec = env["MYGIT_3D_RANGE"]?.split(separator: "-").compactMap({ Int($0) }), spec.count == 2 {
+                layerRange = max(0, spec[0])...min(maxDepth, max(spec[0], spec[1]))
+            }
+            if let window = currentWindow {
+                let size = CGSize(width: 1200, height: 900)
+                let scale = min(size.width / window.size.width, size.height / window.size.height) * 0.6
+                let renderer = ImageRenderer(content: Inspector3DCanvas(window: window, scale: scale)
+                    .environmentObject(self).frame(width: size.width, height: size.height)
+                    .background(Color(NSColor.underPageBackgroundColor)))
+                renderer.scale = 1
+                if let data = renderer.nsImage?.pngData() { try? data.write(to: URL(fileURLWithPath: png)) }
+            }
+            return
+        }
+        if let png = env["MYGIT_SPEC"], let source = env["MYGIT_SPEC_SOURCE"] {
+            // The view tagged "File.swift:line", as selected from the outline.
+            guard let tagID = allTagNodeIDs().first(where: { id in
+                rawNode(id)?.props["value"].flatMap(InspectorSourceTag.init)?.label == source
+            }) else { return }
+            let nodeID = visibleOwner(below: tagID)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard let snapshot = await specSnapshot(for: nodeID),
+                      let data = InspectorSpecWindow.render(snapshot, size: CGSize(width: 1200, height: 800),
+                                                            hovered: env["MYGIT_SPEC_HOVER"].flatMap { Int($0) })?.pngData() else { return }
+                try? data.write(to: URL(fileURLWithPath: png))
+            }
+            return
+        }
+        if let png = env["MYGIT_REDLINES"] {
+            Task { @MainActor [weak self] in
+                if let data = await self?.redlinesImage(area: nil)?.pngData() { try? data.write(to: URL(fileURLWithPath: png)) }
+            }
+            return
+        }
         let measures = collectMeasures()
         let screen = ProcessInfo.processInfo.environment["MYGIT_AUDIT_SCREEN"] ?? "screen-\(auditedScreens.count)"
         Task { @MainActor in

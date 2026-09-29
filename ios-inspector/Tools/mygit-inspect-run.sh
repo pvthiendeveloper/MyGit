@@ -105,9 +105,10 @@ if [ "$PHYSICAL" = 1 ] && [ -z "${MYGIT_DEVELOPMENT_TEAM:-}" ] && [ -f "$SIGNING
   while IFS= read -r line; do [ -n "$line" ] && TEAM_FLAGS+=("$line"); done < "$SIGNING"
 fi
 
+DEST="id=$DEVICE"
 build() {
   (cd "$SRC" && xcrun xcodebuild "$CONTAINER_FLAG" "$CONTAINER" -scheme "$SCHEME" -configuration Debug \
-     "${SDK_FLAGS[@]}" -destination "id=$DEVICE" -derivedDataPath "$DERIVED" \
+     "${SDK_FLAGS[@]}" -destination "$DEST" -derivedDataPath "$DERIVED" \
      ${TEAM_FLAGS[@]+"${TEAM_FLAGS[@]}"} build) 2>&1 | tee "$LOG" \
      | grep -E --line-buffered '(: error:|\*\* BUILD)' || true
   grep -q '\*\* BUILD SUCCEEDED \*\*' "$LOG"
@@ -119,6 +120,13 @@ build() {
 ATTEMPT=1
 UNPROBED=" "
 until build; do
+  # The iPhone isn't reachable right now (unplugged, and not found over
+  # Wi-Fi): the build doesn't need it — only the install does.
+  if [ "$PHYSICAL" = 1 ] && [ "$DEST" != "generic/platform=iOS" ] && grep -q 'Unable to find a destination matching' "$LOG"; then
+    echo "▶ xcodebuild can't see the iPhone right now — building for any iOS device"
+    DEST="generic/platform=iOS"
+    continue
+  fi
   if [ "$PHYSICAL" = 1 ] && [ ${#TEAM_FLAGS[@]} -eq 0 ] && grep -q 'requires a development team' "$LOG"; then
     TEAM="$(pick_team)"
     if [ -n "$TEAM" ]; then
@@ -157,7 +165,63 @@ echo "▶ built in $(( $(date +%s) - START ))s"
 if [ "$PHYSICAL" = 1 ]; then
   echo "▶ installing on device ..."
   INSTALLED=0
-  install() { INSTALL_OUT="$(xcrun devicectl device install app --device "$DEVICE" "$APP" 2>&1)" && INSTALLED=1; }
+  # An app embedding MyGitInspector must declare its Bonjour service and a
+  # local-network reason, or iOS silently refuses to advertise it on a device
+  # (the simulator doesn't check). Add both to the built app when missing and
+  # re-sign it with the identity it was signed with.
+  patch_inspector_plist() {
+    local app="$1" plist="$1/Info.plist" auth sha
+    LC_ALL=C grep -aqs 'mygitinspect' "$app"/* || return 0
+    if /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" 2>/dev/null | grep -q '_mygitinspect._tcp' \
+       && /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$plist" >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "▶ adding the UI Inspector's Bonjour service to Info.plist"
+    /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" >/dev/null 2>&1 \
+      || /usr/libexec/PlistBuddy -c 'Add :NSBonjourServices array' "$plist"
+    /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" | grep -q '_mygitinspect._tcp' \
+      || /usr/libexec/PlistBuddy -c 'Add :NSBonjourServices: string _mygitinspect._tcp' "$plist"
+    /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$plist" >/dev/null 2>&1 \
+      || /usr/libexec/PlistBuddy -c 'Add :NSLocalNetworkUsageDescription string MyGit UI Inspector connects to this debug build over the local network.' "$plist"
+    auth="$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+    [ -n "$auth" ] || return 0   # unsigned (simulator): nothing to re-sign
+    sha="$(security find-identity -v -p codesigning | grep -F "\"$auth\"" | awk '{print $2}' | head -1)"
+    codesign -f -s "${sha:-$auth}" --preserve-metadata=identifier,entitlements,flags "$app"
+  }
+  # CoreDevice's tunnel state for a UDID: "connected" / "disconnected" are
+  # reachable; "unavailable" means unplugged and not found over Wi-Fi — busy or
+  # client-isolated networks (offices, cafés) block that discovery.
+  device_state() {
+    local json n i
+    json="$(mktemp)"
+    xcrun devicectl list devices --json-output "$json" --quiet >/dev/null 2>&1 || { rm -f "$json"; return 0; }
+    n="$(plutil -extract result.devices raw -o - "$json" 2>/dev/null || echo 0)"
+    for ((i = 0; i < n; i++)); do
+      if [ "$(plutil -extract "result.devices.$i.hardwareProperties.udid" raw -o - "$json" 2>/dev/null)" = "$1" ]; then
+        plutil -extract "result.devices.$i.connectionProperties.tunnelState" raw -o - "$json" 2>/dev/null || true
+        break
+      fi
+    done
+    rm -f "$json"
+  }
+  # Wait for an unreachable iPhone instead of failing the install.
+  wait_for_device() {
+    local device="$1" waited=0
+    while [ "$(device_state "$device")" = "unavailable" ]; do
+      if [ "$waited" -ge 180 ]; then
+        echo "✘ the iPhone still isn't reachable — connect it with a USB cable and run again" >&2
+        exit 1
+      fi
+      [ "$waited" -eq 0 ] && echo "▶ the iPhone isn't reachable — connect it with a USB cable (busy Wi-Fi networks often hide it); waiting up to 3 min ..."
+      sleep 3
+      waited=$((waited + 3))
+    done
+  }
+  wait_for_device "$DEVICE"
+  install() {
+    patch_inspector_plist "$APP"
+    INSTALL_OUT="$(xcrun devicectl device install app --device "$DEVICE" "$APP" 2>&1)" && INSTALLED=1
+  }
   if ! install; then
     # The device already has this bundle ID from a team this Mac can't sign
     # for. When we picked the team ourselves, install side by side under
@@ -180,7 +244,25 @@ if [ "$PHYSICAL" = 1 ]; then
     fi
     exit 1
   fi
-  xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE_ID"
+  # A locked iPhone refuses the launch: wait for it to be unlocked instead of failing.
+  launch_on_device() {
+    local device="$1" bundle="$2" out waited=0
+    while :; do
+      if out="$(xcrun devicectl device process launch --terminate-existing --device "$device" "$bundle" 2>&1)"; then
+        echo "$out" | tail -1
+        return 0
+      fi
+      if grep -q 'could not be, unlocked\|BSErrorCodeDescription = Locked' <<< "$out" && [ "$waited" -lt 120 ]; then
+        [ "$waited" -eq 0 ] && echo "▶ the iPhone is locked — unlock it to launch the app (waiting up to 2 min) ..."
+        sleep 3
+        waited=$((waited + 3))
+        continue
+      fi
+      echo "$out" >&2
+      return 1
+    done
+  }
+  launch_on_device "$DEVICE" "$BUNDLE_ID"
 else
   echo "▶ booting simulator ..."
   xcrun simctl boot "$DEVICE" 2>/dev/null || true

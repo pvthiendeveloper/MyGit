@@ -5,7 +5,8 @@ import UIKit
 /// TCP listener advertised over Bonjour. Wire format, both directions: a
 /// 4-byte big-endian length, then that many bytes of UTF-8 JSON.
 ///
-/// Requests:  `{"id": 1, "method": "info" | "hierarchy" | "highlight", "params": {…}}`
+/// Requests:  `{"id": 1, "method": "info" | "hierarchy" | "highlight" | "tap" | "longPress" | "drag"
+///             | "type" | "scroll" | "back", "params": {…}}`
 /// Responses: `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`
 final class InspectorServer {
     private let serviceName: String
@@ -95,10 +96,56 @@ final class InspectorServer {
                     windowIndex: (params["window"] as? NSNumber)?.intValue ?? 0
                 )
                 reply["result"] = [String: Any]()
+            case "frame":
+                let window = (params["window"] as? NSNumber)?.intValue ?? 0
+                let scale = CGFloat((params["scale"] as? NSNumber)?.doubleValue ?? 1)
+                let quality = CGFloat((params["quality"] as? NSNumber)?.doubleValue ?? 0.6)
+                if let frame = HierarchyCapture.frame(windowIndex: window, scale: scale, quality: quality) {
+                    reply["result"] = frame
+                } else {
+                    reply["error"] = "No window at that index."
+                }
+            case "tap", "longPress", "drag", "type", "scroll", "back":
+                // Touches finish over several run-loop turns: reply when done.
+                Self.interact(method, params) { error in
+                    if let error { reply["error"] = error.localizedDescription } else { reply["result"] = [String: Any]() }
+                    self.send(reply, on: connection)
+                }
+                return
             default:
                 reply["error"] = "Unknown method \(method)"
             }
             self.send(reply, on: connection)
+        }
+    }
+
+    /// `tap {x, y, window}`, `longPress {x, y, duration}`, `drag {x, y, toX, toY, duration}`,
+    /// `type {text}`, `scroll {x, y, dx, dy}`, `back {window}` — points in window coordinates.
+    private static func interact(_ method: String, _ params: [String: Any], done: @escaping (Error?) -> Void) {
+        func number(_ key: String, _ fallback: Double = 0) -> Double { (params[key] as? NSNumber)?.doubleValue ?? fallback }
+        let window = Int(number("window"))
+        let point = CGPoint(x: number("x"), y: number("y"))
+        do {
+            switch method {
+            case "tap":
+                InteractionDriver.tap(point, window: window, done: done)
+            case "longPress":
+                InteractionDriver.longPress(point, duration: number("duration", 0.8), window: window, done: done)
+            case "drag":
+                InteractionDriver.drag(from: point, to: CGPoint(x: number("toX"), y: number("toY")),
+                                       duration: number("duration", 0.3), window: window, done: done)
+            case "type":
+                try InteractionDriver.type(params["text"] as? String ?? "")
+                done(nil)
+            case "scroll":
+                try InteractionDriver.scroll(at: point, by: CGVector(dx: number("dx"), dy: number("dy")), window: window)
+                done(nil)
+            default:
+                try InteractionDriver.back(window: window)
+                done(nil)
+            }
+        } catch {
+            done(error)
         }
     }
 

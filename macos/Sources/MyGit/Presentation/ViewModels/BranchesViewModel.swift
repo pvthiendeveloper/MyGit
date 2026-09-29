@@ -64,6 +64,12 @@ final class BranchesViewModel: ObservableObject {
     }
 
     func checkout(_ branch: GitBranch) async {
+        if branch.isRemote, let repo = repoSource() {
+            await RemoteCheckout.run(remoteRef: branch.name, repo: repo.url, git: git, main: main) { op in
+                await self.runOp(op)
+            }
+            return
+        }
         await runOp { try await self.git.checkout(branch.checkoutName, at: $0) }
     }
 

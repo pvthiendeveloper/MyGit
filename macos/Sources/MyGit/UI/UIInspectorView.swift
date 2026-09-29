@@ -9,7 +9,8 @@ final class UIInspectorWindow: NSObject, NSWindowDelegate {
     private let viewModel = UIInspectorViewModel()
 
     static func open(sourceNavigator: InspectorSourceNavigating?, runWithInspector: (() -> Void)? = nil,
-                     ai: CommitMessageRepository? = nil, aiConfig: (() -> AIRequestConfig?)? = nil) {
+                     ai: CommitMessageRepository? = nil, aiConfig: (() -> AIRequestConfig?)? = nil,
+                     credentials: CredentialRepository? = nil) {
         if let existing = shared?.window {
             existing.makeKeyAndOrderFront(nil)
             return
@@ -19,6 +20,7 @@ final class UIInspectorWindow: NSObject, NSWindowDelegate {
         instance.viewModel.runWithInspector = runWithInspector
         instance.viewModel.ai = ai
         instance.viewModel.aiConfig = aiConfig
+        instance.viewModel.credentials = credentials
         let hosting = NSHostingController(rootView: UIInspectorView().environmentObject(instance.viewModel))
         let win = NSWindow(contentViewController: hosting)
         win.title = "UI Inspector"
@@ -90,6 +92,11 @@ struct InspectorSourceMenu: View {
         // Exact locations first, when the app was run with source tags.
         if let first = stack.first {
             Button("Open \(first.label)") { vm.open(first) }
+        }
+        Button("Show Spec…") { vm.openSpec(for: node.id) }
+            .disabled(vm.specMeasures(for: node.id).isEmpty)
+        if stack.first == nil { Divider() }
+        if stack.first != nil {
             if stack.count > 1 {
                 Menu("Enclosing Views") {
                     ForEach(stack.dropFirst()) { tag in
@@ -115,6 +122,12 @@ struct InspectorSourceMenu: View {
         }
         if types.isEmpty && text == nil {
             Text("No app code found for this view")
+        }
+        Divider()
+        Button("Hide View") { vm.hide(node.id) }
+        Button("Hide Others") { vm.hideOthers(node.id) }
+        if !vm.hiddenIDs.isEmpty {
+            Button("Show Hidden Views (\(vm.hiddenIDs.count))") { vm.showHiddenViews() }
         }
         Divider()
         Button("Copy Type Name") { copy(node.shortName) }
@@ -175,6 +188,10 @@ private struct SourcePickerSheet: View {
 
 private struct InspectorToolbar: View {
     @EnvironmentObject var vm: UIInspectorViewModel
+    @State private var askingFigmaLink = false
+    @State private var askingFigmaToken = false
+    @State private var figmaLinkText = ""
+    @State private var figmaTokenText = ""
 
     var body: some View {
         HStack(spacing: 10) {
@@ -251,24 +268,76 @@ private struct InspectorToolbar: View {
                     .help(error)
             }
 
+            TextField("Find token", text: $vm.tokenQuery)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 180)
+                .help("Highlight every view on screen using a token — by the source's name or the design token at its root (e.g. patternGapElementToElement)")
+            if !vm.tokenQuery.isEmpty {
+                Text("\(vm.tokenMatches.count)").font(.caption).foregroundStyle(.secondary)
+            }
+            Menu {
+                Button("Link Frame…") { figmaLinkText = vm.figmaLink ?? ""; askingFigmaLink = true }
+                    .disabled(vm.currentWindow == nil)
+                if vm.figmaNode != nil {
+                    Toggle("Overlay", isOn: $vm.showFigma)
+                    Button("Compare Again") { vm.compareWithFigma() }
+                    Button("Unlink") { vm.unlinkFigma() }
+                }
+                Divider()
+                Button(vm.hasFigmaToken ? "Change Token…" : "Set Token…") { figmaTokenText = ""; askingFigmaToken = true }
+            } label: {
+                Label(vm.figmaLoading ? "Figma…" : "Figma", systemImage: "square.on.square.dashed")
+            }
+            .fixedSize()
+            .help("Lay a Figma frame over the selected view (or the screen) and compare its auto layout, corners and text colors with the app")
+            .alert("Link a Figma frame", isPresented: $askingFigmaLink) {
+                TextField("https://www.figma.com/design/…?node-id=…", text: $figmaLinkText)
+                Button("Link") { vm.linkFigma(figmaLinkText) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Right-click the frame in Figma ▸ Copy link. It's laid over the selected view, or the whole screen if nothing is selected.")
+            }
+            .alert("Figma personal access token", isPresented: $askingFigmaToken) {
+                SecureField("figd_…", text: $figmaTokenText)
+                Button("Save") { vm.setFigmaToken(figmaTokenText) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Figma ▸ Settings ▸ Security ▸ Personal access tokens (read access to files). Kept in MyGit's keychain.")
+            }
+            Menu {
+                Button("Copy to Clipboard") { vm.exportRedlines(save: false) }
+                Button("Save as PNG…") { vm.exportRedlines(save: true) }
+            } label: {
+                Label(vm.redlinesRunning ? "Redlines…" : "Redlines", systemImage: "ruler")
+            }
+            .fixedSize()
+            .disabled(vm.currentWindow?.image == nil || vm.redlinesRunning)
+            .help("The selected view (or the whole screen) with every padding, gap and corner labeled with its value and token")
+            Toggle("Interact", isOn: $vm.interactMode)
+                .toggleStyle(.checkbox)
+                .disabled(vm.connected == nil)
+                .help("Drive the app from the preview: click to tap, hold for a long press, drag, scroll, and type into the focused field")
+            if vm.interactMode {
+                Button { vm.goBack() } label: { Image(systemName: "chevron.backward") }
+                    .help("Back: pop the navigation stack or dismiss the sheet")
+            }
             Toggle("Spacing", isOn: $vm.measureMode)
                 .toggleStyle(.checkbox)
                 .help("Hover and click paddings, gaps between stack items and rounded corners in the preview to see their values and tokens (highlighted in pink)")
-            Toggle("Source Views", isOn: $vm.sourceViewsOnly)
-                .toggleStyle(.checkbox)
-                .help("Only the views written in your code (named as written), text, and public UIKit views — SwiftUI plumbing and system controls' private parts are folded away. Needs Run with Inspector.")
-            Toggle("Hide Modifiers", isOn: $vm.hideModifiers)
-                .disabled(vm.sourceViewsOnly)
-                .toggleStyle(.checkbox)
-                .help("Fold SwiftUI modifiers (padding, accessibility, layout wrappers) into their content")
-            Toggle("Compact Chains", isOn: $vm.compactChains)
-                .toggleStyle(.checkbox)
-                .help("Show runs of single-child views as one row (A › B › C), like Android Studio's Compact Middle Packages")
-            Toggle("Wireframes", isOn: $vm.showWireframes)
-                .toggleStyle(.checkbox)
-            Toggle("Highlight on Device", isOn: $vm.highlightOnDevice)
-                .toggleStyle(.checkbox)
-                .help("Outline the selected view in the running app too")
+            // Display options, out of the way of the tools.
+            Menu {
+                Toggle("Source Views", isOn: $vm.sourceViewsOnly)
+                Toggle("Hide Modifiers", isOn: $vm.hideModifiers)
+                    .disabled(vm.sourceViewsOnly)
+                Toggle("Compact Chains", isOn: $vm.compactChains)
+                Divider()
+                Toggle("Wireframes", isOn: $vm.showWireframes)
+                Toggle("Highlight on Device", isOn: $vm.highlightOnDevice)
+            } label: {
+                Label("View", systemImage: "eye")
+            }
+            .fixedSize()
+            .help("Source Views: only the views written in your code. Hide Modifiers / Compact Chains: fold the outline. Wireframes, Highlight on Device: preview and device outlines.")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -427,6 +496,8 @@ private struct OutlineRow: View {
         }
         .frame(width: width, height: 20, alignment: .leading)
         .foregroundStyle(selected ? Color.white : Color.primary)
+        // Hidden in the preview (by hand, or outside the layer range): dimmed here.
+        .opacity(vm.isInLayers(node.id) ? 1 : 0.4)
         .background(selected ? Color.accentColor : (row.contains(vm.hoveredID) ? Color.primary.opacity(0.06) : .clear))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -515,7 +586,13 @@ private struct InspectorPreview: View {
     @State private var viewport: CGSize = .zero
     @State private var scrollOffset: CGPoint = .zero
     @State private var pointer: CGPoint?
+    /// The pointer over the canvas, in window points.
+    @State private var canvasPointer: CGPoint?
     @State private var position = ScrollPosition(point: .zero)
+    /// Interact mode: where and when the current press began (window points).
+    @State private var press: (start: CGPoint, time: Date)?
+    @State private var pendingScroll: (point: CGPoint, delta: CGVector)?
+    @FocusState private var previewFocused: Bool
     private static let zoomRange: ClosedRange<CGFloat> = 0.5...4
 
     var body: some View {
@@ -525,6 +602,20 @@ private struct InspectorPreview: View {
                     let fit = min((geo.size.width - 40) / max(window.size.width, 1),
                                   (geo.size.height - 40) / max(window.size.height, 1))
                     let scale = max(0.05, fit * zoom)
+                    if vm.show3D {
+                        Inspector3DCanvas(window: window, scale: scale)
+                            .simultaneousGesture(
+                                MagnifyGesture()
+                                    .onChanged { value in
+                                        let base = pinchBase ?? zoom
+                                        pinchBase = base
+                                        zoom = Self.clamp(base * value.magnification)
+                                    }
+                                    .onEnded { _ in pinchBase = nil }
+                            )
+                            .onHover { pointerInside = $0 }
+                            .onAppear { viewport = geo.size }
+                    } else {
                     ScrollView([.horizontal, .vertical]) {
                         canvas(window, scale: scale)
                             .padding(20)
@@ -550,27 +641,100 @@ private struct InspectorPreview: View {
                     }
                     .onAppear { viewport = geo.size }
                     .onChange(of: geo.size) { _, size in viewport = size }
+                    }
                 }
             }
             Divider()
             HStack {
                 breadcrumb
                 Spacer()
+                InspectorLayerControls()
+                    .onChange(of: vm.show3D) { _, on in if on { vm.interactMode = false } }
+                if vm.showFigma {
+                    Text("Figma").font(.caption).foregroundStyle(.secondary)
+                    Slider(value: $vm.figmaOpacity, in: 0...1).frame(width: 90)
+                }
                 Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
                 Slider(value: $zoom, in: Self.zoomRange)
                     .frame(width: 120)
                 Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
                 Button("Fit") { zoom = 1 }
                     .buttonStyle(.borderless)
+                Menu {
+                    Button("Copy Screenshot") { vm.exportScreenshot(selectedOnly: false, save: false) }
+                    Button("Save Screenshot…") { vm.exportScreenshot(selectedOnly: false, save: true) }
+                    if !vm.show3D {
+                        Button("Copy Without Inspector Marks") { vm.exportScreenshot(selectedOnly: false, marks: false, save: false) }
+                        Button("Save Without Inspector Marks…") { vm.exportScreenshot(selectedOnly: false, marks: false, save: true) }
+                    }
+                    if vm.selectedNode != nil, !vm.show3D {
+                        Divider()
+                        Button("Copy Selected View") { vm.exportScreenshot(selectedOnly: true, save: false) }
+                        Button("Save Selected View…") { vm.exportScreenshot(selectedOnly: true, save: true) }
+                    }
+                } label: {
+                    Image(systemName: "camera")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(vm.currentWindow == nil)
+                .help("Screenshot the preview (full resolution) — copy, or save as PNG")
+                Button { vm.toggleRecording() } label: {
+                    if let recorder = vm.recorder {
+                        TimelineView(.periodic(from: recorder.started, by: 1)) { context in
+                            let seconds = Int(context.date.timeIntervalSince(recorder.started))
+                            Label(String(format: "%d:%02d", seconds / 60, seconds % 60), systemImage: "stop.circle.fill")
+                                .foregroundStyle(.red)
+                                .monospacedDigit()
+                        }
+                    } else {
+                        Image(systemName: vm.recordingSaving ? "hourglass" : "record.circle")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(vm.connected == nil || vm.recordingSaving)
+                .help(vm.recorder == nil
+                      ? "Record the app's screen to a movie, like Simulator's Record Screen"
+                      : "Stop recording and save the movie")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
         }
         .background(Color(NSColor.underPageBackgroundColor))
+        // Interact mode: keys go to the app's focused text input.
+        .focusable(vm.interactMode)
+        .focused($previewFocused)
+        .focusEffectDisabled()
+        .onKeyPress(phases: .down) { key in
+            guard vm.interactMode else { return .ignored }
+            switch key.key {
+            case .return: vm.type("\n")
+            case .delete: vm.type("\u{8}")
+            default:
+                guard !key.characters.isEmpty, !key.modifiers.contains(.command) else { return .ignored }
+                vm.type(key.characters)
+            }
+            return .handled
+        }
         .onAppear { installScrollZoom() }
         .onDisappear {
             if let scrollMonitor { NSEvent.removeMonitor(scrollMonitor) }
             scrollMonitor = nil
+        }
+    }
+
+    /// Scroll deltas come dozens a second: add them up and send every 50 ms.
+    private func sendScroll(at point: CGPoint, dx: CGFloat, dy: CGFloat) {
+        if let pending = pendingScroll {
+            pendingScroll = (point, CGVector(dx: pending.delta.dx + dx, dy: pending.delta.dy + dy))
+            return
+        }
+        pendingScroll = (point, CGVector(dx: dx, dy: dy))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard let pending = pendingScroll else { return }
+            pendingScroll = nil
+            vm.scroll(at: pending.point, dx: pending.delta.dx, dy: pending.delta.dy)
         }
     }
 
@@ -604,6 +768,12 @@ private struct InspectorPreview: View {
     private func installScrollZoom() {
         guard scrollMonitor == nil else { return }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            // Interact mode: scrolling scrolls the app (⌘ still zooms the preview).
+            if pointerInside, vm.interactMode, !event.modifierFlags.contains(.command), let point = canvasPointer {
+                let lines: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+                sendScroll(at: point, dx: -event.scrollingDeltaX * lines, dy: -event.scrollingDeltaY * lines)
+                return nil
+            }
             guard pointerInside, event.modifierFlags.contains(.command) else { return event }
             let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY / 200 : event.scrollingDeltaY / 20
             guard delta != 0 else { return nil }
@@ -614,43 +784,7 @@ private struct InspectorPreview: View {
 
     private func canvas(_ window: InspectorWindow, scale: CGFloat) -> some View {
         let size = CGSize(width: window.size.width * scale, height: window.size.height * scale)
-        return ZStack(alignment: .topLeading) {
-            if let image = window.image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: size.width, height: size.height)
-            } else {
-                Rectangle().fill(Color.gray.opacity(0.2))
-            }
-            Canvas { context, _ in
-                func rect(_ f: CGRect) -> CGRect {
-                    CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale)
-                }
-                if vm.showWireframes {
-                    for node in vm.wireframeNodes {
-                        context.stroke(Path(rect(node.frame)), with: .color(.gray.opacity(0.35)), lineWidth: 0.5)
-                    }
-                }
-                if let hovered = vm.hoveredNode, hovered.id != vm.selectedID {
-                    context.stroke(Path(rect(hovered.frame)), with: .color(.orange), lineWidth: 1)
-                }
-                if let selected = vm.selectedNode {
-                    let r = rect(selected.frame)
-                    context.fill(Path(r), with: .color(.accentColor.opacity(vm.selectedMeasure == nil ? 0.18 : 0.06)))
-                    context.stroke(Path(r), with: .color(.accentColor), lineWidth: vm.selectedMeasure == nil ? 1.5 : 0.75)
-                }
-                // Measures: pink, so they never read as a view.
-                if let picked = vm.selectedMeasure {
-                    drawMeasure(picked, in: &context, rect: rect(picked.rect), strong: true, scale: scale, canvas: size)
-                }
-                if let hovered = vm.hoveredMeasure, hovered.id != vm.selectedMeasure?.id {
-                    drawMeasure(hovered, in: &context, rect: rect(hovered.rect), strong: false, scale: scale, canvas: size)
-                }
-            }
-            .frame(width: size.width, height: size.height)
-            .allowsHitTesting(false)
-        }
+        return InspectorCanvasLayers(window: window, scale: scale, live: vm.interactMode)
         .frame(width: size.width, height: size.height)
         .overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.primary.opacity(0.15)))
         .contentShape(Rectangle())
@@ -661,6 +795,9 @@ private struct InspectorPreview: View {
                 // Also the zoom anchor, in the scroll view's coordinates.
                 pointer = CGPoint(x: max(0, (viewport.width - size.width - 40) / 2) + 20 + location.x - scrollOffset.x,
                                   y: max(0, (viewport.height - size.height - 40) / 2) + 20 + location.y - scrollOffset.y)
+                canvasPointer = point
+                // Driving the app: no view picking under the pointer.
+                guard !vm.interactMode else { vm.hoveredID = nil; vm.hoveredMeasureID = nil; return }
                 let measure = vm.measureMode ? vm.measure(at: point) : nil
                 vm.hoveredMeasureID = measure?.id
                 vm.hoveredID = measure == nil ? vm.node(at: point)?.id : nil
@@ -669,7 +806,31 @@ private struct InspectorPreview: View {
                 vm.hoveredMeasureID = nil
             }
         }
+        // Interact mode: the press decides — a click taps, a hold long-presses, a move drags.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard vm.interactMode, press == nil else { return }
+                    press = (CGPoint(x: value.startLocation.x / scale, y: value.startLocation.y / scale), Date())
+                    previewFocused = true
+                }
+                .onEnded { value in
+                    guard vm.interactMode, let begun = press else { press = nil; return }
+                    press = nil
+                    let end = CGPoint(x: value.location.x / scale, y: value.location.y / scale)
+                    let held = Date().timeIntervalSince(begun.time)
+                    if hypot(end.x - begun.start.x, end.y - begun.start.y) < 4 {
+                        if held >= 0.5 { vm.longPress(begun.start, duration: held) } else { vm.tap(begun.start) }
+                    } else {
+                        vm.drag(from: begun.start, to: end, duration: held)
+                    }
+                },
+            // Only while interacting: a zero-distance drag claims every click,
+            // which would starve the tap that selects a view.
+            including: vm.interactMode ? .all : .subviews
+        )
         .onTapGesture { location in
+            guard !vm.interactMode else { return }
             let point = CGPoint(x: location.x / scale, y: location.y / scale)
             if vm.measureMode, let measure = vm.measure(at: point) {
                 vm.select(measure)
@@ -683,54 +844,6 @@ private struct InspectorPreview: View {
             }
         }
     }
-
-    /// A measure's region, filled pink, with its value in a pill; the token
-    /// behind it goes in a second pill outside the highlighted view, so it
-    /// never covers what's being inspected.
-    private func drawMeasure(_ m: InspectorMeasure, in context: inout GraphicsContext, rect r: CGRect,
-                             strong: Bool, scale: CGFloat, canvas: CGSize) {
-        let pink = Color(red: 0.93, green: 0.2, blue: 0.55)
-        context.fill(Path(r), with: .color(pink.opacity(strong ? 0.45 : 0.3)))
-        context.stroke(Path(r), with: .color(pink), lineWidth: strong ? 1.5 : 1)
-
-        func pill(_ text: String, centeredAt center: CGPoint) -> CGRect {
-            let label = context.resolve(Text(text)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(.white))
-            let size = label.measure(in: CGSize(width: 600, height: 40))
-            let box = CGRect(x: center.x - size.width / 2 - 4, y: center.y - size.height / 2 - 1,
-                             width: size.width + 8, height: size.height + 2)
-            context.fill(Path(roundedRect: box, cornerRadius: box.height / 2), with: .color(pink))
-            context.draw(label, at: CGPoint(x: box.midX, y: box.midY))
-            return box
-        }
-        let valuePill = pill(UIInspectorViewModel.fmt(m.value), centeredAt: CGPoint(x: r.midX, y: r.midY))
-
-        guard let token = vm.measureTokenNames[m.id], !token.isEmpty else { return }
-        // Clear of the view the measure belongs to and of the hovered/selected views.
-        var avoid = r
-        for id in [m.ownerID, vm.selectedID, vm.hoveredID].compactMap({ $0 }) {
-            if let f = vm.rawNode(id)?.frame {
-                avoid = avoid.union(CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale))
-            }
-        }
-        let label = context.resolve(Text(token)
-            .font(.system(size: 10, weight: .semibold, design: .rounded))
-            .foregroundColor(.white))
-        let size = label.measure(in: CGSize(width: 600, height: 40))
-        let height = size.height + 2
-        let below = avoid.maxY + 6 + height / 2
-        let y = below + height / 2 <= canvas.height ? below : max(height / 2, avoid.minY - 6 - height / 2)
-        let halfWidth = size.width / 2 + 4
-        let x = min(max(r.midX, halfWidth), max(halfWidth, canvas.width - halfWidth))
-        let tokenPill = pill(token, centeredAt: CGPoint(x: x, y: y))
-        // Leader from the value to its token.
-        var leader = Path()
-        leader.move(to: CGPoint(x: valuePill.midX, y: y > valuePill.midY ? valuePill.maxY : valuePill.minY))
-        leader.addLine(to: CGPoint(x: tokenPill.midX, y: y > valuePill.midY ? tokenPill.minY : tokenPill.maxY))
-        context.stroke(leader, with: .color(pink.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-    }
-
     private var breadcrumb: some View {
         let path = vm.selectionPath.suffix(4)
         return HStack(spacing: 4) {
@@ -750,8 +863,27 @@ private struct InspectorPreview: View {
 
 private struct InspectorAttributes: View {
     @EnvironmentObject var vm: UIInspectorViewModel
+    @AppStorage("MyGit.inspector.rightTab") private var tab = "details"
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                Text("Details").tag("details")
+                Text("Figma").tag("figma")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(8)
+            Divider()
+            switch tab {
+            case "figma": InspectorFigmaView()
+            default: details
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var details: some View {
         if let node = vm.selectedNode {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -1158,5 +1290,172 @@ private struct LiveDot: View {
             withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { breathing = true }
         }
         .accessibilityLabel("Live")
+    }
+}
+
+/// The Figma tab: the app against the linked frame, mismatches first.
+private struct InspectorFigmaView: View {
+    @EnvironmentObject var vm: UIInspectorViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let error = vm.figmaError {
+                Text(error).font(.caption).foregroundStyle(.red).padding(8)
+                    .fixedSize(horizontal: false, vertical: true)
+                Divider()
+            }
+            if vm.figmaNode == nil {
+                Text(vm.figmaLoading ? "Fetching the frame from Figma…"
+                     : "Figma ▸ Link Frame… lays a frame over the selected view (or the whole screen) and checks paddings, gaps, corners and text colors against it.\(vm.hasFigmaToken ? "" : " Set a token first (Figma ▸ Set Token…).")")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                HStack {
+                    let bad = vm.figmaFindings.filter { !$0.ok }.count
+                    Text("\(vm.figmaNode?.name ?? "") — \(bad) mismatch\(bad == 1 ? "" : "es"), \(vm.figmaFindings.count - bad) match")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Compare Again") { vm.compareWithFigma() }
+                }
+                .padding(8)
+                Divider()
+                List(vm.figmaFindings) { finding in
+                    Button { vm.selectFigmaFinding(finding) } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: finding.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(finding.ok ? .green : .red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(finding.title).font(.system(size: 11.5, weight: .medium))
+                                Text(finding.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+            }
+        }
+    }
+}
+
+/// What the preview draws: the screenshot, the Figma overlay, and the
+/// inspector marks (wireframes, hover, selection, token matches, measures).
+/// Also rendered on its own for screenshots.
+struct InspectorCanvasLayers: View {
+    @EnvironmentObject var vm: UIInspectorViewModel
+    let window: InspectorWindow
+    let scale: CGFloat
+    /// Interact mode: the streamed frame instead of the capture.
+    var live = false
+    /// Draw this instead (a screenshot's sharper frame).
+    var image: NSImage? = nil
+
+    var body: some View {
+        let size = CGSize(width: window.size.width * scale, height: window.size.height * scale)
+        ZStack(alignment: .topLeading) {
+            // Interact mode streams frames; otherwise the capture's screenshot.
+            if let image = image ?? (live ? vm.liveFrame : nil) ?? window.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: size.width, height: size.height)
+            } else {
+                Rectangle().fill(Color.gray.opacity(0.2))
+            }
+            if vm.showFigma, let design = vm.figmaImage, let root = vm.figmaNode?.absoluteBoundingBox,
+               let box = vm.appFrame(ofFigma: root) {
+                Image(nsImage: design)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: box.width * scale, height: box.height * scale)
+                    .offset(x: box.minX * scale, y: box.minY * scale)
+                    .opacity(vm.figmaOpacity)
+                    .allowsHitTesting(false)
+            }
+            Canvas { context, _ in
+                func rect(_ f: CGRect) -> CGRect {
+                    CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale)
+                }
+                if vm.showWireframes {
+                    for node in vm.wireframeNodes {
+                        context.stroke(Path(rect(node.frame)), with: .color(.gray.opacity(0.35)), lineWidth: 0.5)
+                    }
+                }
+                if let hovered = vm.hoveredNode, hovered.id != vm.selectedID {
+                    context.stroke(Path(rect(hovered.frame)), with: .color(.orange), lineWidth: 1)
+                }
+                if let selected = vm.selectedNode {
+                    let r = rect(selected.frame)
+                    context.fill(Path(r), with: .color(.accentColor.opacity(vm.selectedMeasure == nil ? 0.18 : 0.06)))
+                    context.stroke(Path(r), with: .color(.accentColor), lineWidth: vm.selectedMeasure == nil ? 1.5 : 0.75)
+                }
+                // "Find token" matches: teal.
+                for match in vm.tokenMatches {
+                    let r = rect(match.frame)
+                    context.fill(Path(r), with: .color(.teal.opacity(0.18)))
+                    context.stroke(Path(r), with: .color(.teal), lineWidth: 1.5)
+                }
+                // Measures: pink, so they never read as a view.
+                if let picked = vm.selectedMeasure {
+                    drawMeasure(picked, in: &context, rect: rect(picked.rect), strong: true, scale: scale, canvas: size)
+                }
+                if let hovered = vm.hoveredMeasure, hovered.id != vm.selectedMeasure?.id {
+                    drawMeasure(hovered, in: &context, rect: rect(hovered.rect), strong: false, scale: scale, canvas: size)
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// A measure's region, filled pink, with its value in a pill; the token
+    /// behind it goes in a second pill outside the highlighted view, so it
+    /// never covers what's being inspected.
+    private func drawMeasure(_ m: InspectorMeasure, in context: inout GraphicsContext, rect r: CGRect,
+                             strong: Bool, scale: CGFloat, canvas: CGSize) {
+        let pink = Color(red: 0.93, green: 0.2, blue: 0.55)
+        context.fill(Path(r), with: .color(pink.opacity(strong ? 0.45 : 0.3)))
+        context.stroke(Path(r), with: .color(pink), lineWidth: strong ? 1.5 : 1)
+
+        func pill(_ text: String, centeredAt center: CGPoint) -> CGRect {
+            let label = context.resolve(Text(text)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(.white))
+            let size = label.measure(in: CGSize(width: 600, height: 40))
+            let box = CGRect(x: center.x - size.width / 2 - 4, y: center.y - size.height / 2 - 1,
+                             width: size.width + 8, height: size.height + 2)
+            context.fill(Path(roundedRect: box, cornerRadius: box.height / 2), with: .color(pink))
+            context.draw(label, at: CGPoint(x: box.midX, y: box.midY))
+            return box
+        }
+        let valuePill = pill(UIInspectorViewModel.fmt(m.value), centeredAt: CGPoint(x: r.midX, y: r.midY))
+
+        guard let token = vm.measureTokenNames[m.id], !token.isEmpty else { return }
+        // Clear of the view the measure belongs to and of the hovered/selected views.
+        var avoid = r
+        for id in [m.ownerID, vm.selectedID, vm.hoveredID].compactMap({ $0 }) {
+            if let f = vm.rawNode(id)?.frame {
+                avoid = avoid.union(CGRect(x: f.minX * scale, y: f.minY * scale, width: f.width * scale, height: f.height * scale))
+            }
+        }
+        let label = context.resolve(Text(token)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .foregroundColor(.white))
+        let size = label.measure(in: CGSize(width: 600, height: 40))
+        let height = size.height + 2
+        let below = avoid.maxY + 6 + height / 2
+        let y = below + height / 2 <= canvas.height ? below : max(height / 2, avoid.minY - 6 - height / 2)
+        let halfWidth = size.width / 2 + 4
+        let x = min(max(r.midX, halfWidth), max(halfWidth, canvas.width - halfWidth))
+        let tokenPill = pill(token, centeredAt: CGPoint(x: x, y: y))
+        // Leader from the value to its token.
+        var leader = Path()
+        leader.move(to: CGPoint(x: valuePill.midX, y: y > valuePill.midY ? valuePill.maxY : valuePill.minY))
+        leader.addLine(to: CGPoint(x: tokenPill.midX, y: y > valuePill.midY ? tokenPill.minY : tokenPill.maxY))
+        context.stroke(leader, with: .color(pink.opacity(0.8)), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
     }
 }

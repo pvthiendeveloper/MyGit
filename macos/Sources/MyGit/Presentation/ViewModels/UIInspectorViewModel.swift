@@ -51,6 +51,22 @@ final class UIInspectorViewModel: ObservableObject {
     @Published var windowIndex = 0 { didSet { rebuildTree() } }
     @Published var selectedID: String? { didSet { selectionChanged(from: oldValue) } }
     @Published var hoveredID: String?
+
+    // Layers (like Xcode's view debugger): hide views and whole depth ranges
+    // to cut the noise, and pull the hierarchy apart in 3D.
+    /// Views hidden by hand, with everything inside them.
+    @Published var hiddenIDs: Set<String> = []
+    /// Visible depths of the outline tree, `layerRange.lowerBound…upperBound`.
+    @Published var layerRange: ClosedRange<Int> = 0...0
+    @Published var maxDepth = 0
+    @Published var show3D = false
+    /// Degrees; 0/0 looks straight at the screen.
+    @Published var yaw: Double = -28
+    @Published var pitch: Double = 12
+    /// Points between two layers in 3D.
+    @Published var layerSpacing: Double = 24
+    /// Depth of each outline node (roots are 0).
+    var depthOf: [String: Int] = [:]
     @Published var filter = "" { didSet { rebuildRows() } }
     /// Fold SwiftUI modifiers (`_PaddingLayout`, `AccessibilityAttachmentModifier`…)
     /// into their content, so the outline reads like the code.
@@ -80,6 +96,17 @@ final class UIInspectorViewModel: ObservableObject {
     var auditedScreens = Set<Int>()
     var lastAuditSignature: Int?
     var hoveredMeasure: InspectorMeasure? { hoveredMeasureID.flatMap { id in measures.first { $0.id == id } } }
+    /// Clicks, drags, scrolls and keys in the preview drive the app instead
+    /// of selecting views.
+    @Published var interactMode = false {
+        didSet {
+            if interactMode { hoveredID = nil; hoveredMeasureID = nil }
+            updateFrameStream()
+        }
+    }
+    /// Interact mode: the newest frame from the app (~10 a second), drawn
+    /// over the last full capture so the preview moves with the app.
+    @Published private(set) var liveFrame: NSImage?
     @Published var showWireframes: Bool { didSet { defaults.set(showWireframes, forKey: Keys.wireframes) } }
     /// Fold runs of single-child nodes into one `A › B › C` row.
     @Published var compactChains: Bool { didSet { defaults.set(compactChains, forKey: Keys.compact); rebuildRows() } }
@@ -161,15 +188,43 @@ final class UIInspectorViewModel: ObservableObject {
     private var connection: InspectorConnection?
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    private var recaptureTask: Task<Void, Never>?
+    private var frameTask: Task<Void, Never>?
+
+    /// The window as it is now, at `scale` and full quality — for a
+    /// screenshot while interacting (the stream is 2× and compressed).
+    func sharpFrame(scale: Double, quality: Double = 1) async -> NSImage? {
+        guard let connection else { return nil }
+        return try? await connection.frame(window: windowIndex, scale: scale, quality: quality)
+    }
+
+    private func updateFrameStream() {
+        frameTask?.cancel()
+        frameTask = nil
+        liveFrame = nil
+        guard interactMode, let connection else { return }
+        frameTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let started = Date()
+                guard let window = self?.windowIndex else { return }
+                // 2× is sharp enough on a Retina preview and small to send.
+                if let image = try? await connection.frame(window: window, scale: 2), !Task.isCancelled {
+                    self?.liveFrame = image
+                }
+                let spent = Date().timeIntervalSince(started)
+                try? await Task.sleep(nanoseconds: UInt64(max(0.02, 0.1 - spent) * 1_000_000_000))
+            }
+        }
+    }
     private let defaults: UserDefaults
 
     /// The current window's tree after folding modifiers.
-    private var nodes: [String: InspectorNode] = [:]
+    private(set) var nodes: [String: InspectorNode] = [:]
     private var childrenOf: [String: [String]] = [:]
-    private var parentOf: [String: String] = [:]
+    private(set) var parentOf: [String: String] = [:]
     private var rootIDs: [String] = []
     /// Pre-order, so hit-testing can prefer deeper nodes on ties.
-    private var order: [String] = []
+    private(set) var order: [String] = []
     private var collapsed: Set<String> = []
     /// The window's full tree (modifiers included), for the attributes panel.
     private var rawNodes: [String: InspectorNode] = [:]
@@ -178,6 +233,34 @@ final class UIInspectorViewModel: ObservableObject {
     private var tagNodeIDs: [String] = []
 
     func allTagNodeIDs() -> [String] { tagNodeIDs }
+    /// Source and style tags alike (for token lookups).
+    private var anyTagNodeIDs: [String] = []
+    func allAnyTagNodeIDs() -> [String] { anyTagNodeIDs }
+
+    @Published var redlinesRunning = false
+    /// Screen recording in progress (UIInspectorRecording.swift).
+    @Published var recorder: InspectorScreenRecorder?
+    @Published var recordingSaving = false
+
+    /// Figma (see `UIInspectorFigma.swift`).
+    var credentials: CredentialRepository?
+    @Published var figmaNode: FigmaNode?
+    @Published var figmaImage: NSImage?
+    @Published var figmaLink: String?
+    @Published var figmaArea: CGRect = .zero
+    @Published var showFigma = false
+    @Published var figmaOpacity = 0.5
+    @Published var figmaFindings: [FigmaFinding] = []
+    @Published var figmaLoading = false
+    @Published var figmaError: String?
+
+    /// "Find token" (see `UIInspectorTokenSearch.swift`).
+    @Published var tokenQuery = "" { didSet { updateTokenMatches() } }
+    @Published var tokenMatches: [InspectorTokenMatch] = []
+    var tokenIndex: [TagTokens] = []
+    /// "tag#probe#expr" → resolved root names; positions don't move between captures.
+    var tokenRootCache: [String: [String]] = [:]
+    var tokenIndexTask: Task<Void, Never>?
 
     func rawNode(_ id: String) -> InspectorNode? { rawNodes[id] }
     func rawParent(_ id: String) -> String? { rawParentOf[id] }
@@ -229,12 +312,15 @@ final class UIInspectorViewModel: ObservableObject {
             self.connection = nil
             self.connected = nil
             self.autoRefresh = false
+            self.updateFrameStream()
         }
         self.connection = connection
         connected = service
         refresh()
+        updateFrameStream()
         // The audit needs captures to keep coming (see `auditMeasuresIfRequested`).
-        if ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"] != nil { autoRefresh = true }
+        let env = ProcessInfo.processInfo.environment
+        if env["MYGIT_AUDIT_MEASURES"] != nil || env["MYGIT_REDLINES"] != nil || env["MYGIT_FIGMA_FAKE"] != nil || env["MYGIT_SPEC"] != nil || env["MYGIT_3D"] != nil { autoRefresh = true }
     }
 
     func disconnect() {
@@ -302,7 +388,7 @@ final class UIInspectorViewModel: ObservableObject {
 
     /// Every node of the current window with a drawable frame, for wireframes.
     var wireframeNodes: [InspectorNode] {
-        order.compactMap { nodes[$0] }.filter { !$0.isHidden && $0.frame.width > 0 && $0.frame.height > 0 }
+        order.compactMap { nodes[$0] }.filter { !$0.isHidden && $0.frame.width > 0 && $0.frame.height > 0 && isInLayers($0.id) }
     }
 
     /// Path from the root to the selection, for the breadcrumb.
@@ -320,7 +406,7 @@ final class UIInspectorViewModel: ObservableObject {
 
     private func rebuildTree() {
         nodes = [:]; childrenOf = [:]; parentOf = [:]; rootIDs = []; order = []
-        rawNodes = [:]; rawParentOf = [:]; rawChildrenOf = [:]; tagNodeIDs = []
+        rawNodes = [:]; rawParentOf = [:]; rawChildrenOf = [:]; tagNodeIDs = []; anyTagNodeIDs = []
         sourceNames = [:]
         if let root = currentWindow?.root {
             if sourceViewsOnly { markSourceViews(root) }
@@ -330,6 +416,7 @@ final class UIInspectorViewModel: ObservableObject {
             while let node = stack.popLast() {
                 rawNodes[node.id] = node
                 if node.className == Self.sourceTagClass { tagNodeIDs.append(node.id) }
+                if Self.isTag(node.className) { anyTagNodeIDs.append(node.id) }
                 if !node.children.isEmpty {
                     rawChildrenOf[node.id] = node.children.map(\.id)
                     for child in node.children { rawParentOf[child.id] = node.id }
@@ -337,7 +424,9 @@ final class UIInspectorViewModel: ObservableObject {
                 }
             }
         }
+        rebuildDepths()
         rebuildRows()
+        rebuildTokenIndex()
         if measureMode {
             measures = collectMeasures()
             // Keep a picked measure across live captures (same node, same edge).
@@ -551,7 +640,7 @@ final class UIInspectorViewModel: ObservableObject {
         var best: InspectorNode?
         var bestArea = CGFloat.greatestFiniteMagnitude
         for id in order {
-            guard let node = nodes[id], !node.isHidden, node.alpha > 0.01,
+            guard let node = nodes[id], !node.isHidden, node.alpha > 0.01, isInLayers(id),
                   node.frame.width > 0, node.frame.height > 0, node.frame.contains(point) else { continue }
             let area = node.frame.width * node.frame.height
             if area <= bestArea {
@@ -709,6 +798,48 @@ final class UIInspectorViewModel: ObservableObject {
         guard old != selectedID else { return }
         if selectedMeasure?.ownerID != selectedID { selectedMeasure = nil }
         sendHighlight()
+    }
+
+    // MARK: - Interaction
+
+    func tap(_ point: CGPoint) { interact("tap", point: point) }
+    func longPress(_ point: CGPoint, duration: TimeInterval) { interact("longPress", point: point, ["duration": duration]) }
+    func drag(from a: CGPoint, to b: CGPoint, duration: TimeInterval) {
+        interact("drag", point: a, ["toX": b.x, "toY": b.y, "duration": max(0.05, duration)])
+    }
+    func scroll(at point: CGPoint, dx: CGFloat, dy: CGFloat) { interact("scroll", point: point, ["dx": dx, "dy": dy], quiet: true) }
+    func type(_ text: String) { interact("type", params: ["text": text]) }
+    func goBack() { interact("back", params: ["window": windowIndex]) }
+
+    private func interact(_ method: String, point: CGPoint, _ extra: [String: Any] = [:], quiet: Bool = false) {
+        var params = extra
+        params["x"] = point.x
+        params["y"] = point.y
+        params["window"] = windowIndex
+        interact(method, params: params, quiet: quiet)
+    }
+
+    /// Send, then capture what it did — right away and once more after
+    /// animations (Live captures on its own).
+    private func interact(_ method: String, params: [String: Any], quiet: Bool = false) {
+        guard let connection else { return }
+        Task { [weak self] in
+            do {
+                try await connection.interact(method, params)
+            } catch {
+                self?.errorMessage = error.localizedDescription
+                return
+            }
+            guard let self, !self.autoRefresh else { return }
+            self.recaptureTask?.cancel()
+            self.recaptureTask = Task { [weak self] in
+                for delay in quiet ? [0.25] : [0.2, 0.7] {
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.refresh()
+                }
+            }
+        }
     }
 
     private func sendHighlight() {

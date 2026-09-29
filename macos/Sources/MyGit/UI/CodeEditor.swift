@@ -52,6 +52,9 @@ struct CodeEditor: NSViewRepresentable {
     var onBlameClick: ((BlameLine, NSView, NSRect) -> Void)?
     /// ⌘F find state whose matches this editor highlights.
     var find: EditorFindState?
+    /// Tests in the file: a ▶ in the gutter on each one's line.
+    var tests: [DiscoveredTest] = []
+    var onRunTest: ((DiscoveredTest) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -151,6 +154,8 @@ struct CodeEditor: NSViewRepresentable {
         if let gutter = context.coordinator.gutter {
             if gutter.blame != blame { gutter.blame = blame }
             gutter.blameStale = blameStale
+            if gutter.tests != tests { gutter.tests = tests }
+            gutter.onRunTest = onRunTest
         }
         guard let tv = context.coordinator.textView else { return }
         if tv.isEditable != isEditable { tv.isEditable = isEditable }
@@ -810,6 +815,36 @@ final class LineNumberGutter: NSView {
     /// A blame cell was clicked; the rect is in this view's coordinates.
     var onBlameClick: ((BlameLine, NSRect) -> Void)?
 
+    /// Tests by line: a ▶ runs the suite or function.
+    var tests: [DiscoveredTest] = [] {
+        didSet {
+            guard tests != oldValue else { return }
+            testsByLine = Dictionary(tests.map { ($0.line, $0) }, uniquingKeysWith: { a, _ in a })
+            refresh()
+        }
+    }
+    var onRunTest: ((DiscoveredTest) -> Void)?
+    private var testsByLine: [Int: DiscoveredTest] = [:]
+    private static let testWidth: CGFloat = 18
+    private var testColumnWidth: CGFloat { tests.isEmpty ? 0 : Self.testWidth }
+
+    private func testRow(at point: NSPoint) -> (DiscoveredTest, NSRect)? {
+        guard !tests.isEmpty, point.x >= blameColumnWidth, point.x < blameColumnWidth + testColumnWidth,
+              let row = drawnRows.first(where: { $0.rect.minY <= point.y && point.y < $0.rect.maxY }),
+              let test = testsByLine[row.line] else { return nil }
+        return (test, row.rect)
+    }
+
+    private func drawTest(_ test: DiscoveredTest, row: NSRect) {
+        let symbol = test.isSuite ? "play.circle.fill" : "play.fill"
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Run")?
+            .withSymbolConfiguration(.init(pointSize: min(11, row.height - 3), weight: .semibold)
+                .applying(.init(paletteColors: [NSColor.systemGreen]))) else { return }
+        let size = image.size
+        image.draw(in: NSRect(x: blameColumnWidth + (Self.testWidth - size.width) / 2, y: row.midY - size.height / 2,
+                              width: size.width, height: size.height))
+    }
+
     private var blameRange: (Date, Date)?
     /// Rows drawn last pass, for hit-testing clicks and tooltips.
     private var drawnRows: [(line: Int, rect: NSRect)] = []
@@ -839,7 +874,7 @@ final class LineNumberGutter: NSView {
         let lineCount = max(1, (tv.string as NSString).components(separatedBy: "\n").count)
         let digits = "\(lineCount)".count
         let sample = String(repeating: "9", count: digits) as NSString
-        let width = ceil(sample.size(withAttributes: [.font: font]).width) + 14 + blameColumnWidth
+        let width = ceil(sample.size(withAttributes: [.font: font]).width) + 14 + blameColumnWidth + testColumnWidth
         if let c = widthConstraint, abs(c.constant - width) > 0.5 { c.constant = width }
         needsDisplay = true
     }
@@ -867,7 +902,9 @@ final class LineNumberGutter: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if let (line, rect) = blameRow(at: point), !line.isUncommitted {
+        if let (test, _) = testRow(at: point) {
+            onRunTest?(test)
+        } else if let (line, rect) = blameRow(at: point), !line.isUncommitted {
             onBlameClick?(line, rect)
         } else {
             super.mouseDown(with: event)
@@ -883,6 +920,10 @@ final class LineNumberGutter: NSView {
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if let (test, _) = testRow(at: point) {
+            toolTip = test.isSuite ? "Run all tests in \(test.title)" : "Run \(test.title)"
+            return
+        }
         guard let (line, _) = blameRow(at: point) else { toolTip = nil; return }
         toolTip = line.isUncommitted
             ? "Not committed yet"
@@ -963,6 +1004,7 @@ final class LineNumberGutter: NSView {
             let row = NSRect(x: 0, y: y, width: bounds.width, height: fragRect.height)
             drawnRows.append((lineNumber, row))
             if let blame, !blameStale, lineNumber - 1 < blame.count { drawBlame(blame[lineNumber - 1], row: row) }
+            if let test = testsByLine[lineNumber] { drawTest(test, row: row) }
             let label = "\(lineNumber)" as NSString
             let size = label.size(withAttributes: attrs)
             label.draw(at: NSPoint(x: bounds.width - size.width - pad, y: y), withAttributes: attrs)

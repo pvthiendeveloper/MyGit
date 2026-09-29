@@ -57,6 +57,8 @@ struct RunDevice: Identifiable, Hashable {
     let kind: Kind
     /// Booted/online right now. Cold targets are booted by the run script.
     let isBooted: Bool
+    /// iOS device: CoreDevice's "wired" / "localNetwork", when connected.
+    var transport: String? = nil
 
     var icon: String {
         switch kind {
@@ -70,7 +72,13 @@ struct RunDevice: Identifiable, Hashable {
         case .androidDevice: return isBooted ? "device" : "offline"
         case .androidEmulator: return isBooted ? "emulator" : "emulator · not running"
         case .iosSimulator: return isBooted ? "simulator · booted" : "simulator"
-        case .iosDevice: return "device"
+        case .iosDevice:
+            guard isBooted else { return "device · not reachable — connect via USB" }
+            switch transport {
+            case "wired": return "device · USB"
+            case "localNetwork": return "device · Wi-Fi"
+            default: return "device"
+            }
         }
     }
 }

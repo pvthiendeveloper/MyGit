@@ -314,10 +314,25 @@ struct GitCLIRepository: GitRepository {
 
     func restore(at repo: URL, paths: [String]) async throws {
         guard !paths.isEmpty else { return }
-        _ = try await GitRunner.runOrThrow(
-            ["restore", "--staged", "--worktree", "--"] + paths,
-            cwd: repo
-        )
+        // `restore` refuses conflicted (unmerged) paths — one of them fails the
+        // whole call — so those are put back to HEAD one by one.
+        let unmerged = Set(try await GitRunner.run(["diff", "--name-only", "--diff-filter=U", "--"] + paths, cwd: repo)
+            .stdout.split(separator: "\n").map(String.init))
+        let plain = paths.filter { !unmerged.contains($0) }
+        if !plain.isEmpty {
+            _ = try await GitRunner.runOrThrow(["restore", "--staged", "--worktree", "--"] + plain, cwd: repo)
+        }
+        for path in paths where unmerged.contains(path) {
+            let inHead = try await GitRunner.run(["cat-file", "-e", "HEAD:\(path)"], cwd: repo).exitCode == 0
+            if inHead {
+                // HEAD's version, conflict cleared (UU, UD…).
+                _ = try await GitRunner.runOrThrow(["checkout", "HEAD", "--", path], cwd: repo)
+            } else {
+                // Not in HEAD (deleted by us, added by them/both — DU, UA, AA): HEAD has no
+                // such file, so rolling back removes it and clears the conflict.
+                _ = try await GitRunner.runOrThrow(["rm", "-f", "-q", "--", path], cwd: repo)
+            }
+        }
     }
 
     func addToIndex(at repo: URL, paths: [String]) async throws {
@@ -475,6 +490,17 @@ struct GitCLIRepository: GitRepository {
     func checkoutAndUpdate(branch: String, at repo: URL) async throws {
         _ = try await GitRunner.runOrThrow(["checkout", branch], cwd: repo)
         _ = try await GitRunner.runOrThrow(["pull", "--ff-only"], cwd: repo)
+    }
+
+    func localCommitsAhead(branch: String, of remoteRef: String, at repo: URL) async throws -> Int? {
+        let exists = try await GitRunner.run(["rev-parse", "--verify", "--quiet", "refs/heads/\(branch)"], cwd: repo)
+        guard exists.exitCode == 0 else { return nil }
+        let out = try await GitRunner.runOrThrow(["rev-list", "--count", "\(remoteRef)..refs/heads/\(branch)"], cwd: repo)
+        return Int(out.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    func checkoutResetting(branch: String, to remoteRef: String, at repo: URL) async throws {
+        _ = try await GitRunner.runOrThrow(["checkout", "--track", "-B", branch, remoteRef], cwd: repo)
     }
 
     func compareBranches(a: String, b: String, at repo: URL) async throws -> String {

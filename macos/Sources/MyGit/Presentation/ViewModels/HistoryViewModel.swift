@@ -320,6 +320,14 @@ final class HistoryViewModel: ObservableObject {
     /// names are stripped of their remote so git DWIMs a local tracking branch
     /// instead of detaching HEAD (same rule as the branch popover).
     func checkoutBranch(_ name: String, isRemote: Bool) {
+        if isRemote, let repo = repoSource() {
+            Task {
+                await RemoteCheckout.run(remoteRef: name, repo: repo.url, git: git, main: main) { op in
+                    self.runOp(op)
+                }
+            }
+            return
+        }
         let target = GitBranch.checkoutName(for: name, isRemote: isRemote)
         runOp { try await self.git.checkout(target, at: $0) }
     }

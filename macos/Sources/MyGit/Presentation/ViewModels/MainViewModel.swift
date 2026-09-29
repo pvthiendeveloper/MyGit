@@ -28,6 +28,17 @@ final class MainViewModel: ObservableObject {
     @Published var detailTab: DetailTab = .content
     @Published var comparePair: ComparePair? = nil
     @Published var errorMessage: String?
+    /// Checking out a remote branch whose local branch has commits of its own.
+    @Published var remoteCheckoutConflict: RemoteCheckoutConflict?
+
+    struct RemoteCheckoutConflict: Identifiable {
+        let id = UUID()
+        let remoteRef: String
+        let local: String
+        let ahead: Int
+        let rebase: () -> Void
+        let drop: () -> Void
+    }
     @Published var isBusy: Bool = false
     @Published var sidebarWidth: CGFloat = 280
     @Published var diffTabs: [DiffTab] = []

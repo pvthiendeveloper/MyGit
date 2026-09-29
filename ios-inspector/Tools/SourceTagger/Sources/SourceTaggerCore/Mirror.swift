@@ -51,7 +51,7 @@ public struct Mirror {
     }
 
     /// Bumped whenever tagging output changes, to invalidate old manifests.
-    static let toolVersion = 28
+    static let toolVersion = 31
 
     /// Directories never mirrored.
     static let skippedDirectories: Set<String> = [".git", ".mygit", ".build", "DerivedData", "node_modules", "xcuserdata"]

@@ -280,6 +280,27 @@ final class RunViewModel: ObservableObject {
         kind == .ios && selectedDevice != nil && selectedScheme != nil
     }
 
+    /// Run tests from one file (the editor's ▶): iOS on the Run bar's device
+    /// through the scheme that tests the file's target, Android through Gradle.
+    func runTests(_ tests: [DiscoveredTest], relativePath: String) {
+        guard let repo = repoSource(), !tests.isEmpty else { return }
+        // Devices and schemes load lazily; an iOS run needs a device.
+        if devices.isEmpty, kind != .android, !loadedForTests {
+            loadedForTests = true
+            Task { [weak self] in
+                await self?.refresh()
+                self?.runTests(tests, relativePath: relativePath)
+            }
+            return
+        }
+        switch ProjectToolchain.testScript(for: tests, relativePath: relativePath, repo: repo.url, kind: kind,
+                                           device: selectedDevice, fallbackScheme: selectedScheme) {
+        case let .success(script): runInTerminal(script)
+        case let .failure(error): main.errorMessage = error.localizedDescription
+        }
+    }
+    private var loadedForTests = false
+
     /// Build + run with every SwiftUI view tagged with its source line, so
     /// the UI Inspector can open the exact code behind a view.
     func runWithInspector() {

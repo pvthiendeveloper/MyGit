@@ -84,7 +84,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case find, findNext, findPrevious, searchEverywhere
     // View
     case showChanges, showStash, showHistory, showFiles, showPullRequests, showClaude
-    case revealActiveFile, toggleTerminal, newTerminal, toggleBuildVariants, uiInspector
+    case revealActiveFile, toggleTerminal, newTerminal, toggleBuildVariants, uiInspector, simulatorRuntimes
     // Repository
     case fetch, pull, push, openInTerminal, revealInFinder
 
@@ -113,7 +113,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
             return .file
         case .find, .findNext, .findPrevious, .searchEverywhere: return .edit
         case .showChanges, .showStash, .showHistory, .showFiles, .showPullRequests, .showClaude,
-             .revealActiveFile, .toggleTerminal, .newTerminal, .toggleBuildVariants, .uiInspector:
+             .revealActiveFile, .toggleTerminal, .newTerminal, .toggleBuildVariants, .uiInspector, .simulatorRuntimes:
             return .view
         case .fetch, .pull, .push, .openInTerminal, .revealInFinder: return .repository
         }
@@ -146,6 +146,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .newTerminal: return "New Terminal"
         case .toggleBuildVariants: return "Build Variants"
         case .uiInspector: return "UI Inspector"
+        case .simulatorRuntimes: return "Simulator Runtimes"
         case .fetch: return "Fetch"
         case .pull: return "Pull"
         case .push: return "Push"
@@ -181,6 +182,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .newTerminal: return KeyShortcut("`", [.control, .shift])
         case .toggleBuildVariants: return KeyShortcut("b", [.control, .shift])
         case .uiInspector: return KeyShortcut("i", [.command, .option])
+        case .simulatorRuntimes: return nil
         case .fetch: return KeyShortcut("f", [.command, .shift])
         case .pull: return KeyShortcut("p", [.command, .shift])
         // ⌘⇧U, not ⌘⇧P: "P" + shift is the same chord as Pull.

@@ -3,6 +3,8 @@ import SwiftUI
 extension View {
     /// Shows the commit's full details in a popover after the pointer rests on
     /// the row, for rows too narrow to show the whole subject, refs and author.
+    /// Apply it after the row's own `onTapGesture`: a tap gesture inside this
+    /// modifier would otherwise take precedence and swallow the row's tap.
     func commitHoverCard(_ commit: GitCommit) -> some View {
         modifier(CommitHoverCardModifier(commit: commit))
     }

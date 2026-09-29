@@ -30,8 +30,10 @@ struct CommitGraphList: View {
                             isSelected: vm.selectedCommit?.id == row.commit.id
                         )
                         .contentShape(Rectangle())
-                        .commitHoverCard(row.commit)
                         .onTapGesture { vm.selectedCommit = row.commit }
+                        // After the tap: its simultaneous tap (dismissing the
+                        // card) must wrap the selection tap, not shadow it.
+                        .commitHoverCard(row.commit)
                         .onHover { inside in
                             if inside { vm.prefetchMenuInfo(for: row.commit) }
                         }

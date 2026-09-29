@@ -113,9 +113,15 @@ enum ProjectToolchain {
                       let name = props["name"] as? String,
                       let hardware = device["hardwareProperties"] as? [String: Any],
                       let udid = hardware["udid"] as? String else { continue }
-                physical.append(RunDevice(id: udid, name: name, kind: .iosDevice, isBooted: true))
+                // "unavailable": not plugged in and not found over Wi-Fi (busy or
+                // client-isolated networks block the discovery).
+                let connection = device["connectionProperties"] as? [String: Any]
+                let reachable = (connection?["tunnelState"] as? String) != "unavailable"
+                physical.append(RunDevice(id: udid, name: name, kind: .iosDevice, isBooted: reachable,
+                                          transport: connection?["transportType"] as? String))
             }
         }
+        physical.sort { $0.isBooted && !$1.isBooted }
         return physical + simulators
     }
 
@@ -396,7 +402,7 @@ enum ProjectToolchain {
         return lines.joined(separator: " \\\n")
     }
 
-    private static func writeScript(_ body: String, name: String) -> String? {
+    static func writeScript(_ body: String, name: String) -> String? {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mygit-run", isDirectory: true)
         return writeScript(body, to: dir.appendingPathComponent(name))
     }
@@ -561,9 +567,18 @@ enum ProjectToolchain {
         fi
 
         echo "▶ building \(scheme) ..."
-        xcrun xcodebuild \(container) -scheme \(q(scheme)) -configuration Debug \(sdkFlags) \\
-          -destination 'id=\(device.id)' -derivedDataPath "${DERIVED}" build
 
+        """
+        if isSimulator {
+            script += """
+            xcrun xcodebuild \(container) -scheme \(q(scheme)) -configuration Debug \(sdkFlags) \\
+              -destination 'id=\(device.id)' -derivedDataPath "${DERIVED}" build
+
+            """
+        } else {
+            script += deviceBuild(container: container, scheme: scheme, sdkFlags: sdkFlags, deviceID: device.id)
+        }
+        script += """
         APP="$(ls -d "${DERIVED}"/Build/Products/\(productsDir)/*.app | head -1)"
         BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Info.plist")"
 
@@ -579,14 +594,179 @@ enum ProjectToolchain {
             echo "✔ running"
             """
         } else {
-            script += """
+            script += inspectorPlistPatch + deviceWait + deviceLaunch + """
+            patch_inspector_plist "${APP}"
+            wait_for_device \(q(device.id))
             echo "▶ installing on device ..."
             xcrun devicectl device install app --device \(q(device.id)) "${APP}"
-            xcrun devicectl device process launch --device \(q(device.id)) "${BUNDLE_ID}"
+            launch_on_device \(q(device.id)) "${BUNDLE_ID}"
             echo "✔ running"
             """
         }
         return script
+    }
+
+    /// Same functions as `mygit-inspect-run.sh`'s.
+    private static let deviceWait = #"""
+# CoreDevice's tunnel state for a UDID: "connected" / "disconnected" are
+# reachable; "unavailable" means unplugged and not found over Wi-Fi — busy or
+# client-isolated networks (offices, cafés) block that discovery.
+device_state() {
+  local json n i
+  json="$(mktemp)"
+  xcrun devicectl list devices --json-output "$json" --quiet >/dev/null 2>&1 || { rm -f "$json"; return 0; }
+  n="$(plutil -extract result.devices raw -o - "$json" 2>/dev/null || echo 0)"
+  for ((i = 0; i < n; i++)); do
+    if [ "$(plutil -extract "result.devices.$i.hardwareProperties.udid" raw -o - "$json" 2>/dev/null)" = "$1" ]; then
+      plutil -extract "result.devices.$i.connectionProperties.tunnelState" raw -o - "$json" 2>/dev/null || true
+      break
+    fi
+  done
+  rm -f "$json"
+}
+
+# Wait for an unreachable iPhone instead of failing the install.
+wait_for_device() {
+  local device="$1" waited=0
+  while [ "$(device_state "$device")" = "unavailable" ]; do
+    if [ "$waited" -ge 180 ]; then
+      echo "✘ the iPhone still isn't reachable — connect it with a USB cable and run again" >&2
+      exit 1
+    fi
+    [ "$waited" -eq 0 ] && echo "▶ the iPhone isn't reachable — connect it with a USB cable (busy Wi-Fi networks often hide it); waiting up to 3 min ..."
+    sleep 3
+    waited=$((waited + 3))
+  done
+}
+
+"""#
+
+    /// Same function as `mygit-inspect-run.sh`'s.
+    private static let deviceLaunch = #"""
+# A locked iPhone refuses the launch: wait for it to be unlocked instead of failing.
+launch_on_device() {
+  local device="$1" bundle="$2" out waited=0
+  while :; do
+    if out="$(xcrun devicectl device process launch --terminate-existing --device "$device" "$bundle" 2>&1)"; then
+      echo "$out" | tail -1
+      return 0
+    fi
+    if grep -q 'could not be, unlocked\|BSErrorCodeDescription = Locked' <<< "$out" && [ "$waited" -lt 120 ]; then
+      [ "$waited" -eq 0 ] && echo "▶ the iPhone is locked — unlock it to launch the app (waiting up to 2 min) ..."
+      sleep 3
+      waited=$((waited + 3))
+      continue
+    fi
+    echo "$out" >&2
+    return 1
+  done
+}
+
+"""#
+
+    /// Same function as `mygit-inspect-run.sh`'s, for a plain Run of an app
+    /// that embeds MyGitInspector.
+    private static let inspectorPlistPatch = #"""
+# An app embedding MyGitInspector must declare its Bonjour service and a
+# local-network reason, or iOS silently refuses to advertise it on a device
+# (the simulator doesn't check). Add both to the built app when missing and
+# re-sign it with the identity it was signed with.
+patch_inspector_plist() {
+  local app="$1" plist="$1/Info.plist" auth sha
+  LC_ALL=C grep -aqs 'mygitinspect' "$app"/* || return 0
+  if /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" 2>/dev/null | grep -q '_mygitinspect._tcp' \
+     && /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$plist" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "▶ adding the UI Inspector's Bonjour service to Info.plist"
+  /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c 'Add :NSBonjourServices array' "$plist"
+  /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$plist" | grep -q '_mygitinspect._tcp' \
+    || /usr/libexec/PlistBuddy -c 'Add :NSBonjourServices: string _mygitinspect._tcp' "$plist"
+  /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$plist" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c 'Add :NSLocalNetworkUsageDescription string MyGit UI Inspector connects to this debug build over the local network.' "$plist"
+  auth="$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+  [ -n "$auth" ] || return 0   # unsigned (simulator): nothing to re-sign
+  sha="$(security find-identity -v -p codesigning | grep -F "\"$auth\"" | awk '{print $2}' | head -1)"
+  codesign -f -s "${sha:-$auth}" --preserve-metadata=identifier,entitlements,flags "$app"
+}
+
+"""#
+
+    /// A device build that signs a project with no DEVELOPMENT_TEAM, like
+    /// `mygit-inspect-run.sh`: reuse the overrides a previous run found
+    /// (this script's, else Run with Inspector's), or, when xcodebuild says
+    /// the project needs a team, borrow one from an installed provisioning
+    /// profile covering the device. MYGIT_DEVELOPMENT_TEAM overrides the guess.
+    private static func deviceBuild(container: String, scheme: String, sdkFlags: String, deviceID: String) -> String {
+        """
+        SIGNING="${DERIVED}/signing"
+        TEAM_FLAGS=()
+        if [ -n "${MYGIT_DEVELOPMENT_TEAM:-}" ]; then
+          TEAM_FLAGS=("DEVELOPMENT_TEAM=$MYGIT_DEVELOPMENT_TEAM")
+        else
+          for f in "$SIGNING" "${DERIVED}/inspect/signing"; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line; do [ -n "$line" ] && TEAM_FLAGS+=("$line"); done < "$f"
+            break
+          done
+        fi
+
+        pick_team() {
+          local now fallback="" dir p d team
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for dir in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles" "$HOME/Library/MobileDevice/Provisioning Profiles"; do
+            for p in "$dir"/*.mobileprovision; do
+              [ -f "$p" ] || continue
+              d="$(security cms -D -i "$p" 2>/dev/null)" || continue
+              grep -qF "<string>\(deviceID)</string>" <<< "$d" || continue
+              [[ "$(plutil -extract ExpirationDate raw -o - - <<< "$d" 2>/dev/null)" > "$now" ]] || continue
+              team="$(plutil -extract TeamIdentifier.0 raw -o - - <<< "$d" 2>/dev/null)" || continue
+              if [ "$(plutil -extract Entitlements.application-identifier raw -o - - <<< "$d" 2>/dev/null)" = "$team.*" ]; then
+                echo "$team"; return
+              fi
+              fallback="${fallback:-$team}"
+            done
+          done
+          echo "$fallback"
+        }
+
+        LOG="${DERIVED}/build.log"
+        mkdir -p "${DERIVED}"
+        DEST="id=\(deviceID)"
+        build() {
+          set +e
+          xcrun xcodebuild \(container) -scheme \(q(scheme)) -configuration Debug \(sdkFlags) \\
+            -destination "$DEST" -derivedDataPath "${DERIVED}" \\
+            ${TEAM_FLAGS[@]+"${TEAM_FLAGS[@]}"} build 2>&1 | tee "$LOG"
+          local status=${PIPESTATUS[0]}
+          set -e
+          return $status
+        }
+        until build; do
+          # The iPhone isn't reachable right now (unplugged, and not found over
+          # Wi-Fi): the build doesn't need it — only the install does.
+          if [ "$DEST" != "generic/platform=iOS" ] && grep -q 'Unable to find a destination matching' "$LOG"; then
+            echo "▶ xcodebuild can't see the iPhone right now — building for any iOS device"
+            DEST="generic/platform=iOS"
+            continue
+          fi
+          if [ ${#TEAM_FLAGS[@]} -eq 0 ] && grep -q 'requires a development team' "$LOG"; then
+            TEAM="$(pick_team)"
+            if [ -z "$TEAM" ]; then
+              echo "✘ project has no development team and no provisioning profile covers this device —" >&2
+              echo "  set one in Xcode (Signing & Capabilities) or export MYGIT_DEVELOPMENT_TEAM=<team id>" >&2
+              exit 1
+            fi
+            echo "▶ project has no development team — signing with team $TEAM (set MYGIT_DEVELOPMENT_TEAM to override)"
+            TEAM_FLAGS=("DEVELOPMENT_TEAM=$TEAM")
+            printf '%s\n' "${TEAM_FLAGS[@]}" > "$SIGNING"
+            continue
+          fi
+          exit 1
+        done
+
+        """
     }
 
     /// "Run with Inspector": the same build + launch, but from a mirror of
@@ -626,7 +806,7 @@ enum ProjectToolchain {
         case toolsMissing, noXcodeProject, scriptNotWritten
     }
 
-    private static func q(_ s: String) -> String {
+    static func q(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

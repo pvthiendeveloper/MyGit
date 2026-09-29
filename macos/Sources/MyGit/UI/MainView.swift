@@ -77,6 +77,29 @@ struct MainView: View {
             message: { Text(main.errorMessage ?? "") }
         )
         .alert(
+            "Checkout \(main.remoteCheckoutConflict?.remoteRef ?? "")",
+            isPresented: Binding(
+                get: { main.remoteCheckoutConflict != nil },
+                set: { if !$0 { main.remoteCheckoutConflict = nil } }
+            ),
+            presenting: main.remoteCheckoutConflict,
+            actions: { c in
+                Button("Cancel", role: .cancel) { main.remoteCheckoutConflict = nil }
+                Button("Drop Local Commits", role: .destructive) {
+                    main.remoteCheckoutConflict = nil
+                    c.drop()
+                }
+                Button("Rebase onto Remote") {
+                    main.remoteCheckoutConflict = nil
+                    c.rebase()
+                }
+                .keyboardShortcut(.defaultAction)
+            },
+            message: { c in
+                Text("Local branch '\(c.local)' has \(c.ahead == 1 ? "1 commit" : "\(c.ahead) commits") that do not exist in '\(c.remoteRef)'. Rebase '\(c.local)' onto '\(c.remoteRef)', or drop local commits?")
+            }
+        )
+        .alert(
             "No Upstream Branch",
             isPresented: Binding(
                 get: { remote.noUpstreamBranch != nil },

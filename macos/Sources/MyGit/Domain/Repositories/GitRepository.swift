@@ -92,6 +92,10 @@ protocol GitRepository: Sendable {
     func createBranch(_ name: String, from: String, at repo: URL) async throws
     func checkoutAndRebase(branch: String, onto: String, at repo: URL) async throws
     func checkoutAndUpdate(branch: String, at repo: URL) async throws
+    /// Commits on local `branch` missing from `remoteRef`; nil when there's no such local branch.
+    func localCommitsAhead(branch: String, of remoteRef: String, at repo: URL) async throws -> Int?
+    /// Check out `branch`, moved to `remoteRef` and tracking it (drops local-only commits).
+    func checkoutResetting(branch: String, to remoteRef: String, at repo: URL) async throws
     func compareBranches(a: String, b: String, at repo: URL) async throws -> String
     func diffWithWorkingTree(branch: String, at repo: URL) async throws -> String
     func rebase(base: String, onto: String, at repo: URL) async throws

@@ -25,6 +25,7 @@ struct FileEditorContent: View {
     @EnvironmentObject var vm: FileEditorViewModel
     @EnvironmentObject var terminal: TerminalViewModel
     @EnvironmentObject var settings: SettingsViewModel
+    @EnvironmentObject var run: RunViewModel
 
     /// Which half of the Markdown split the user is scrolling; the other one
     /// follows. Without a driver the two panes would fight each other.
@@ -97,6 +98,17 @@ struct FileEditorContent: View {
                 }
                 if let err = tab.loadError {
                     Text(err).font(.caption).foregroundStyle(.red).lineLimit(1)
+                }
+                let tests = TestDiscovery.tests(in: tab.content, fileExtension: (tab.name as NSString).pathExtension)
+                if !tests.isEmpty, !tab.path.hasPrefix("/") {
+                    Button {
+                        // Every suite in the file (or its free test functions).
+                        let suites = tests.filter(\.isSuite)
+                        run.runTests(suites.isEmpty ? tests : suites, relativePath: tab.path)
+                    } label: {
+                        Label("Run Tests", systemImage: "play.fill")
+                    }
+                    .help("Run every test in this file (iOS: on the Run bar's device; Android: Gradle)")
                 }
                 Button("Revert") {
                     tab.content = tab.originalContent
@@ -235,7 +247,9 @@ struct FileEditorContent: View {
                     onBlameClick: { line, view, rect in
                         CommitCardPopover.show(line.commit, relativeTo: rect, of: view)
                     },
-                    find: tab.find
+                    find: tab.find,
+                    tests: tab.path.hasPrefix("/") ? [] : TestDiscovery.tests(in: tab.content, fileExtension: (tab.name as NSString).pathExtension),
+                    onRunTest: { test in run.runTests([test], relativePath: tab.path) }
                 )
                 .background(Color(NSColor.textBackgroundColor))
                 .task { await vm.loadRepoSymbols() }

@@ -79,7 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated { self?.openInspectorWindow() }
         }
         if ProcessInfo.processInfo.environment["MYGIT_DEBUG_INSPECTOR"] != nil
-            || ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"] != nil {
+            || ProcessInfo.processInfo.environment["MYGIT_AUDIT_MEASURES"] != nil
+            || ProcessInfo.processInfo.environment["MYGIT_REDLINES"] != nil
+            || ProcessInfo.processInfo.environment["MYGIT_FIGMA_FAKE"] != nil
+            || ProcessInfo.processInfo.environment["MYGIT_SPEC"] != nil
+            || ProcessInfo.processInfo.environment["MYGIT_3D"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.openInspectorWindow() }
         }
         if let dbg = ProcessInfo.processInfo.environment["MYGIT_DEBUG_DIFF"] {
@@ -90,9 +94,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Closing the last window mustn't kill a runtime download.
+        !SimulatorRuntimesWindow.model.isDownloading
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard SimulatorRuntimesWindow.model.isDownloading else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = "Simulator runtimes are still downloading"
+        alert.informativeText = "Quitting MyGit cancels the downloads."
+        alert.addButton(withTitle: "Keep Downloading")
+        alert.addButton(withTitle: "Quit Anyway")
+        return alert.runModal() == .alertSecondButtonReturn ? .terminateNow : .terminateCancel
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SimulatorRuntimesWindow.model.stopAll()
         coordinator.persistSessions()
         // Removes the lock file so Claude Code stops offering a dead MyGit.
         ClaudeIDEServer.shared.stop()
@@ -222,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .app(.toggleBuildVariants, #selector(toggleBuildVariants)),
             .separator,
             .app(.uiInspector, #selector(openUIInspector)),
+            .app(.simulatorRuntimes, #selector(openSimulatorRuntimes)),
         ])
     }
 
@@ -396,12 +415,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func addRepositoryByPath() { coordinator.repos.promptAddByPath() }
     @objc private func openSearchEverywhere() { coordinator.openSearchEverywhere() }
     @objc private func openUIInspector() { openInspectorWindow() }
+    @objc private func openSimulatorRuntimes() { SimulatorRuntimesWindow.open() }
 
     private func openInspectorWindow() {
         UIInspectorWindow.open(sourceNavigator: coordinator,
                                runWithInspector: { [weak coordinator] in coordinator?.activeBundle.run.runWithInspector() },
                                ai: coordinator.container.commitMessage,
-                               aiConfig: { [weak coordinator] in coordinator?.settings.requestConfig() })
+                               aiConfig: { [weak coordinator] in coordinator?.settings.requestConfig() },
+                               credentials: coordinator.container.credentials)
     }
     @objc private func showChangesTab() { coordinator.main.tab = .changes }
     @objc private func showStashTab() { coordinator.main.tab = .stash }

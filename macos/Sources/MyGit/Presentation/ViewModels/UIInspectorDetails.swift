@@ -86,6 +86,10 @@ extension UIInspectorViewModel {
             sections.append(.init(title: "Appearance", rows: appearance))
         }
 
+        if node.kind == .swiftui {
+            sections += decorationSections(for: id, ownerEntry: entry, ownerStack: ownStack)
+        }
+
         let shownText = chain.views.lazy.compactMap(\.text).first ?? node.text
         if let tokens = Self.tokensSection(entry, stack: ownStack, text: shownText, textColor: textColor) { sections.append(tokens) }
 

@@ -29,6 +29,8 @@ final class ChangesViewModel: ObservableObject {
     @Published var commitMode: CommitMode = .commit
     @Published var canAmend: Bool = false
     @Published var pendingRollback: FileChange?
+    /// A group or folder's files awaiting "Rollback…" / "Delete…" confirmation.
+    @Published var pendingGroupRollback: [FileChange]?
     @Published var pendingDelete: FileChange?
     // Triggers for the right-click "Git" menu's sheets/dialogs (hosted in the list view).
     @Published var pendingNewBranch = false
@@ -400,6 +402,27 @@ final class ChangesViewModel: ObservableObject {
             await onFinished()
         } catch {
             main.errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Roll back many files at once (a change group or folder): tracked files
+    /// back to HEAD, untracked ones deleted.
+    func confirmRollback(_ changes: [FileChange]) async {
+        guard let repo = repoSource(), !changes.isEmpty else { return }
+        main.isBusy = true
+        defer { main.isBusy = false }
+        do {
+            let tracked = changes.filter { !$0.isUntracked }.map(\.path)
+            try await git.restore(at: repo.url, paths: tracked)
+            for change in changes where change.isUntracked {
+                try await git.removeFile(at: repo.url, path: change.path, tracked: false)
+            }
+            for change in changes { stagedPaths.remove(change.path) }
+            if let selected = selectedChange, changes.contains(where: { $0.path == selected.path }) { selectedChange = nil }
+            await onFinished()
+        } catch {
+            main.errorMessage = error.localizedDescription
+            await onFinished()
         }
     }
 

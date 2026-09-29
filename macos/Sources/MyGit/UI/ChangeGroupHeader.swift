@@ -59,6 +59,31 @@ struct ChangeGroupHeader: View {
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { expanded.toggle() }
+        .contextMenu { ChangeGroupMenu(changes: changes, vm: vm) }
+    }
+}
+
+/// Right-click on a change group or folder: roll back all its files at once.
+struct ChangeGroupMenu: View {
+    let changes: [FileChange]
+    @ObservedObject var vm: ChangesViewModel
+
+    var body: some View {
+        let tracked = changes.filter { !$0.isUntracked }
+        let untracked = changes.filter(\.isUntracked)
+        if !tracked.isEmpty {
+            Button("Rollback \(tracked.count) File\(tracked.count == 1 ? "" : "s")…") { vm.pendingGroupRollback = tracked }
+                .keyboardShortcut("z", modifiers: [.command, .option])
+        }
+        if !untracked.isEmpty {
+            // New files have nothing to roll back to: removing them is the rollback.
+            Button("Delete \(untracked.count) Unversioned File\(untracked.count == 1 ? "" : "s")…") {
+                vm.pendingGroupRollback = untracked
+            }
+        }
+        if !tracked.isEmpty, !untracked.isEmpty {
+            Button("Rollback All \(changes.count) Files…") { vm.pendingGroupRollback = changes }
+        }
     }
 }
 
@@ -185,6 +210,7 @@ struct ChangeFolderRow: View {
         .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { expanded.toggle() }
+        .contextMenu { ChangeGroupMenu(changes: files, vm: vm) }
     }
 }
 
