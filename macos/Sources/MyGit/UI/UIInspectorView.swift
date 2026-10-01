@@ -435,6 +435,11 @@ private struct InspectorOutline: View {
                             }
                         }
                         .frame(width: width, alignment: .leading)
+                        // Fill the viewport so a click on the empty space
+                        // below the last row clears the selection.
+                        .frame(minHeight: geo.size.height, alignment: .top)
+                        .contentShape(Rectangle())
+                        .onTapGesture { vm.selectedID = nil }
                     }
                     .focusable()
                     .focusEffectDisabled()
@@ -442,6 +447,11 @@ private struct InspectorOutline: View {
                     .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                     .onKeyPress(.leftArrow) { setExpanded(false); return .handled }
                     .onKeyPress(.rightArrow) { setExpanded(true); return .handled }
+                    .onKeyPress(.escape) {
+                        guard vm.selectedID != nil else { return .ignored }
+                        vm.selectedID = nil
+                        return .handled
+                    }
                     .onChange(of: vm.selectedID) { _, id in
                         // The id sits on the row's content (after the indent),
                         // so this scrolls sideways to it as well.
@@ -501,9 +511,14 @@ private struct OutlineRow: View {
         .background(selected ? Color.accentColor : (row.contains(vm.hoveredID) ? Color.primary.opacity(0.06) : .clear))
         .contentShape(Rectangle())
         .onTapGesture {
-            // A compacted row stands for its deepest link, unless the
-            // selection is already one of its links (e.g. picked in the preview).
-            if !row.contains(vm.selectedID) { vm.selectedID = node.id }
+            // A compacted row stands for its deepest link. Clicking the
+            // selected row (any of its links, e.g. picked in the preview)
+            // deselects it.
+            if row.contains(vm.selectedID) {
+                vm.selectedID = nil
+            } else {
+                vm.selectedID = node.id
+            }
         }
         .help(row.chain.map { $0.fullType ?? $0.className }.joined(separator: "\n› "))
         .contextMenu {

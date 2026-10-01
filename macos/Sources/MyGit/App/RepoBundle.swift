@@ -35,7 +35,7 @@ final class RepoBundle: Identifiable {
             commitMessageRepo: container.commitMessage
         )
         self.changes = changes
-        changes.setAIConfigSource { [weak settings] in settings?.requestConfig() }
+        changes.setAIConfigSource { [weak settings] in settings?.commitMessageConfig() }
 
         let stash = StashViewModel(git: container.git, main: main, repoSource: repoSource)
         self.stash = stash

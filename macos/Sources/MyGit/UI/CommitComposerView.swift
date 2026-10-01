@@ -16,8 +16,24 @@ struct CommitComposerView: View {
                     .lineLimit(1...4)
                     .disabled(vm.commitMode == .amendKeepMessage)
 
-                Button(action: { Task { await vm.generateCommitMessage() } }) {
-                    if vm.isGeneratingMessage {
+                // Click generates; the arrow shows the project style it copies.
+                Menu {
+                    if let style = vm.commitStyle {
+                        Section("Format learned \(style.learnedAt.formatted(.relative(presentation: .named)))") {
+                            ForEach(Array(style.examples.enumerated()), id: \.offset) { _, message in
+                                Text(message.components(separatedBy: "\n").first ?? message)
+                            }
+                        }
+                    } else {
+                        Text("Format: learned from the last \(ChangesViewModel.styleExampleCount) commits on first use")
+                    }
+                    Divider()
+                    Button(vm.isLearningStyle ? "Refreshing Format…" : "Refresh Format from Last \(ChangesViewModel.styleExampleCount) Commits") {
+                        Task { await vm.refreshCommitStyle() }
+                    }
+                    .disabled(vm.isLearningStyle)
+                } label: {
+                    if vm.isGeneratingMessage || vm.isLearningStyle {
                         ProgressView()
                             .controlSize(.small)
                             .frame(width: 16, height: 16)
@@ -26,10 +42,16 @@ struct CommitComposerView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .frame(width: 16, height: 16)
                     }
+                } primaryAction: {
+                    Task { await vm.generateCommitMessage() }
                 }
-                .buttonStyle(.borderless)
-                .help("Generate commit message with AI")
-                .disabled(!vm.canGenerateMessage)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Generate a commit message with AI, in this project's format (its last \(ChangesViewModel.styleExampleCount) commits). The arrow shows or refreshes the format.")
+                // Not `canGenerateMessage`: refreshing the format needs no staged files
+                // (generating then does nothing until something is checked).
+                .disabled(vm.isGeneratingMessage || vm.isLearningStyle)
+                .task { vm.loadCommitStyle() }
 
                 Toggle("Description", isOn: $settings.generateBody)
                     .toggleStyle(.checkbox)

@@ -162,7 +162,11 @@ enum SimulatorRuntimeCatalog {
                     ? .package(url) : .developerPortal(url)
             }
             let needs = item["hostRequirements"] as? [String: Any] ?? [:]
-            if let min = needs["minHostVersion"] as? String, compare(host, min) == .orderedAscending {
+            if case .package = runtime.source, os.majorVersion >= 15 {
+                // The catalog allows these up to macOS 26, but CoreSimulator refuses
+                // them after macOS 14.99 ("not supported on hosts after macOS 14.99.0").
+                runtime.incompatibility = "Not supported on macOS 15+"
+            } else if let min = needs["minHostVersion"] as? String, compare(host, min) == .orderedAscending {
                 runtime.incompatibility = "Needs macOS \(min)+"
             } else if let max = needs["maxHostVersion"] as? String, compare(host, max) == .orderedDescending {
                 runtime.incompatibility = "macOS \(trimmed(max)) or earlier"

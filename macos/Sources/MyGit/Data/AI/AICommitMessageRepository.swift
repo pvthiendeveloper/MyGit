@@ -31,15 +31,41 @@ struct AICommitMessageRepository: CommitMessageRepository {
             + "- Output ONLY the summary line. Do NOT add a body, blank line, or any extra lines."
     }
 
-    func generate(diff: String, config: AIRequestConfig) async throws -> CommitSuggestion {
+    /// The project's own format, from its recent messages, instead of
+    /// Conventional Commits.
+    private static func styledPrompt(_ style: CommitStyle, branch: String?, includeBody: Bool) -> String {
+        let examples = style.examples.enumerated()
+            .map { "Example \($0.offset + 1):\n\($0.element)" }
+            .joined(separator: "\n\n")
+        var prompt = """
+        You are a tool that writes git commit messages for one project.
+        Given a unified diff, output ONE commit message and nothing else.
+        Match the format of the project's recent commit messages below EXACTLY: the same prefix \
+        or ticket pattern and its punctuation, capitalisation, tense, and typical length. \
+        Only the content should differ — describe this diff.
+        Do not wrap the message in code fences. Do not add commentary.
+
+        \(examples)
+        """
+        if let branch, !branch.isEmpty {
+            prompt += "\n\nThe current branch is `\(branch)`. When the examples carry a ticket id "
+                + "(like ABC-123), take it from the branch name if it has one."
+        }
+        prompt += includeBody
+            ? "\n- Add a blank line then a concise body explaining the why, wrapped at ~72 cols."
+            : "\n- Output ONLY the first line. Do NOT add a body, blank line, or any extra lines."
+        return prompt
+    }
+
+    func generate(diff: String, config: AIRequestConfig, style: CommitStyle?, branch: String?) async throws -> CommitSuggestion {
         let trimmedDiff = diff.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedDiff.isEmpty else { throw CommitMessageError.emptyDiff }
         guard !config.apiKey.isEmpty else { throw CommitMessageError.missingAPIKey }
 
         let userPrompt = "Write a commit message for this diff:\n\n" + diff
-        let raw = try await complete(config: config,
-                                     system: Self.systemPrompt(includeBody: config.includeBody),
-                                     user: userPrompt)
+        let system = style.map { Self.styledPrompt($0, branch: branch, includeBody: config.includeBody) }
+            ?? Self.systemPrompt(includeBody: config.includeBody)
+        let raw = try await complete(config: config, system: system, user: userPrompt)
         return Self.parse(raw, includeBody: config.includeBody)
     }
 

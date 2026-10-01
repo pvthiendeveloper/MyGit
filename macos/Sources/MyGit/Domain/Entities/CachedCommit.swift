@@ -52,3 +52,32 @@ struct CommitDraftStore {
         else { defaults.set(value, forKey: key) }
     }
 }
+
+/// A project's commit-message style, learned from its latest commits, so AI
+/// messages read like the rest of the log (e.g. `[TDS-3169] - add …` rather
+/// than Conventional Commits).
+struct CommitStyle: Codable, Equatable, Sendable {
+    /// Recent messages, newest first — the examples the AI copies.
+    var examples: [String]
+    var learnedAt: Date
+}
+
+/// `CommitStyle` per repo path, kept until the user refreshes it.
+struct CommitStyleStore {
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    private func key(_ repoPath: String) -> String { "MyGit.commitStyle.\(repoPath)" }
+
+    func get(_ repoPath: String) -> CommitStyle? {
+        defaults.data(forKey: key(repoPath)).flatMap { try? JSONDecoder().decode(CommitStyle.self, from: $0) }
+    }
+
+    func set(_ style: CommitStyle?, repoPath: String) {
+        if let style, let data = try? JSONEncoder().encode(style) {
+            defaults.set(data, forKey: key(repoPath))
+        } else {
+            defaults.removeObject(forKey: key(repoPath))
+        }
+    }
+}

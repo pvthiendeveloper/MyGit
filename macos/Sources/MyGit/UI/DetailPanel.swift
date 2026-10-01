@@ -187,8 +187,10 @@ struct DetailPanel: View {
     @ViewBuilder
     private func diffTabMenu(_ tab: DiffTab) -> some View {
         Button("Close") { main.closeDiffTab(tab.id) }
+        // No state-driven `.disabled` here: macOS caches context-menu content, so
+        // it went stale (e.g. "Close Others" stuck greyed after more tabs opened).
+        // Each action is a harmless no-op when there's nothing to close.
         Button("Close Others") { main.closeOtherDiffTabs(keep: tab.id) }
-            .disabled(main.diffTabs.count < 2)
         Button("Close All") { main.closeAllDiffTabs() }
 
         Divider()
@@ -209,7 +211,6 @@ struct DetailPanel: View {
         Divider()
 
         Button("Reopen Closed Tab") { main.reopenClosedDiffTab() }
-            .disabled(!main.hasClosedDiffTabs)
     }
 
     private func absolutePath(_ relative: String) -> String? {
@@ -459,11 +460,10 @@ private struct EditorTabChip: View {
     @ViewBuilder
     private var contextMenu: some View {
         Button("Close") { editor.closeFileTab(id: tab.id) }
+        // See `diffTabMenu`: no state-driven `.disabled` (stale menu cache).
         Button("Close Others") { editor.closeOtherFileTabs(keep: tab.id) }
-            .disabled(editor.openFileTabs.count < 2)
         Button("Close All") { editor.closeAllFileTabs() }
         Button("Close Saved") { editor.closeSavedFileTabs() }
-            .disabled(!editor.openFileTabs.contains { !$0.isDirty })
 
         Divider()
 
@@ -486,7 +486,6 @@ private struct EditorTabChip: View {
         Divider()
 
         Button("Reopen Closed Tab") { editor.reopenClosedTab() }
-            .disabled(editor.closedPaths.isEmpty)
 
         Divider()
 

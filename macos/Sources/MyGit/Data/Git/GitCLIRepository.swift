@@ -618,7 +618,17 @@ struct GitCLIRepository: GitRepository {
 
     @discardableResult
     func cherryPick(commit: String, at repo: URL) async throws -> CherryPickOutcome {
-        let args = ["cherry-pick", commit]
+        try await cherryPick(commits: [commit], at: repo)
+    }
+
+    func cherryPickHead(at repo: URL) async -> String? {
+        guard let r = try? await GitRunner.run(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], cwd: repo),
+              r.exitCode == 0 else { return nil }
+        return r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func cherryPick(commits: [String], at repo: URL) async throws -> CherryPickOutcome {
+        let args = ["cherry-pick"] + commits
         let r = try await GitRunner.run(args, cwd: repo)
         if r.exitCode == 0 { return .done }
 
@@ -654,8 +664,12 @@ struct GitCLIRepository: GitRepository {
         _ = try await GitRunner.runOrThrow(["commit", "--allow-empty", "--no-edit"], cwd: repo)
         // Single-commit picks are finished by that commit and `--continue` then
         // errors with "no cherry-pick in progress"; only resume a live sequence.
-        let r = try await GitRunner.run(["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"], cwd: repo)
-        if r.exitCode == 0 { try await cherryPickContinue(at: repo) }
+        // The commit already removed CHERRY_PICK_HEAD, so ask the sequencer
+        // whether picks remain.
+        let todo = (try? await GitRunner.runOrThrow(["rev-parse", "--git-path", "sequencer/todo"], cwd: repo))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let path = todo.hasPrefix("/") ? todo : repo.appendingPathComponent(todo).path
+        if !todo.isEmpty, FileManager.default.fileExists(atPath: path) { try await cherryPickContinue(at: repo) }
     }
 
     func revertCommit(_ commit: String, at repo: URL) async throws {

@@ -11,6 +11,13 @@ final class CompareBranchesViewModel: ObservableObject {
     @Published var filterBA = CompareFilter()
     @Published var selectedAB: GitCommit?
     @Published var selectedBA: GitCommit?
+    /// ⌘/⇧-click selection per panel (commit ids). `selectedAB`/`selectedBA`
+    /// stays the focused row, whose files the right pane shows.
+    @Published var multiAB: Set<String> = []
+    @Published var multiBA: Set<String> = []
+    /// Where a ⇧-click range starts.
+    private var anchorAB: String?
+    private var anchorBA: String?
     @Published var focused: CompareSide = .aMinusB
     @Published var changedFiles: [ChangedFileEntry] = []
     @Published var isLoading = false
@@ -61,6 +68,8 @@ final class CompareBranchesViewModel: ObservableObject {
             (commitsAB, commitsBA) = try await (ab, ba)
             selectedAB = nil
             selectedBA = nil
+            multiAB = []
+            multiBA = []
             changedFiles = []
         } catch {
             errorMessage = error.localizedDescription
@@ -80,6 +89,38 @@ final class CompareBranchesViewModel: ObservableObject {
         focused = side
         if side == .aMinusB { selectedAB = commit } else { selectedBA = commit }
         Task { await loadChangedFiles(for: commit) }
+    }
+
+    /// A click on a row: plain selects it alone, ⌘ adds/removes it, ⇧ selects
+    /// the range from the last plain/⌘ click.
+    func click(_ commit: GitCommit, side: CompareSide, modifiers: NSEvent.ModifierFlags) {
+        let list = side == .aMinusB ? filteredAB : filteredBA
+        var multi = side == .aMinusB ? multiAB : multiBA
+        var anchor = side == .aMinusB ? anchorAB : anchorBA
+        if modifiers.contains(.shift), let from = anchor.flatMap({ a in list.firstIndex { $0.id == a } }),
+           let to = list.firstIndex(where: { $0.id == commit.id }) {
+            multi = Set(list[min(from, to)...max(from, to)].map(\.id))
+        } else if modifiers.contains(.command) {
+            if multi.isEmpty, let current = selected(for: side) { multi = [current.id] }
+            if multi.contains(commit.id) { multi.remove(commit.id) } else { multi.insert(commit.id) }
+            anchor = commit.id
+        } else {
+            multi = [commit.id]
+            anchor = commit.id
+        }
+        if side == .aMinusB { multiAB = multi; anchorAB = anchor } else { multiBA = multi; anchorBA = anchor }
+        selectCommit(commit, side: side)
+    }
+
+    func isMultiSelected(_ commit: GitCommit, side: CompareSide) -> Bool {
+        (side == .aMinusB ? multiAB : multiBA).contains(commit.id)
+    }
+
+    /// The ⌘/⇧-selected commits of a panel, in its (log) order; empty for one.
+    func multiSelection(side: CompareSide) -> [GitCommit] {
+        let ids = side == .aMinusB ? multiAB : multiBA
+        guard ids.count > 1 else { return [] }
+        return (side == .aMinusB ? filteredAB : filteredBA).filter { ids.contains($0.id) }
     }
 
     func selected(for side: CompareSide) -> GitCommit? {

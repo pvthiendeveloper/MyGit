@@ -2,7 +2,10 @@ import Foundation
 
 /// Generates a commit message from a unified diff via an LLM provider.
 protocol CommitMessageRepository: Sendable {
-    func generate(diff: String, config: AIRequestConfig) async throws -> CommitSuggestion
+    /// `style` (the project's recent messages) replaces the Conventional
+    /// Commits rules with "write like these"; `branch` lets it fill in a
+    /// ticket id the examples carry.
+    func generate(diff: String, config: AIRequestConfig, style: CommitStyle?, branch: String?) async throws -> CommitSuggestion
 
     /// Generate a pull request title + markdown description from a change set
     /// (commit subjects + unified diff). `summary` is the title, `body` the

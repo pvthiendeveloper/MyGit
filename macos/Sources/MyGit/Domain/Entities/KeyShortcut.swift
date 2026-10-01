@@ -170,7 +170,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .find: return KeyShortcut("f")
         case .findNext: return KeyShortcut("g")
         case .findPrevious: return KeyShortcut("g", [.command, .shift])
-        case .searchEverywhere: return KeyShortcut("o", [.command, .control])
+        // Also double-Shift (AppDelegate), IntelliJ-style.
+        case .searchEverywhere: return KeyShortcut("f", [.command, .shift])
         case .showChanges: return KeyShortcut("1")
         case .showStash: return KeyShortcut("2")
         case .showHistory: return KeyShortcut("3")
@@ -183,7 +184,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .toggleBuildVariants: return KeyShortcut("b", [.control, .shift])
         case .uiInspector: return KeyShortcut("i", [.command, .option])
         case .simulatorRuntimes: return nil
-        case .fetch: return KeyShortcut("f", [.command, .shift])
+        // ⌥⌘F, not ⌘⇧F: that chord is Search Everywhere.
+        case .fetch: return KeyShortcut("f", [.command, .option])
         case .pull: return KeyShortcut("p", [.command, .shift])
         // ⌘⇧U, not ⌘⇧P: "P" + shift is the same chord as Pull.
         case .push: return KeyShortcut("u", [.command, .shift])

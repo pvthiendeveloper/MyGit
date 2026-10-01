@@ -285,22 +285,31 @@ final class HistoryViewModel: ObservableObject {
         }
     }
 
-    /// Cherry-pick, routing git's two mid-flight endings to UI instead of an
-    /// error dialog: conflicts open the resolver, an empty pick asks what to do.
-    func cherryPick(_ commit: GitCommit) {
-        guard let repo = repoSource() else { return }
+    func cherryPick(_ commit: GitCommit) { cherryPick([commit]) }
+
+    /// Cherry-pick `commits` — given in log order, newest first — as one
+    /// sequence applied oldest first, routing git's two mid-flight endings to
+    /// UI instead of an error dialog: conflicts open the resolver, an empty
+    /// pick asks what to do. Skip/continue then carry on with the rest.
+    func cherryPick(_ commits: [GitCommit]) {
+        guard let repo = repoSource(), !commits.isEmpty else { return }
+        // Log order, not dates: author dates run out of order after a rebase.
+        let ordered = Array(commits.reversed())
         Task {
             main.isBusy = true
             defer { main.isBusy = false }
             do {
-                let outcome = try await git.cherryPick(commit: commit.id, at: repo.url)
+                let outcome = try await git.cherryPick(commits: ordered.map(\.id), at: repo.url)
+                // Where the sequence stopped: that's the commit to talk about.
+                let head = await git.cherryPickHead(at: repo.url)
+                let stopped = ordered.first { $0.id == head } ?? ordered.last!
                 menuInfo = [:]
                 opsCompleted += 1
                 await onFinished()
                 switch outcome {
                 case .done: break
-                case .empty: pendingEmptyCherryPick = commit
-                case .conflicts: onCherryPickConflict(commit)
+                case .empty: pendingEmptyCherryPick = stopped
+                case .conflicts: onCherryPickConflict(stopped)
                 }
             } catch {
                 main.errorMessage = error.localizedDescription

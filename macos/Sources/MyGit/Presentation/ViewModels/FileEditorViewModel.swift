@@ -677,6 +677,22 @@ final class FileEditorViewModel: ObservableObject {
         if moved { persistSession() }
     }
 
+    /// `path` (a file, or a folder and everything in it) was deleted: close its
+    /// tabs without saving — flushing an edit would bring the file back.
+    func pathDeleted(_ path: String) {
+        let gone: (OpenFileTab) -> Bool = { $0.path == path || $0.path.hasPrefix(path + "/") }
+        guard openFileTabs.contains(where: gone) else { return }
+        let activeGone = openFileTabs.first { $0.id == activeFileTabId }.map(gone) ?? false
+        let firstIndex = openFileTabs.firstIndex(where: gone) ?? 0
+        openFileTabs.removeAll(where: gone)
+        closedPaths.removeAll { $0 == path || $0.hasPrefix(path + "/") }
+        if activeGone {
+            activeFileTabId = openFileTabs.isEmpty ? nil : openFileTabs[min(firstIndex, openFileTabs.count - 1)].id
+        }
+        syncDetailTab()
+        persistSession()
+    }
+
     func closeFileTab(id: UUID) {
         guard let idx = openFileTabs.firstIndex(where: { $0.id == id }) else { return }
         let removed = openFileTabs.remove(at: idx)

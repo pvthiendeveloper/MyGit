@@ -79,18 +79,29 @@ struct CompareCommitPanel: View {
                                 commit: commit,
                                 isFirst: index == 0,
                                 isLast: index == commits.count - 1,
-                                isSelected: vm.selected(for: side) == commit
+                                isSelected: vm.selected(for: side) == commit,
+                                isInSelection: vm.isMultiSelected(commit, side: side)
                             )
                             .contentShape(Rectangle())
-                            .onTapGesture { vm.selectCommit(commit, side: side) }
+                            .onTapGesture { vm.click(commit, side: side, modifiers: NSEvent.modifierFlags) }
                             // Warm the menu's branch/ancestry data before the
                             // right-click — a context menu can't load async.
                             .onHover { inside in
                                 if inside { history.prefetchMenuInfo(for: commit) }
                             }
                             .contextMenu {
-                                CommitContextMenu(commit: commit, vm: history) { direction in
-                                    vm.navigate(direction, from: commit, side: side)
+                                let batch = vm.multiSelection(side: side)
+                                if batch.count > 1, batch.contains(commit) {
+                                    // Right-click inside a ⌘/⇧ selection acts on all of it.
+                                    Button("Cherry-Pick \(batch.count) Commits") { history.cherryPick(batch) }
+                                    Button("Copy \(batch.count) Revision Numbers") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(batch.map(\.id).joined(separator: "\n"), forType: .string)
+                                    }
+                                } else {
+                                    CommitContextMenu(commit: commit, vm: history) { direction in
+                                        vm.navigate(direction, from: commit, side: side)
+                                    }
                                 }
                             }
                         }
@@ -110,6 +121,8 @@ private struct CompareCommitRow: View {
     let isFirst: Bool
     let isLast: Bool
     let isSelected: Bool
+    /// Part of a ⌘/⇧-click multi-selection.
+    var isInSelection = false
 
     private var isMerge: Bool { commit.parents.count > 1 }
 
@@ -138,7 +151,8 @@ private struct CompareCommitRow: View {
         .padding(.trailing, 10)
         .frame(height: 30)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .background(isSelected ? Color.accentColor.opacity(0.18)
+                    : isInSelection ? Color.accentColor.opacity(0.12) : Color.clear)
     }
 
     private var dateText: String {

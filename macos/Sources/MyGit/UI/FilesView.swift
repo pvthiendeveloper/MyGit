@@ -249,6 +249,9 @@ private struct FileRowView: View {
         Button("Rename…") {
             vm.rename(node) { old, new in editor.pathRenamed(from: old, to: new) }
         }
+        Button("Move to Trash…") {
+            vm.moveToTrash(node) { editor.pathDeleted($0) }
+        }
         Divider()
         Button("Reveal in Finder") { vm.revealInFinder(node) }
         if !node.isDirectory {

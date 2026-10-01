@@ -172,6 +172,38 @@ final class FilesViewModel: ObservableObject {
         }
     }
 
+    /// Confirm, then move `node` to the Trash (recoverable, unlike a delete).
+    /// Reports its repo-relative path so open editor tabs can close.
+    func moveToTrash(_ node: FileTreeNode, onDeleted: (String) -> Void) {
+        guard let repo = repoSource() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Move \"\(node.name)\" to the Trash?"
+        alert.informativeText = node.isDirectory
+            ? "The folder and everything in it go to the Trash."
+            : "You can put it back from the Trash."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let path = node.id
+        do {
+            try FileManager.default.trashItem(at: repo.url.appendingPathComponent(path), resultingItemURL: nil)
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return
+        }
+        onDeleted(path)
+        if let selected = selectedPath, selected == path || selected.hasPrefix(path + "/") { selectedPath = nil }
+        let parentPath = (path as NSString).deletingLastPathComponent
+        Task {
+            if let parent = findNode(id: parentPath, in: fileTreeNodes) {
+                parent.isLoaded = false
+                await loadChildren(of: parent)
+            } else {
+                await refreshFileTree()
+            }
+        }
+    }
+
     /// Prompt for a new name and rename `node` on disk, in place. Reports
     /// `(oldPath, newPath)` (repo-relative) so open editor tabs can follow.
     func rename(_ node: FileTreeNode, onRenamed: (String, String) -> Void) {

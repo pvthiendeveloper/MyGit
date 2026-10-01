@@ -44,6 +44,13 @@ final class ChangesViewModel: ObservableObject {
     @Published var jumpToSourcePath: String?
     @Published var pendingForcePushConfirm: Bool = false
     @Published var isGeneratingMessage: Bool = false
+    /// The project's commit-message format (its last 5 messages), stored per
+    /// repo until refreshed; AI messages copy it.
+    @Published private(set) var commitStyle: CommitStyle?
+    @Published private(set) var isLearningStyle = false
+    private let styleStore = CommitStyleStore()
+    /// How many recent (non-merge) messages make up the style.
+    static let styleExampleCount = 5
     /// Most recent commit for this repo (cached + refreshed). Drives the
     /// "last commit" line shown per project.
     @Published var lastCommit: CachedCommit?
@@ -294,6 +301,35 @@ final class ChangesViewModel: ObservableObject {
         }
     }
 
+    /// The stored style for this repo, if any (cheap; no git).
+    func loadCommitStyle() {
+        guard let repo = repoSource() else { return }
+        commitStyle = styleStore.get(repo.url.path)
+    }
+
+    /// Re-read the latest non-merge messages and store them as the style.
+    @discardableResult
+    func refreshCommitStyle() async -> CommitStyle? {
+        guard let repo = repoSource(), !isLearningStyle else { return commitStyle }
+        isLearningStyle = true
+        defer { isLearningStyle = false }
+        do {
+            // Merges ("Merge branch …") are git's wording, not the team's.
+            let examples = try await git.log(at: repo.url, limit: 50)
+                .filter { $0.parents.count <= 1 }
+                .prefix(Self.styleExampleCount)
+                .map { String($0.fullMessage.prefix(600)) }
+            guard !examples.isEmpty else { return nil }
+            let style = CommitStyle(examples: Array(examples), learnedAt: Date())
+            styleStore.set(style, repoPath: repo.url.path)
+            commitStyle = style
+            return style
+        } catch {
+            main.errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     var canGenerateMessage: Bool {
         repoSource() != nil && !stagedPaths.isEmpty && !isGeneratingMessage && !main.isBusy
     }
@@ -317,7 +353,11 @@ final class ChangesViewModel: ObservableObject {
             if diff.count > maxChars {
                 diff = String(diff.prefix(maxChars)) + "\n…(diff truncated)…"
             }
-            let suggestion = try await commitMessageRepo.generate(diff: diff, config: config)
+            var style = commitStyle
+            if style == nil { loadCommitStyle(); style = commitStyle }
+            if style == nil { style = await refreshCommitStyle() }
+            let suggestion = try await commitMessageRepo.generate(diff: diff, config: config,
+                                                                  style: style, branch: status.branch)
             commitSummary = suggestion.summary
             if config.includeBody {
                 commitDescription = suggestion.body

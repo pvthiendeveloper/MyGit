@@ -281,6 +281,21 @@ final class SettingsViewModel: ObservableObject {
         config(for: activeProvider)
     }
 
+    /// Config for commit/PR messages: an on-device model when one is
+    /// downloaded (its selected model, else the first installed one), so
+    /// diffs stay on this Mac; otherwise the active provider.
+    func commitMessageConfig() -> AIRequestConfig? {
+        if LocalAIPaths.isRuntimeInstalled {
+            let installed = LocalModelCatalog.models.filter(LocalAIPaths.isInstalled)
+            let chosen = installed.first { $0.id == model(for: .local) } ?? installed.first
+            if let spec = chosen {
+                return AIRequestConfig(provider: .local, model: spec.id, baseURL: "", apiKey: "local",
+                                       includeBody: generateBody)
+            }
+        }
+        return requestConfig()
+    }
+
     /// A request config for `p`, or nil when it isn't usable (no key/model).
     func config(for p: AIProvider) -> AIRequestConfig? {
         guard p.needsKey else {

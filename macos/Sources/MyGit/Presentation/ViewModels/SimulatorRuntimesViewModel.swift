@@ -110,7 +110,13 @@ final class SimulatorRuntimesViewModel: ObservableObject {
         downloads[runtime.build] = .some(nil)
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        proc.arguments = ["xcodebuild", "-downloadPlatform", runtime.platform.rawValue, "-buildVersion", runtime.build]
+        // Without the variant, xcodebuild answers "not available" for runtimes the
+        // catalog lists per architecture (e.g. iOS 26.2 23C54 under Xcode 26.4).
+        var variant = utsname()
+        uname(&variant)
+        let isARM = withUnsafeBytes(of: &variant.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) } == "arm64"
+        proc.arguments = ["xcodebuild", "-downloadPlatform", runtime.platform.rawValue, "-buildVersion", runtime.build,
+                          "-architectureVariant", isARM ? "arm64" : "universal"]
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
@@ -118,8 +124,10 @@ final class SimulatorRuntimesViewModel: ObservableObject {
         let build = runtime.build
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             guard let text = String(data: handle.availableData, encoding: .utf8), !text.isEmpty else { return }
-            // "Downloading iOS 26.4 Simulator (23E244): 12.3% (1.1 GB of 8.5 GB)"
-            let percent = text.matches(of: #/([0-9]+(?:\.[0-9]+)?)%/#).last.flatMap { Double($0.output.1) }
+            // "Downloading iOS 26.2 Simulator (23C54) (arm64): 12,3% (1,1 GB of 8,39 GB)" —
+            // the decimal separator follows the user's locale.
+            let percent = text.matches(of: #/([0-9]+(?:[.,][0-9]+)?)%/#).last
+                .flatMap { Double($0.output.1.replacingOccurrences(of: ",", with: ".")) }
             DispatchQueue.main.async {
                 output += text
                 if let percent, self?.downloads[build] != nil { self?.downloads[build] = .some(percent / 100) }

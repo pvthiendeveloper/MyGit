@@ -133,6 +133,11 @@ protocol GitRepository: Sendable {
     // Commit actions
     @discardableResult
     func cherryPick(commit: String, at repo: URL) async throws -> CherryPickOutcome
+    /// Several commits in one sequence (`git cherry-pick A B C`), applied in the
+    /// given order; a stop leaves the rest queued for skip/continue.
+    func cherryPick(commits: [String], at repo: URL) async throws -> CherryPickOutcome
+    /// The commit a stopped cherry-pick is on (`CHERRY_PICK_HEAD`), if any.
+    func cherryPickHead(at repo: URL) async -> String?
     /// Drop the in-flight pick and move to the next one (`cherry-pick --skip`).
     func cherryPickSkip(at repo: URL) async throws
     /// Roll the whole sequence back (`cherry-pick --abort`).
